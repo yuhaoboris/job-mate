@@ -75,7 +75,7 @@ S-6 的 tool/message_end 来自真实 runAgentLoop；session 文件的条目包�
 
 ## 文件边界和哈希
 
-本仓库只新增本报告；方案、回应、既有报告、AGENTS.md、scripts/shared/skills/tests 不修改，不提交 git。开始时已有 AGENTS.md 改动和 plans/reviews 未跟踪文件原样保留。没有发送真实飞书消息、装/加载 launchd、读写 job-hunt、写 ~/.config/job-wingman 或调用真实模型。
+本仓库只新增本报告；方案、回应、既有报告、AGENTS.md、scripts/shared/skills/tests 不修改，不提交 git。开始时已有 AGENTS.md 改动和 plans/reviews 未跟踪文件原样保留。没有发送真实飞书消息、装/加载 launchd、读写 private-job-workspace、写 ~/.config/job-wingman 或调用真实模型。
 
 主清单 SHA-256：`8fd5e1e192f5d4bd025a1c3e7a9ff5c9b850dfd506fd6ff8055a50648c35af02`。
 
@@ -104,7 +104,7 @@ f65888352375e0660a2ac31223f83e876eac4937a01fb336fb74c16dbb0c6641  s9-close.py
 
 | 输入 | SHA-256 |
 |---|---|
-| docs/plans/2026-11-01-im-phase1-e2e-acceptance.md | `4724e261920e1530806c97638f5045c504f376af0196e00f05927cd6ba68f3a7` |
+| docs/archive/plans/2026-11-01-im-phase1-e2e-acceptance.md | `4724e261920e1530806c97638f5045c504f376af0196e00f05927cd6ba68f3a7` |
 | docs/archive/reviews/2026-11-01-im-e2e-plan-response-3.md | `0a5a9eb2db4230a5663b9334a8f91ef968b4e29e0c6c04b4d63bb3852f108da5` |
 | scripts/notify.py | `b480d91d22e6365d7b0bb0fcf33f561d63b6694f33f9bf745b835cd67fad3f71` |
 | scripts/ledger.py | `48ff142c05cd3330bf181fa9666eb93357e6083294e144259ab48c33000a4de7` |

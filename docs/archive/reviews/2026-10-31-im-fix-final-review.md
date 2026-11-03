@@ -12,7 +12,7 @@
 
 - 基线：018d8468c068ee1b5eb991f7deb4e158769622da。
 - 分支：fix/im-review-20261031。
-- Worktree：<用户主目录>/.paseo/worktrees/2g9vgc71/im-review-20261031。
+- Worktree：<用户主目录>/.paseo/worktrees/<工作树标识>/im-review-20261031。
 - 最终 tracked diff SHA-256：2b966c48f8e0ce830db07824dd95598eff23282fbefd867e8ca928db5a060d45。
 - 开发：通过 Paseo 的“开发工程师”Profile，Pi / deepseek/deepseek-flash / high；Agent ID 0f0876f9-5a89-4701-a752-5dd3e4d98d2e。
 - 复审：主 Agent 独立检查差异并执行验证，没有代替开发修改实现。
@@ -46,7 +46,7 @@
 
 ## 验证边界
 
-- 未调用真实飞书、招聘平台或launchd，未实际外发、未修改job-hunt或本机监听器配置。
+- 未调用真实飞书、招聘平台或launchd，未实际外发、未修改private-job-workspace或本机监听器配置。
 - ready是否按技能保留/收尾，仍依赖Agent遵循技能；reply-state接口本身允许调用方标consumed。当前验证是脚本状态与文档控制流验证，未做真实Agent端到端演练。
 - 飞书幂等窗口、引用消息/parent_id、分页和同秒消息；launchd权限、信号、睡眠及真实工具进程树仍待本人发起实测。
 - 进程清理覆盖受管进程组；未验证主动脱离该进程组的工具进程。

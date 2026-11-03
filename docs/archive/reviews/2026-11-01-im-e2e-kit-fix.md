@@ -124,5 +124,5 @@ kit/selftest-delivery/MANIFEST.sha256
 
 - 修改 kit 内 S-1 至 S-10、common.py、README.md；新增 real-cli.mjs、stub-provider.mjs、fixtures/；重建两份 MANIFEST 与 selftest-delivery。S-2-env.sh、pi-lib.mjs 未改。
 - 仓库仅新增本报告；既有 P0 报告仍是原有未跟踪文件，本轮未修改。没有 git 提交。
-- 没有真实飞书发送，没有调用真实模型，没有安装/加载 launchd，没有访问生产 job-hunt 工作区，没有写 `~/.config/job-wingman`。真实采集仅消息 GET、临时工作区的产品 CLI/函数、受控本地进程与离线 Pi。
+- 没有真实飞书发送，没有调用真实模型，没有安装/加载 launchd，没有访问生产 private-job-workspace 工作区，没有写 `~/.config/job-wingman`。真实采集仅消息 GET、临时工作区的产品 CLI/函数、受控本地进程与离线 Pi。
 - 本报告不改变原 P0“不通过”的结论，也未执行新的 P0/P1。真实模型响应、发送 ACK、launchd 触发与系统权限仍需原方案的后续实际验收。

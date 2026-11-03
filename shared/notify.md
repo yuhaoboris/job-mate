@@ -122,7 +122,7 @@ runtime 每次实际投递前重新核对 route / 引用与冻结数据、自己
 
 ### done 结果版本
 
-默认键 `done:<ID>:<正文摘要>`，正文相同只发一次，结果改变（结果不明 → 已完成）才是新版本。正文写实际执行结果，不用用户决定原话代替；首次排队前保存该版本正文到 inbox，后续从保存位置读取，以已有持久化原文为准。兼容旧 `done:<ID>` 及改品牌前标题。
+默认键 `done:<ID>:<正文摘要>`，正文相同只发一次，结果改变（结果不明 → 已完成）才是新版本。正文写实际执行结果，不用用户决定原话代替；首次排队前保存该版本正文到 inbox，后续从保存位置读取，以已有持久化原文为准。兼容已有 `done:<ID>` 键及已持久化的通知标题，不因显示文字变化重复发送。
 
 可回复候选包括待决定 / 待处理，以及**已决定且 ledger 派生仍有 uncertain 尝试**的事项，不解析 inbox 正文猜状态。对候选的 done 首次排队会追加「核对结果请引用本消息回复『已发出 / 未发出』，或回复『<序号> 已发出』」，参与摘要。已有相同结果版本（含旧正文、旧键）始终复用；后来候选变化不能产生第二条消息。本人在 ledger 追加核对终态后自动退出候选。
 
@@ -203,4 +203,4 @@ decisionHint / decisionCandidates 只是提示：引用事项通知 → 该事�
 
 提示词保留「由 IM 监听器唤起」兼容标记：此轮先处理 IM 答复与已决定事项，处理相关会话后结束，不进入等待、不在终端提问。
 
-`notify status` 只读报告通道 / 私聊 / 游标 / 完整性、各 outbox 状态、stale token、lateSends、路由与私聊冲突、awaitingCheck（仅决策与 attemptId）、未结束 launch、ready、needsReconcile、legacyUnbound、otherRoutes，以及缺消息级元数据的回复恢复提示。unconfirmedSends 仅输出状态元数据，不将旧出站正文展示给新 owner。发现旧 listener.json 只提示本人卸载，不读取主目录配置、不安装或停止任何服务。旧 wait / listen / service 命令已删除。
+`notify status` 只读报告通道 / 私聊 / 游标 / 完整性、各 outbox 状态、stale token、lateSends、路由与私聊冲突、awaitingCheck（仅决策与 attemptId）、未结束 launch、ready、needsReconcile、legacyUnbound、otherRoutes，以及缺消息级元数据的回复恢复提示。unconfirmedSends 仅输出状态元数据，不将旧出站正文展示给新 owner。发现兼容 listener.json 标记时只提示本人核对，不读取主目录配置、不安装或停止任何服务。

@@ -2,7 +2,7 @@
 
 > 历史归档：保留当时的版本、结论与行号；文件引用已按当前目录更新，私人标识和本机路径已脱敏。本文不代表当前实现或验收状态，当前状态见项目的 `docs/status.md`。
 
-日期：2026-11-01。回应对象：`docs/archive/reviews/2026-11-01-im-e2e-plan-review.md`（B5 / M5 / L2）。修订后的方案：`docs/plans/2026-11-01-im-phase1-e2e-acceptance.md`（第二版，正文约 690 行，附录 A 为 13 个验收脚本，共 1766 行）。下文「§」指方案节号，「L」指方案第二版的行号（附录之前）。
+日期：2026-11-01。回应对象：`docs/archive/reviews/2026-11-01-im-e2e-plan-review.md`（B5 / M5 / L2）。修订后的方案：`docs/archive/plans/2026-11-01-im-phase1-e2e-acceptance.md`（第二版，正文约 690 行，附录 A 为 13 个验收脚本，共 1766 行）。下文「§」指方案节号，「L」指方案第二版的行号（附录之前）。
 
 处理计数：**B 5/5 已修；M 5/5 已处理（M5 采纳加夹具）；L 2/2 已清；调度方补充的 node / PATH 事实已并入。** 没有未采纳项。没有改变 D1–D4 的修法（见末节）。
 
@@ -10,8 +10,8 @@
 
 - 方案中所有命令与脚本都在本机核实过：pi 1.4.0 的参数取自 `~/.pi/agent/install/releases/1.4.0/node_modules/@earendil-works/pi-coding-agent/` 下的 `dist/cli/args.js`、`docs/cli.md`、`docs/json.md`、`docs/extensions.md`、`docs/security.md`；notify / ledger 的字段名取自 `scripts/notify.py`、`scripts/ledger.py`；build 参数取自 `scripts/build.py`。
 - 13 个验收脚本先写在 `/tmp` 临时目录离线测试，再机械地追加到方案附录 A；随后用方案第 3.2 节的提取命令从方案中取出，与测过的文件逐个 `cmp` 一致，并从提取出的副本把 P0 的离线部分（生成配置、专用 shell、建工作区、build、validate、status、版本断言、对照组、pi 离线预检、`jwacts`、`reap.py check`）完整跑了一遍。结果列在方案 §0.4（L52–70）。
-- 只用了临时工作区、假 `lark-cli`、假 pi、假 IM 适配器和真实 pi 的**离线**启动（`--offline`、提示词为扩展命令 `/jw-selftest`，不调用模型）。没有发飞书消息、没有真实模型推理、没有安装或加载 launchd（只跑了 `service install --dry-run`）、没有写 job-hunt（`seal.py verify` 对 job-hunt 只读）、没有写 `~/.config/job-wingman`、没有建 `~/jw-e2e`、没有提交 git。临时目录已删除。
-- 只改了方案文件，新增了本文件。`git status` 仍是开始时的三项（` M AGENTS.md`、`?? docs/plans/`、`?? docs/archive/reviews/2026-11-01-im-e2e-plan-review.md`）加本文件。
+- 只用了临时工作区、假 `lark-cli`、假 pi、假 IM 适配器和真实 pi 的**离线**启动（`--offline`、提示词为扩展命令 `/jw-selftest`，不调用模型）。没有发飞书消息、没有真实模型推理、没有安装或加载 launchd（只跑了 `service install --dry-run`）、没有写 private-job-workspace（`seal.py verify` 对 private-job-workspace 只读）、没有写 `~/.config/job-wingman`、没有建 `~/jw-e2e`、没有提交 git。临时目录已删除。
+- 只改了方案文件，新增了本文件。`git status` 仍是开始时的三项（` M AGENTS.md`、`?? docs/archive/plans/`、`?? docs/archive/reviews/2026-11-01-im-e2e-plan-review.md`）加本文件。
 
 ## B：阻断
 
@@ -21,10 +21,10 @@
 |---|---|---|
 | 封口从第一条验收消息起成为强制终局，失败 / 中止同样适用，未完成不得解冻 | 「封口义务」在 P2.2（P2.3 首次发送前）`touch ~/jw-e2e/SEAL-REQUIRED` 时成立；正常结束（P9.6）与中止（§6.3 第 5 步）执行同一套 S1–S8；解冻只由 `jwgate`（S8 / P9.10）放行，`SEAL-REQUIRED` 存在而 `seal-result.json` 不全为 true 时闸门不通过 | §2.3 L180–206；P2.2 L409；§6.3 L591–600；P9.6、P9.10 L525、L529；`env.sh` 的 `jwgate`（附录 A.2） |
 | 先停止所有生产者 | S1：测试工作区全局暂停、卸载监听器（以 `launchctl print` 为准）、前台监听器 Ctrl-C、`reap.py kill` 直至 `check` 为 0、核对心跳 PID 已退出；S2：本人停止发言并留痕 | §2.3 S1、S2 |
-| 边界用经核对的服务端 `create_time` 上界，不用本机墙钟 | `seal.py scan` 用原始接口按 `page_token` 读完 job-hunt 游标之后的全部消息，边界 = 最后一条的 `create_time + 1` 毫秒；遇到非毫秒格式的 `create_time` 即拒绝；`append` 内部再扫一次，两次的最后一条必须一致 | §2.3 S3、S5；`seal.py`（A.10） |
-| 封口区间的真实消息先逐条对账，不整段丢弃 | P0 先只读扫描，确认 job-hunt 游标之后没有本人消息（L340，3.3.6）；S3 列出测试工作区没有记录的本人消息，本人逐条确认是验收消息才 `--ack`，有一条真实消息就不封口 | §2.3 S3；3.3.6 |
-| 追加前验证生产账本与基线一致、无 `pending_commands`、字节前缀不变、只追加一行 | `seal.py append` 前置条件：sha256 等于 P0 记录的基线（3.3.5 存 `P0-jh-im.sha256`）、`pending_commands` 与 received / ready 回复为空、边界大于现有游标；在 job-hunt 的 `.poll.mutex` + `.im.mutex` 内追加（两者已存在，不新建文件），加锁后再核对一次哈希；写后检查 `prefixUnchanged`、`exactlyOneLine`、`cursorFolded`、`noPendingCommands` | §2.3 S5；A.10 |
-| 追加后只读校验，不跑生产 poll | S6：`seal.py verify`（只用 `load_state`）+ `snap_jh` 差异只有那一行哈希；明确「不对 job-hunt 运行 poll 或任何技能」 | §2.3 S6 |
+| 边界用经核对的服务端 `create_time` 上界，不用本机墙钟 | `seal.py scan` 用原始接口按 `page_token` 读完 private-job-workspace 游标之后的全部消息，边界 = 最后一条的 `create_time + 1` 毫秒；遇到非毫秒格式的 `create_time` 即拒绝；`append` 内部再扫一次，两次的最后一条必须一致 | §2.3 S3、S5；`seal.py`（A.10） |
+| 封口区间的真实消息先逐条对账，不整段丢弃 | P0 先只读扫描，确认 private-job-workspace 游标之后没有本人消息（L340，3.3.6）；S3 列出测试工作区没有记录的本人消息，本人逐条确认是验收消息才 `--ack`，有一条真实消息就不封口 | §2.3 S3；3.3.6 |
+| 追加前验证生产账本与基线一致、无 `pending_commands`、字节前缀不变、只追加一行 | `seal.py append` 前置条件：sha256 等于 P0 记录的基线（3.3.5 存 `P0-jh-im.sha256`）、`pending_commands` 与 received / ready 回复为空、边界大于现有游标；在 private-job-workspace 的 `.poll.mutex` + `.im.mutex` 内追加（两者已存在，不新建文件），加锁后再核对一次哈希；写后检查 `prefixUnchanged`、`exactlyOneLine`、`cursorFolded`、`noPendingCommands` | §2.3 S5；A.10 |
+| 追加后只读校验，不跑生产 poll | S6：`seal.py verify`（只用 `load_state`）+ `snap_jh` 差异只有那一行哈希；明确「不对 private-job-workspace 运行 poll 或任何技能」 | §2.3 S6 |
 | 两机同步或各自封口作为解冻前置 | 3.1.2 要求本人说明另一台 Mac 的同步方式；S7 在另一台 Mac 运行给出的只读核验命令（不依赖 `~/jw-e2e`），结果写入 `evidence/seal/other-mac.txt`；`jwgate` 缺这个文件即不通过 | 3.1.2 L248；§2.3 S7 与核验命令 |
 | 已有生产污染时不用游标修复 | 基线不符即不追加、保持冻结、人工对账 | §2.3「约束」第 1 条；§6.3 第 4 步 |
 | 删掉「删掉这一行即可恢复原状」 | 已删除；改为「游标一经追加不撤销」并说明原因与吞掉真实消息时的处理 | §2.3 L206 |
@@ -106,7 +106,7 @@
 | 项 | 处理 | 落点 |
 |---|---|---|
 | L1 第 3 行仍写待确认 | 状态行改为「D1–D4 已于 2026-11-01 由本人确认」；3.1.1 改为不再索要 | L3；3.1.1 |
-| L1 工作树基线 | 3.1.5 只要求 `skills scripts shared tests` 无改动，其余改动（调度方的 `AGENTS.md`、`docs/plans/`、`docs/reviews/`）存为 `P0-git-status.txt` 基线，P9.5 按相对差异比较 | 3.1.5 L247；P9.5；§2.5 |
+| L1 工作树基线 | 3.1.5 只要求 `skills scripts shared tests` 无改动，其余改动（调度方的 `AGENTS.md`、`docs/archive/plans/`、`docs/archive/reviews/`）存为 `P0-git-status.txt` 基线，P9.5 按相对差异比较 | 3.1.5 L247；P9.5；§2.5 |
 | L1 `20991231` 的说法 | 改称「专用未来日期命名空间」 | §2.2 L171 |
 | L1 枚举统一、可选项 | §1.2 统一门槛 / 判定 / 观察的结果枚举，删除「有条件通过」，可选与不执行项写「未执行，不构成能力结论」 | §1.2 L78–86；§5.2；§7.2 |
 | L2 保留真实退出码 | `jwrun <标签> <命令…>` 保存 stdout、stderr、退出码、起止时间到 `evidence/cmd/`，返回被测命令自己的退出码；专用 shell 开 `pipefail`；全文判据以 `meta.json` 的 `exitCode` 为准，不再用 `| tee`。离线验证 0 / 2 / 3 原样返回 | §3.2 第 4 步 L288；A.2 |

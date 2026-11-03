@@ -2,9 +2,9 @@
 
 > 历史归档：保留当时的版本、结论与行号；文件引用已按当前目录更新，私人标识和本机路径已脱敏。本文不代表当前实现或验收状态，当前状态见项目的 `docs/status.md`。
 
-日期：2026-11-01。回应对象：`docs/archive/reviews/2026-11-01-im-e2e-plan-review-3.md`（B2 / M3 / L1）。修订对象：`docs/plans/2026-11-01-im-phase1-e2e-acceptance.md`，第四版 510 行，仍是纯文档、无代码块。下文「方案:L」指第四版行号。
+日期：2026-11-01。回应对象：`docs/archive/reviews/2026-11-01-im-e2e-plan-review-3.md`（B2 / M3 / L1）。修订对象：`docs/archive/plans/2026-11-01-im-phase1-e2e-acceptance.md`，第四版 510 行，仍是纯文档、无代码块。下文「方案:L」指第四版行号。
 
-范围：只改了方案文件，另新增本文件。没有写代码，没有建 `~/jw-e2e`，没有改 `scripts/ tests/ skills/ AGENTS.md`，没有碰 job-hunt，没有发飞书、装 launchd 或提交。D1–D4 都不需要改动；冻结、封口、解冻闸门没有恢复。
+范围：只改了方案文件，另新增本文件。没有写代码，没有建 `~/jw-e2e`，没有改 `scripts/ tests/ skills/ AGENTS.md`，没有碰 private-job-workspace，没有发飞书、装 launchd 或提交。D1–D4 都不需要改动；冻结、封口、解冻闸门没有恢复。
 
 修订前另核对了本机 pi 1.4.0 源码（`pi-agent-core/dist/agent-loop.js` 的 `executeToolCalls*`、`prepareToolCall`、`executePreparedToolCall`、`failToolCallsFromTruncatedMessage`；`docs/json.md`、`docs/session-format.md`）与 `scripts/notify.py` 的 `deliver / compose / text_digest / default_key`，B1、B2 的判据都按这两处的实际字段与错误文本写死。
 
@@ -15,7 +15,7 @@
 | **B1** F2 的证明力 | 接受。F2 改为读 `im.jsonl` 基线之后的原始记录，按六条判：① 只有一个键 K，恰一条 `pending`、一条 `sent`、无 `failed`；② `pending` 的 `kind=done`、`decision` = 夹具 ID、`replyTo` 字段存在且为 null；③ 该 `pending` 的实际 `text`（T）与 `A` 或 `结果：A` 之一**按 notify 的 `text_digest` 规范化相等**（NFKC、空白折叠、去首尾空白，就是产品去重用的口径），且恰命中一个；④ K **逐字**等于 `done:<ID>:` + `text_digest(T)`，旧版键与自定义键都不接受；⑤ 从 T 去掉 `compose("done","",ID)` 前缀得 acceptedBody，`compose` 回去必须**逐字**等于 T；⑥ 无新 ledger 事件、`consumed`、结论未变。明确写了「不得只校验预期键」。通过时写 `evidence/F2-accepted.json`（不可覆盖）；P8.6b ① 必须用其中的 acceptedBody 发送，并断言 `already_sent` 且键等于 K，文件不存在即「未验证」，不得换回夹具里的 A。夹具发布前先存 `F2-expected.json`（两种形式各自的 compose 结果与摘要、正文 B），并断言三个摘要两两不同。另外，同样的「字面拼正文重发」问题在 P8.2 的 07 也存在，一并改成从 `pending.text` 恢复 acceptedBody 后重发 | 方案:210（发布顺序）、213–221（F2 六条与持久化）、408（P8.2 T18）、414（P8.6b）、508（S-10 自测） |
 | **B2** 执行证据完整性 | 接受。第 2.5 节重写为 E1–E9（记录完整）与 OK1–OK5（运行成功），逐项编号输出。新增：E2 会话文件**逐行**解析（条目类型白名单、`id` 不重复、`parentId` 只能指向更早条目）；E3 会话中 user / assistant / toolResult 消息序列与事件流 `message_end` 序列条数相同、逐字段一致；E4 最终回答在场且两边一致；E5 assistant 声明的每个 toolCall ↔ 恰一个 start、end、toolResult，内容逐项一致，反向每个 start / end / toolResult / 审计都要能对应到声明，**只列两种 pi 合法缺口**（`stopReason` 为 error / aborted 的回答整批不执行；中止后同批的连续尾部被跳过）；E6 时序，同一回答内允许并行交错；E7 以 `durationMs` 区分执行与未执行，未执行必须 `isError=true` 且恰好属于 N1 钩子拦截 / N2 工具不存在 / N3 参数校验失败 / N4 截断 / N5 中止之一（错误文本按源码），**`isError=false` 而无 `durationMs` 一律不完整**；E8 审计按 R5 的四类记录（`session` / `hook` / `deny` / `exec`）对账。R5 改为四类记录，R2 的拒绝审计要求带 `toolCallId`、并行不串号。OK2 要求最终回答 `stop`、有非空 text、无 toolCall。第 0.3 节补了对应的 pi 源码事实 | 方案:43（源码事实）、148（R2）、151（R5）、181–206（第 2.5 节）、504（S-6 自测） |
 | **M1** 交付根与 P0 | 接受。`~/jw-e2e/kit/` 定义为**交付根**（脚本、扩展、README、`MANIFEST.sha256`、`selftest-delivery/`），其余为**数据根**（`ws/ evidence/ dist/ probes/`、配置）。3.1.7 改为：测试根必须存在且顶层恰为 `kit`（允许预先存在的唯一一项）；没有 `kit` 即交付缺失、退回审查员；有任何数据根条目则说明真实验收已经开始过，不覆盖、不删除，由本人处理旧数据。这一条沿用第三版的处理方式，没有新增本人关卡。3.2 第 1 步写明首次接管：MANIFEST 自身哈希等于交付说明、每个文件哈希一致、没有未列出的文件，任一不符即退回、不修补；复制为 `P0-kit.manifest`、去写权限；列出禁止覆盖的路径。3.3.0 改为 **S-1 至 S-10 每个**的 `--selftest`，只跑一部分不算通过；第 7 节为每个脚本补了最低自测用例与自测约束；P9.5 与第 2.7 节新增按 MANIFEST 重核 `kit/` | 方案:126（2.1 表）、235（2.7）、257（3.1.7）、261–267（3.2 第 1 步）、277（3.3.0）、429（P9.5）、440（5.1）、495（第 7 节共同要求）、499–508 |
-| **M2** T19 本人核对口径 | 接受。第 2.7 节该行改名为「没有由本次验收造成的 HR 外发」，三项都满足才通过：测试工作区外发类事件为无；本次证据中没有浏览器 / 桌面 / shell 类工具实际执行，也没有归属不明的残留；本人逐条确认 P0 起的外发都能由本人或独立生产任务解释，这类正常外发不计入。无法解释且与本次证据相关的判不通过、中止；无法解释但没有证据指向验收的记「未验证」，不写成事故。明确写了不得以此为由冻结或改动 job-hunt，Agent 不读 job-hunt。P9.7、T19 定义、第 4 节中止条件同步改 | 方案:94（T19）、228（2.7）、295（第 4 节开头）、431（P9.7） |
+| **M2** T19 本人核对口径 | 接受。第 2.7 节该行改名为「没有由本次验收造成的 HR 外发」，三项都满足才通过：测试工作区外发类事件为无；本次证据中没有浏览器 / 桌面 / shell 类工具实际执行，也没有归属不明的残留；本人逐条确认 P0 起的外发都能由本人或独立生产任务解释，这类正常外发不计入。无法解释且与本次证据相关的判不通过、中止；无法解释但没有证据指向验收的记「未验证」，不写成事故。明确写了不得以此为由冻结或改动 private-job-workspace，Agent 不读 private-job-workspace。P9.7、T19 定义、第 4 节中止条件同步改 | 方案:94（T19）、228（2.7）、295（第 4 节开头）、431（P9.7） |
 | **M3** G 的白名单与快照区间 | 接受。P8 新增 G-W：快照区间由 S-4 定为「预检通过后、正式 pi 启动前」到「pi 退出且进程检查为 0 后」，阶段整体变化不归 G 判；白名单在原有文件之外，监听器唤起的一轮额外允许 `ledger/listener-runs/<本轮 launchId>.log`（launchId 必须与账本和证据一致），其他 `listener-runs/` 变化与 Agent 直接运行一轮中的任何 `listener-runs/` 变化都不允许；归属分三类：模型直接写入（只认成功的 edit / write，inbox 有变化却没有这类调用即判不满足）、产品代码写入（`ledger/` 下，经 `jw_*` 或并发的监听器写入，不算作模型写入）、监听器运行日志；证据存 `ws-diff.json`。pi 的写权限不变 | 方案:397–402（G / G-W）、502（S-4 职责与自测） |
 | **L1** 风险表步号 | 已改为 P2.2。按机械方法核对了全文：节号引用（`第 x.y 节`）、阶段步号（`Px.y`）、`3.x.y`、R1–R6、E1–E9、OK1–OK5、N1–N5 都有对应目标；「第 1 / 3 / 8 / 2.0 / 13 节」指 followup、最终报告或 design.md，语境明确。同时把可能混淆的编号改名：运行成功组用 OK1–OK5（避免与脚本 S-1… 混淆），S-6 自测的失败组用 FL1–FL4（避免与夹具 F1 / F2 混淆），S-10 自测用 F2负1–11、F2正1–3（避免与 N1–N5、阶段 P1 混淆） | 方案:465 |
 
@@ -34,7 +34,7 @@
 - **新增 → 通过且可复用**：F2正1 形式 `A`；F2正2 形式 `结果：A`；F2正3 `结果:A` 加首尾空白（规范化相等）。三者都写出 `F2-accepted.json` 后按 P8.6b ① 重发，必须得到 `already_sent`、键不变、FakeIM 发送次数不变。
 - **新增对照**：F2正2 的结果若改用 `A` 重发，计算出的键不同（只计算、不发送）。
 
-**其余脚本的最低自测**（M1 要求全部 10 个都有自测，方案:499–507）：S-1（配置含 job-hunt、zsh 拆词、缺 `larkProfile` 的 argv 断言）、S-2（管道失败退出码、同秒唯一目录、`lk` 带配置档、外发事件检查）、S-3（各模式，`tcc` 不实际执行）、S-4（预检失败退出 97 且正式运行 0 次、同秒目录、只对自己的组发信号、G-W 四种归属情形）、S-5（离线 `/jw-selftest` 全部用例、并行 `deny` 的 `toolCallId` 不串号）、S-9（五项各缺一项）。S-7、S-8 的自测保持不变。
+**其余脚本的最低自测**（M1 要求全部 10 个都有自测，方案:499–507）：S-1（配置含 private-job-workspace、zsh 拆词、缺 `larkProfile` 的 argv 断言）、S-2（管道失败退出码、同秒唯一目录、`lk` 带配置档、外发事件检查）、S-3（各模式，`tcc` 不实际执行）、S-4（预检失败退出 97 且正式运行 0 次、同秒目录、只对自己的组发信号、G-W 四种归属情形）、S-5（离线 `/jw-selftest` 全部用例、并行 `deny` 的 `toolCallId` 不串号）、S-9（五项各缺一项）。S-7、S-8 的自测保持不变。
 
 ## 需要本人决定的事项
 
@@ -47,7 +47,7 @@
 
 ## 第五版补记（2026-11-01，回应第四轮复审 `2026-11-01-im-e2e-plan-review-4.md`）
 
-范围：只改了方案文件，另在本文件末尾追加本节，没有新建文件。没有写代码，没有建 `~/jw-e2e`，没有改 `scripts/ tests/ skills/ AGENTS.md`，没有碰 job-hunt，没有发飞书、装 launchd 或提交。修订前核对了本机 pi 1.4.0 的 `agent-loop.js`（`prepareToolCallArguments`、`prepareToolCall`、`executePreparedToolCall`、`createToolResultMessage`）、`pi-ai` 的 `validation.js`（`normalizeOptionalNulls`、`validateToolArguments`）、`edit.js` 的 `prepareEditArguments`，以及 `ledger.py` 的 `write_atomic` 与锁释放、`notify.py` 的 `write_heartbeat`。第五版共 542 行，没有代码块。**D1–D4 都不需要改动**：B1 的证据契约只规定 S-5 返回什么、S-6 怎么对账，不涉及授权、应用或 Agent 的选择。
+范围：只改了方案文件，另在本文件末尾追加本节，没有新建文件。没有写代码，没有建 `~/jw-e2e`，没有改 `scripts/ tests/ skills/ AGENTS.md`，没有碰 private-job-workspace，没有发飞书、装 launchd 或提交。修订前核对了本机 pi 1.4.0 的 `agent-loop.js`（`prepareToolCallArguments`、`prepareToolCall`、`executePreparedToolCall`、`createToolResultMessage`）、`pi-ai` 的 `validation.js`（`normalizeOptionalNulls`、`validateToolArguments`）、`edit.js` 的 `prepareEditArguments`，以及 `ledger.py` 的 `write_atomic` 与锁释放、`notify.py` 的 `write_heartbeat`。第五版共 542 行，没有代码块。**D1–D4 都不需要改动**：B1 的证据契约只规定 S-5 返回什么、S-6 怎么对账，不涉及授权、应用或 Agent 的选择。
 
 | 项 | 处置 | 落点（第五版行号） |
 |---|---|---|

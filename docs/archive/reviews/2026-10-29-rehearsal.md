@@ -4,7 +4,7 @@
 
 日期：2026-10-29；基线：`66e28f1`；执行者：Claude。
 
-在临时工作区中用虚构数据，按 `skills/followup/SKILL.md`、`skills/apply/SKILL.md` 的步骤逐条调用 `ledger.py`，模拟 Agent 的五轮 `followup` 和两轮 `apply`。「点击发送」以日志代替，未访问招聘平台，未接触 job-hunt。
+在临时工作区中用虚构数据，按 `skills/followup/SKILL.md`、`skills/apply/SKILL.md` 的步骤逐条调用 `ledger.py`，模拟 Agent 的五轮 `followup` 和两轮 `apply`。「点击发送」以日志代替，未访问招聘平台，未接触 private-job-workspace。
 
 ## 覆盖的场景与结果
 

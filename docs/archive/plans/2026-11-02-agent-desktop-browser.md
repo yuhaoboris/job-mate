@@ -1,5 +1,7 @@
 # 用 agent-desktop 操作浏览器：实现方案
 
+> 历史归档：本文记录当时版本的方案或实验结论，不是当前安装、配置或执行指引。当前规则见 [设计](../../design.md) 与[项目状态](../../status.md)。文中的接口须按当前契约重新核对，待验收事项不因归档而关闭。
+
 状态：2026-11-03 第三版（含第三轮审查后的修订）。第一版（2026-11-02）经本人确认方向；红队三轮审查结论均为「修改后交付」，本版已按三轮意见修订（附录 A、B、C）。实现完成后，把第 0、3 节的规则并入 `docs/design.md` 第 11 节，本文件只作追溯。
 
 本文件只写要求、接口与判据，不含代码。权威依据：`docs/design.md` 第 2、5A、6.1、11 节；`shared/browser/README.md`；`shared/safety.md`；`shared/ledger.md`；`shared/notify.md`；`skills/apply/SKILL.md`、`skills/followup/SKILL.md` 及各自的 `platforms/boss.md`；`scripts/workspace.py`；`scripts/ledger.py`。

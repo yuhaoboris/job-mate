@@ -1,5 +1,7 @@
 # IM 决策回路（飞书）第一期端到端实测方案与验收标准
 
+> 历史归档：本文记录当时版本的方案或实验结论，不是当前安装、配置或执行指引。当前规则见 [设计](../../design.md) 与[项目状态](../../status.md)。文中的接口须按当前契约重新核对，待验收事项不因归档而关闭。
+
 > 2026-11-02 更名同步：当前技能名改为 `job-mate-followup`，通知标题为「职伴」；配置目录与服务标识保留兼容。历史版本说明和既有验收结论保留，正式复测须重建 kit 并记录当前提交。
 
 状态：2026-11-01 第五版（定稿）。第三版起 **D1 为独立的飞书测试应用**（第 0.1 节），共用私聊带来的冻结、封口、两机同步、解冻闸门全部删除，本版不恢复。第四版处理了第三轮审查；第五版只处理第四轮审查（`docs/archive/reviews/2026-11-01-im-e2e-plan-review-4.md`）的 B1 / M1 / M2，处置见 `docs/archive/reviews/2026-11-01-im-e2e-plan-response-3.md` 末尾「第五版补记」：文件调用终结分类与 `deny` 双向对账、原始参数与有效参数分开核对（第 2.5 节）、原子写入临时文件与快照读取口径（P8 G-W），另新增第 8 节「终止与残余风险」。基线提交 `9a3387c`（含 `im.larkProfile`），测试 112 项通过。
@@ -16,7 +18,7 @@
 
 | # | 决定 | 内容 |
 |---|---|---|
-| D1 | 独立测试应用 | 测试用飞书自建应用 `<TEST_APP_ID>`（lark-cli 配置档 `jw-e2e`），与生产应用 `<PRODUCTION_APP_ID>` 完全分开；测试工作区 `profile.json` 写 `im.larkProfile: "jw-e2e"`。job-hunt **不冻结、不封口、不写入、不被验收配置引用** |
+| D1 | 独立测试应用 | 测试用飞书自建应用 `<TEST_APP_ID>`（lark-cli 配置档 `jw-e2e`），与生产应用 `<PRODUCTION_APP_ID>` 完全分开；测试工作区 `profile.json` 写 `im.larkProfile: "jw-e2e"`。private-job-workspace **不冻结、不封口、不写入、不被验收配置引用** |
 | D2 | 允许 | 执行验收的 Agent 可代发**只有本人可见**的消息（测试机器人 ↔ 本人私聊），可在 `~/jw-e2e/` 下建文件、跑本地命令 |
 | D3 | pi | 真实 Agent 用 pi，在第 2.3 节的隔离配置下运行 |
 | D4 | 只记录 | launchd 链路缺屏幕录制 / 辅助功能权限时只记录，第一期不授权；弹出授权框选「不允许」并记录 |
@@ -26,10 +28,10 @@
 | 事实 | 用途 |
 |---|---|
 | 配置档 `jw-e2e` 的 bot 身份 ready；bot 发私聊成功；bot 能读回本人消息（`sender_type=user`，sender id 等于下行 open_id） | P1 只需确认，不需排障 |
-| 本人在测试应用下的 open_id：`<TEST_USER_ID>`（生产应用下为 `ou_c5b1…`；飞书 open_id 按应用隔离） | 测试工作区 `im.userId` |
+| 本人在测试应用下的 open_id：`<TEST_USER_ID>`（生产应用下为 `<PRODUCTION_USER_ID>`；飞书 open_id 按应用隔离） | 测试工作区 `im.userId` |
 | 测试机器人与本人的私聊：`<TEST_CHAT_ID>` | T19 的路由判据；旁证审计的对象 |
 | 该私聊里有另一套系统（Hermes）留下的历史消息；Hermes 已在另一台 Mac 停止；45 秒静默观察只有我们自己的消息 | 第 2.2 节的基线与 T21 |
-| 本机 `lark-cli profile list`（只读本地配置、不联网）：`jw-e2e` 的 `appId` 为 `cli_aa27…`、`active: false`；当前生效档的 `appId` 为 `cli_aa3b…`（生产） | P0 / P9 断言默认档未被切换 |
+| 本机 `lark-cli profile list`（只读本地配置、不联网）：`jw-e2e` 的 `appId` 为 `<TEST_APP_ID>`、`active: false`；当前生效档的 `appId` 为 `<PRODUCTION_APP_ID>`（生产） | P0 / P9 断言默认档未被切换 |
 
 本方案保留原验收流程与阶段编号，完整标识已统一脱敏为 `<TEST_APP_ID>`、`<PRODUCTION_APP_ID>`、`<TEST_USER_ID>`、`<TEST_CHAT_ID>`，部分历史观察使用缩写。执行前须在本地副本和配置中填入当前应用的真实值，并同步各阶段判据；本机路径占位符也需替换。原 kit 与原始证据已删除，正式复测需要重新交付 kit，从 P0 重新取证；当前结论见 `docs/status.md`。
 
@@ -61,7 +63,7 @@
 
 ### 1.1 目标
 
-在**真实飞书（测试应用）、真实 launchd、真实 pi** 上跑通 IM 决策回路：发通知 → 本人答复 → 拉取 → 指令 → 等待 → 监听器唤起 → Agent 解释并收尾。**全程不接触招聘平台，不向任何 HR 发消息，不触碰生产应用与 job-hunt。**
+在**真实飞书（测试应用）、真实 launchd、真实 pi** 上跑通 IM 决策回路：发通知 → 本人答复 → 拉取 → 指令 → 等待 → 监听器唤起 → Agent 解释并收尾。**全程不接触招聘平台，不向任何 HR 发消息，不触碰生产应用与 private-job-workspace。**
 
 ### 1.2 结果枚举（全文统一）
 
@@ -97,7 +99,7 @@
 | T16b | 本轮显式禁发时保留 `ready`、以 `--no-send` 获取锁 | P9.3 | 观察 |
 | T17 | `jw_notify` 通道上单条长命令（`wait --max 300`）能否跑满 | P9.2 | 观察 |
 | T18 | `done` 按正文版本去重：A 重发去重；B 新发一次；B 再发去重 | P8.2、8.6b | 门槛 |
-| T19 | 生产隔离：没有由本次验收造成的 HR 外发（本人与独立生产任务的正常外发不计入，第 2.7 节）；全部 IM 经测试应用（私聊 id 等于测试会话、默认配置档未变）；验收配置不引用 job-hunt；系统配置恢复 | P0、P2.2、P9 | 门槛（一票否决） |
+| T19 | 生产隔离：没有由本次验收造成的 HR 外发（本人与独立生产任务的正常外发不计入，第 2.7 节）；全部 IM 经测试应用（私聊 id 等于测试会话、默认配置档未变）；验收配置不引用 private-job-workspace；系统配置恢复 | P0、P2.2、P9 | 门槛（一票否决） |
 | T20 | 真实 pi 的能力隔离与执行证据：每轮预检与自检通过、证据 `verified`、无白名单外工具执行、拦截逐条审过 | P0.9、P8、P9.2–9.3 | 门槛（一票否决） |
 | T21 | 测试机器人没有被其他系统轮询应答：P0 本人确认；各阶段旁证审计没有非本验收发出的 app 消息 | P0、各阶段收尾 | 门槛 |
 
@@ -106,7 +108,7 @@
 | 不做 | 理由 / 何时做 |
 |---|---|
 | IM 答复触发的、BOSS 真实会话上的外发 | 对外可见、不可撤回；第二期由本人挑低风险会话发起 |
-| job-hunt 的监听器配置与生产切换 | 本人要求 followup 跑顺后再配 |
+| private-job-workspace 的监听器配置与生产切换 | 本人要求 followup 跑顺后再配 |
 | 锁屏下用桌面工具操作浏览器（T14） | 需开放 `pi-computer-use`，越过第 2.3 节隔离；第二期前单独设计隔离并审查 |
 | pi 的 `bash` 工具与生产命令行 | 本期不开放 bash；T17 只测 `jw_notify` 通道 |
 | `clarify`（引用本人消息追问） | 第 2.3 节 R3 本期拒绝一切 `--reply-to`；需要追问时写 inbox |
@@ -122,9 +124,9 @@
 
 | 层 | 生产 | 验收 |
 |---|---|---|
-| 飞书应用 / 私聊 | `cli_aa3b…` / 生产私聊 | `cli_aa27…`（配置档 `jw-e2e`）/ `oc_0868…` |
+| 飞书应用 / 私聊 | `<PRODUCTION_APP_ID>` / 生产私聊 | `<TEST_APP_ID>`（配置档 `jw-e2e`）/ `<TEST_CHAT_ID>` |
 | 工作区 | `<求职工作区>`（不引用、不写） | `~/jw-e2e/ws`（新建，不在 Git 仓库、不在 pi 信任目录内） |
-| 技能 | job-hunt 的 `.agents/skills/` | `build.py --out ~/jw-e2e/dist --skill followup --install ~/jw-e2e/ws/.agents/skills` |
+| 技能 | private-job-workspace 的 `.agents/skills/` | `build.py --out ~/jw-e2e/dist --skill followup --install ~/jw-e2e/ws/.agents/skills` |
 | 监听器 | 未配置；旧 `com.jobwingman.followup` 保持 `.disabled` | `com.job-wingman.listener` 只在 P6–P8 安装，P9 卸载；配置用 `--config ~/jw-e2e/listener-*.json`，不写 `~/.config/job-wingman/` |
 | 被唤起的 Agent | — | 假 Agent，或经隔离运行器以第 2.3 节参数运行 pi |
 | 执行环境 | — | 专用 bash 会话：固定 PATH、`pipefail`，`exit` 即恢复 |
@@ -133,18 +135,18 @@
 
 ### 2.2 生产隔离：靠独立测试应用（取代第二版的封口协议）
 
-测试消息在**另一个应用、另一个私聊**里，job-hunt 的拉取只读生产私聊，所以原来的冻结、服务端毫秒边界扫描、带锁追加游标、前缀校验、两机同步与解冻闸门都不再是安全措施，整段删除（逐项理由见回应文档）。留下的是下面几条结构保证和可判定的核对：
+测试消息在**另一个应用、另一个私聊**里，private-job-workspace 的拉取只读生产私聊，所以原来的冻结、服务端毫秒边界扫描、带锁追加游标、前缀校验、两机同步与解冻闸门都不再是安全措施，整段删除（逐项理由见回应文档）。留下的是下面几条结构保证和可判定的核对：
 
 | 保证 | 核对（判据） |
 |---|---|
 | 测试私聊与生产私聊不同（机器人与本人的私聊按应用唯一） | P2.2：测试工作区记录的 `chatId` 恰为 `<TEST_CHAT_ID>` |
 | 路由出错时只会失败、不会串到生产：未带配置档时请求落到生产应用，而测试 open_id 不属于生产应用、生产机器人也不在测试私聊里 | P0 离线断言实际 argv 带 `--profile jw-e2e`（第 3.3 节 3.3.4）；P2.2 实发成功且 `chatId` 正确 |
-| 验收配置不引用 job-hunt | 生成配置时断言所有配置值不含 `job-hunt`；pi 的文件操作限测试工作区；`jw_notify` / `jw_ledger` 的 `--workspace` 固定 |
-| 默认配置档未被切换（否则生产 job-hunt 会改用测试应用） | P0、P9 的 `lark-cli profile list`：生效档 `appId` 为 `cli_aa3b…`，`jw-e2e` 不是 active |
+| 验收配置不引用 private-job-workspace | 生成配置时断言所有配置值不含 `private-job-workspace`；pi 的文件操作限测试工作区；`jw_notify` / `jw_ledger` 的 `--workspace` 固定 |
+| 默认配置档未被切换（否则生产 private-job-workspace 会改用测试应用） | P0、P9 的 `lark-cli profile list`：生效档 `appId` 为 `<PRODUCTION_APP_ID>`，`jw-e2e` 不是 active |
 | 旧历史不算测试流量 | P0 记下测试私聊当前最新一条消息的时间与 id（基线 B0）；P2.2 第一条测试消息的服务端时间必须晚于 B0；旁证审计只看 B0 之后 |
 | 没有第三方系统轮询或应答测试机器人（T21） | P0 本人书面确认；P2、P3、P5、P6、P8、P9 收尾各做一次旁证审计：B0 之后没有「不是本验收发出」的 app 消息、没有非本人的 user 消息。只读不回的轮询不影响本系统（拉取不消费消息），由本人确认兜底 |
 
-job-hunt 期间照常使用不受影响（本人可能同时在用），因此不对 job-hunt 做快照比对。
+private-job-workspace 期间照常使用不受影响（本人可能同时在用），因此不对 private-job-workspace 做快照比对。
 
 ### 2.3 真实 pi 的强制层（B1、B2）
 
@@ -209,7 +211,7 @@ job-hunt 期间照常使用不受影响（本人可能同时在用），因此�
     - **FC2** `ok` 与 `op_error`：没有同 id 的 `deny`；`checkedPath` 满足 R2（read 在 `session` 记录的 `workspaceRealpath` 之内，edit / write 等于 `inboxRealpath`）；`op_error` 的 `error` 非空。
     - **FC3** `boundary_denied`：**恰有一条**同 id 的 `deny`，其 `tool` 等于 `toolName`，`rawPath` 等于 `details.jw.input.path`，`reason`、`checkedPath` 与 `details.jw` 的同名字段相等；`checkedPath` 与 `reason` 自洽（`unresolvable` 时为 null，`outside_workspace` 时不在工作区内，后两种不等于对应目标）。
     - **FC4 反向**：每条 `deny` 恰属于一个 `boundary_denied` 文件调用或一个走 `deny` 分支的 `jw_*` 调用；同一 id 两条 `deny`、`deny` 挂在 `ok` / `op_error` / 未执行的调用上、或 id 对不上任何调用 → 不完整。
-    
+
     据此：边界拒绝缺 `deny`（FC3）、`deny` 重复或错挂（FC4）、`deny` 的 id 对不上（FC4、E8）都判 unverified；并行调用串号会使 `rawPath` 或 `checkedPath` 对不上（FC3）；普通文件 I/O 错误走 `op_error`，不需要也不允许 `deny`。
 - **E8 审计**：有 `session` 记录，其工具与命令清单等于 R1，`workspaceRealpath` 等于 E1 的 `cwd`；每条 `hook` / `deny` / `exec` 的 `toolCallId` 都在 E5 中出现；同一 id 至多一条 `hook`、至多一条 `deny`、至多一条 `exec`。
 - **E9 收尾事件**：事件流恰有一条 `agent_settled`，其后没有 message / tool 事件。
@@ -232,7 +234,7 @@ job-hunt 期间照常使用不受影响（本人可能同时在用），因此�
   4. **键与实际正文一致**：K 逐字等于 `done:<ID>:` + `text_digest(T)`；旧版键 `done:<ID>` 与其他任何自定义键都不接受。
   5. **可复用正文**：T 以前缀 P = `compose("done", "", ID)`（即 `【职伴】<ID>` 加一个空格，以 notify 源码的 `HEADER` 为准）开头，去掉 P 得 acceptedBody，且 `compose("done", acceptedBody, ID)` **逐字**等于 T；否则 F2 不满足。
   6. 没有任何新 ledger 事件；回复 `consumed`；结论未变。
-  
+
   全部满足时 S-10 写 `evidence/F2-accepted.json`（已存在则拒绝覆盖）：ID、命中的形式 f、acceptedBody、T、K、`messageId`。P8.6b 第一次重发**必须**读这个文件，用 acceptedBody 发送（第 4 节 P8.6b）；文件不存在时 P8.6b ① 记「未验证」，不得改用夹具里的 A 代替。
 - **测试外发决定收尾**（08、12）：行为与第二版相同（复核已关闭）：inbox 改「已决定」并写撤销原话与「已执行」；ledger 不是 done 时追加带 decision 的 `observe/unpaused`（`skill: user`）；关闭该事项的回复；核验 `ledger decision` 为 done、`stillPausing` 为空、没有外发类事件、回复无 received / ready、inbox 已撤销，五项全真才通过。
 
@@ -240,12 +242,12 @@ job-hunt 期间照常使用不受影响（本人可能同时在用），因此�
 
 | 检查 | 方法 | 通过 |
 |---|---|---|
-| 没有由本次验收造成的 HR 外发 | 测试工作区事件；本次工具与工作区证据（每轮 S-6 工具明细、P8 G 的工作区变化、S-7 进程检查）；本人看 BOSS 消息列表（P9.7） | 三项都满足才**通过**：① 测试工作区外发类事件为无；② 本次证据中没有任何浏览器、桌面、shell 类工具实际执行，也没有归属不明的残留进程；③ 本人逐条查看 P0 起 BOSS 上发出的消息，确认每条都能由本人亲自操作或已授权的独立生产任务（如 job-hunt）解释——这类正常外发**不计入**，不要求说明内容。有一条无法如此解释、且与本次证据相关（时间落在真实 pi 运行或监听器运行区间内、内容与测试事项相同、或 ①② 有异常）→ **不通过**，按第 6.3 节处理。有无法解释、但本次证据没有任何一项指向验收的 → **未验证**，写明消息时间与无法归属的原因，不写成验收事故。**不得以此为由冻结或改动 job-hunt**；Agent 不读 job-hunt，归属由本人完成 |
-| 全部 IM 经测试应用 | P2.2 的 `chatId`；P0 / P9 的配置档清单 | `chatId` 恰为测试私聊；生效档仍为 `cli_aa3b…`、`jw-e2e` 非 active |
+| 没有由本次验收造成的 HR 外发 | 测试工作区事件；本次工具与工作区证据（每轮 S-6 工具明细、P8 G 的工作区变化、S-7 进程检查）；本人看 BOSS 消息列表（P9.7） | 三项都满足才**通过**：① 测试工作区外发类事件为无；② 本次证据中没有任何浏览器、桌面、shell 类工具实际执行，也没有归属不明的残留进程；③ 本人逐条查看 P0 起 BOSS 上发出的消息，确认每条都能由本人亲自操作或已授权的独立生产任务（如 private-job-workspace）解释——这类正常外发**不计入**，不要求说明内容。有一条无法如此解释、且与本次证据相关（时间落在真实 pi 运行或监听器运行区间内、内容与测试事项相同、或 ①② 有异常）→ **不通过**，按第 6.3 节处理。有无法解释、但本次证据没有任何一项指向验收的 → **未验证**，写明消息时间与无法归属的原因，不写成验收事故。**不得以此为由冻结或改动 private-job-workspace**；Agent 不读 private-job-workspace，归属由本人完成 |
+| 全部 IM 经测试应用 | P2.2 的 `chatId`；P0 / P9 的配置档清单 | `chatId` 恰为测试私聊；生效档仍为 `<PRODUCTION_APP_ID>`、`jw-e2e` 非 active |
 | 测试外发决定已收尾 | 对清单中每个 ID 只读核验 | 全部通过 |
 | 系统配置恢复 | 系统快照与 P0 对比 | 旧 plist 仍 `.disabled`、未加载；验收监听器已卸载、plist 已删；`~/.config/job-wingman/` 的文件清单与每个文件 sha256 不变；配置档清单不变 |
 | 没有本轮残留进程 | 第 2.4 节检查；`pmset -g assertions` | 检查为 0；没有本轮监听器的 caffeinate |
-| 本仓库只有预期变化 | `git status --porcelain` 与 P0 基线按**相对差异**比对 | 只多验收报告；`skills scripts shared tests` 在 P0 与 P9 都无改动。P0 时已有的 ` M AGENTS.md`、`?? docs/plans/`、`?? docs/reviews/…` 是调度方的真实改动，不算污染 |
+| 本仓库只有预期变化 | `git status --porcelain` 与 P0 基线按**相对差异**比对 | 只多验收报告；`skills scripts shared tests` 在 P0 与 P9 都无改动。P0 时已有的 ` M AGENTS.md`、`?? docs/archive/plans/`、`?? docs/archive/reviews/…` 是调度方的真实改动，不算污染 |
 | pi 会话没有落到默认目录 | `~/.pi/agent/sessions` | 没有测试根的会话 |
 | 验收脚本未被改写 | P9.5 按 `evidence/P0-kit.manifest` 重核 `~/jw-e2e/kit/` | 每个文件 sha256 与 P0 一致，没有新增或缺失文件 |
 
@@ -278,9 +280,9 @@ P0：书面确认测试机器人无第三方（3.1.2）。P2：按提示回复�
    2. 首次接管核对：`MANIFEST.sha256` 自身的 sha256 等于交付说明所写；其中列出的每个文件存在且 sha256 一致；`kit/` 下（`selftest-delivery/` 除外）没有未列出的文件。任一不符即停，退回审查员，**不修补、不重算**。
    3. 把 MANIFEST 复制为 `evidence/P0-kit.manifest`，其 sha256 写 `evidence/P0-kit.sha256`，报告据此对应脚本版本；去掉 `kit/` 下文件的写权限（只改权限、不改内容）。
    4. 跑**全部 10 个脚本**（S-1 至 S-10）的 `--selftest --out evidence/P0-selftest/<编号>/`，即 3.3.0。
-   
+
    禁止覆盖的路径：`kit/` 下任何文件（接管后没有任何步骤写 `kit/`，脚本只从 `kit/` 运行、只写数据根）；`evidence/` 下已存在的任何文件（所有写入者先断言不存在；`jwrun` 每次原子新建唯一目录）；特别是 `P0-*`、B0 基线、`fixtures/F2-expected.json`、`F2-accepted.json`。脚本需要改动时：审查员在新交付中更新 `kit/` 与 MANIFEST，数据根按 3.1.7 由本人处理后重新从 P0 开始。
-2. 生成配置（S-1，任何外发之前）：退出码 0；配置、两份监听器配置存在并经 notify 的真实解析断言通过；配置值不含 `job-hunt`。失败先看 node 版本目录是否存在。
+2. 生成配置（S-1，任何外发之前）：退出码 0；配置、两份监听器配置存在并经 notify 的真实解析断言通过；配置值不含 `private-job-workspace`。失败先看 node 版本目录是否存在。
 3. 进入专用 shell（S-2）：用 `env -i` 只保留 HOME / USER / TERM，以 `bash --noprofile --rcfile <env.sh> -i` 启动。判据：提示符 `[jw-e2e]`；PATH 恰为 `$HOME/.nvm/versions/node/v24.18.1/bin:/usr/bin:/bin:/usr/sbin:/sbin`；`pipefail` 为 on。之后所有步骤都在这个 shell 中，新开终端时重复这一步。
 4. 被测命令一律经统一采集执行（S-2 的 `jwrun`），判据中的退出码指采集记录里的退出码；直接调用 lark-cli 一律经固定 `--profile jw-e2e` 的包装（S-2 的 `lk`）。
 5. 建测试工作区：`workspace.py init`（账号 `e2e-none`）；`profile.json` 写 `im.channel: lark`、`im.userId: <测试 open_id>`、`im.larkProfile: jw-e2e`、`im.waitMinutes: 3`、`authorization.apply.send: false`、`authorization.followup.level: L1`、`targetRoles` 只写虚构项、时区 `Asia/Shanghai`；停止名单收录「验收测试公司（虚构）」；`rules.md` 与 `AGENTS.md` 写明只处理 IM 与 inbox、不打开浏览器、不访问招聘平台、事项都是虚构的；构建：`build.py --out ~/jw-e2e/dist --skill followup --install ~/jw-e2e/ws/.agents/skills`。
@@ -457,7 +459,7 @@ T14 记「未执行，不构成能力结论」：回答它必须给 pi 开放 `p
 
 ### 5.2 最终验收报告
 
-路径：`docs/reviews/2026-11-XX-im-phase1-e2e-report.md`（进本仓库，**脱敏**：open_id、chat_id、message_id 只写末 6 位）。结构：
+路径：`docs/archive/reviews/2026-11-XX-im-phase1-e2e-report.md`（进本仓库，**脱敏**：open_id、chat_id、message_id 只写末 6 位）。结构：
 
 1. 结论（按第 1.2 节）与**第 1.4 节固定范围声明原文**。
 2. 版本：提交、lark-cli、Python、pi、node、macOS、验收脚本哈希。
@@ -478,7 +480,7 @@ T14 记「未执行，不构成能力结论」：回答它必须给 pi 开放 `p
 | 风险 | 可能性 | 后果 | 防护 |
 |---|---|---|---|
 | 真实 pi 打开 BOSS 并回复真实 HR | 极低 | 对外可见、不可撤回 | 第 2.3 节强制层；每轮自检；证据审计 |
-| 测试消息进入生产应用或 job-hunt | 极低 | 生产通知被打扰 | 独立应用；P0 离线路由断言；P2.2 私聊 id 判据；默认配置档核对 |
+| 测试消息进入生产应用或 private-job-workspace | 极低 | 生产通知被打扰 | 独立应用；P0 离线路由断言；P2.2 私聊 id 判据；默认配置档核对 |
 | 第三方系统对测试机器人应答，污染判据 | 低 | 误判 | P0 本人确认；各阶段旁证审计 |
 | 验收监听器或 pi 进程残留 | 中 | 继续发测试消息、混淆后续证据 | 第 2.4 节登记与收尾；每阶段检查 |
 | 旧定时任务被误加载 | 低 | 按 L3 跟进真实 HR | 全程不加载、不改名；系统快照核对 |
@@ -494,7 +496,7 @@ T14 记「未执行，不构成能力结论」：回答它必须给 pi 开放 `p
 任何阶段出现第 4 节开头列出的迹象，或旁证审计、进程检查报 2 / 3：
 
 1. 停止全部生产者：测试工作区全局暂停；已安装的服务卸载并以 `launchctl print` 为准；前台监听器 Ctrl-C；Agent 直接运行中的 pi 在其终端 Ctrl-C（运行器对 pi 的独立进程组先 TERM、10 秒后 KILL）；按第 2.4 节收尾到检查为 0（为 2 / 3 时交本人处理）。**不按命令字符串 kill，不结束本人其他 pi 会话。**
-2. 怀疑已向 HR 外发：本人立即打开 BOSS 核对，按 job-hunt 规则处理；第一期判不通过。
+2. 怀疑已向 HR 外发：本人立即打开 BOSS 核对，按 private-job-workspace 规则处理；第一期判不通过。
 3. 已写入的测试外发决定按第 2.6 节收尾。
 4. 做 P9.4–P9.7 的核对并在报告中写明中止原因。
 
@@ -502,17 +504,17 @@ T14 记「未执行，不构成能力结论」：回答它必须给 pi 开放 `p
 
 测试私聊消息发送（P2–P9，只有本人可见，不能静默撤回，D2 授权）；安装 / 卸载 launchd 服务（P6.2、P8.0、P9.1、第 6.3 节，可撤销）；屏幕录制 / 辅助功能 / 自动化授权（P6.4，D4 不授权）；测试应用开通权限与发布版本（P1 仅失败时，只影响测试应用）；让电脑睡眠（P6.7）；运行真实 pi（P0.9、P8、P9.2–9.3，第 2.3 节隔离下）。
 
-本方案没有任何步骤写 job-hunt、改生产应用或向招聘平台外发。
+本方案没有任何步骤写 private-job-workspace、改生产应用或向招聘平台外发。
 
 ---
 
 ## 7. 验收脚本清单（给对抗审查员的接口说明，不是实现）
 
-审查员按本节实现、维护这些脚本，并在交付中写清自己写了哪些文件。共同要求：只用 Python 3 标准库或 bash（扩展与 S-6 的参数重放用 TypeScript / JavaScript，在固定 PATH 的 node 下运行，只加载 pi 1.4.0 本机安装与 kit 内的模块）；所有直接调用 lark-cli 的地方都带 `--profile jw-e2e`；不引用 job-hunt 路径。**10 个脚本每个**都带 `--selftest --out <目录>`：不联网、不碰真实工作区与 `~/.config/job-wingman`、不调用模型、不弹系统权限框、只写给定目录与系统临时目录，逐项输出结果，任一项失败即非零退出；各脚本的最低自测用例写在下表「职责」列末尾的「自测」中。交付位置是交付根 `~/jw-e2e/kit/`（附 `MANIFEST.sha256` 与 `selftest-delivery/`，第 3.2 节第 1 步）；交付时不得创建数据根的任何路径。P0 接管核对后不得临场改写；改了就重新交付、按第 3.1.7 节处理数据根后重做 P0。
+审查员按本节实现、维护这些脚本，并在交付中写清自己写了哪些文件。共同要求：只用 Python 3 标准库或 bash（扩展与 S-6 的参数重放用 TypeScript / JavaScript，在固定 PATH 的 node 下运行，只加载 pi 1.4.0 本机安装与 kit 内的模块）；所有直接调用 lark-cli 的地方都带 `--profile jw-e2e`；不引用 private-job-workspace 路径。**10 个脚本每个**都带 `--selftest --out <目录>`：不联网、不碰真实工作区与 `~/.config/job-wingman`、不调用模型、不弹系统权限框、只写给定目录与系统临时目录，逐项输出结果，任一项失败即非零退出；各脚本的最低自测用例写在下表「职责」列末尾的「自测」中。交付位置是交付根 `~/jw-e2e/kit/`（附 `MANIFEST.sha256` 与 `selftest-delivery/`，第 3.2 节第 1 步）；交付时不得创建数据根的任何路径。P0 接管核对后不得临场改写；改了就重新交付、按第 3.1.7 节处理数据根后重做 P0。
 
 | 编号 | 名称 | 职责 | 防的具体事故 | 对应判据 |
 |---|---|---|---|---|
-| S-1 | 配置生成器 | 生成验收配置（路径、python、pi、写死的 node 目录与固定 PATH、测试应用的配置档 / appId / open_id / chat_id、监听器标签）与两份监听器配置（假 Agent：超时 2 分钟、检查 10 秒；pi：25 分钟、30 秒），用 notify 的真实读取函数解析断言；`--check-profile` 读取测试工作区 profile 经 notify 解析，拦截 `subprocess.run` 断言实际 argv。自测：配置值含 `job-hunt` → 失败；含空格的路径经 zsh 默认拆词生成的配置 → 解析断言失败；profile 缺 `larkProfile` 时 argv 断言失败；正确配置 → 通过（argv 断言用替换后的 `subprocess.run`，不真实调用 lark-cli） | 默认 zsh 拆词静默生成无效配置、到 P5 才发现（第一轮 M1）；larkProfile 未生效时消息走生产应用；配置误指向 job-hunt | 3.2 第 2 步、3.3.4、第 2.2 节 |
+| S-1 | 配置生成器 | 生成验收配置（路径、python、pi、写死的 node 目录与固定 PATH、测试应用的配置档 / appId / open_id / chat_id、监听器标签）与两份监听器配置（假 Agent：超时 2 分钟、检查 10 秒；pi：25 分钟、30 秒），用 notify 的真实读取函数解析断言；`--check-profile` 读取测试工作区 profile 经 notify 解析，拦截 `subprocess.run` 断言实际 argv。自测：配置值含 `private-job-workspace` → 失败；含空格的路径经 zsh 默认拆词生成的配置 → 解析断言失败；profile 缺 `larkProfile` 时 argv 断言失败；正确配置 → 通过（argv 断言用替换后的 `subprocess.run`，不真实调用 lark-cli） | 默认 zsh 拆词静默生成无效配置、到 P5 才发现（第一轮 M1）；larkProfile 未生效时消息走生产应用；配置误指向 private-job-workspace | 3.2 第 2 步、3.3.4、第 2.2 节 |
 | S-2 | 专用 shell 环境 | 固定 PATH、`pipefail`；`jwn` / `jwl`（notify / ledger 固定测试工作区）；`lk`（固定配置档的 lark-cli）；`jwrun`（每次原子新建唯一证据目录，存 stdout / stderr / 退出码 / 起止时间，返回被测命令的退出码）；`jwraw`（经 `lk` 直接发送并把返回的 `message_id` 记入 `raw-sends.txt`）；折叠状态查看、外发类事件检查（有则非零）、阶段清场、假 Agent 模式切换、按标签找最近一轮 pi 证据目录、系统快照（LaunchAgents 条目、两个服务状态、`~/.config/job-wingman` 清单与哈希、配置档清单不含 token 状态）。自测：管道前段失败时 `jwrun` 返回非零；同一秒同标签两次 `jwrun` 得到两个不同目录；`lk` 的 argv 都带 `--profile jw-e2e`（用桩 lark-cli）；外发类事件检查在含外发事件的临时账本上非零 | 管道吞掉失败退出码（第一轮 L2）；同秒同标签证据互相覆盖（第二轮 M2）；直接调 lark-cli 漏配置档；绕过 notify 的消息被旁证审计误判为第三方 | 第 3.2 节、3.3.6、P2.7、第 2.7 节 |
 | S-3 | 假 Agent 包装 | 监听器唤起时执行：`ok`、`slow`、`fail`、`hang-once`（留下忽略 SIGTERM 的同组后代）、`escape-once`（派生脱组进程并登记）、`tcc`（录屏与 Apple Events 探针）、`pi`（转交 S-4 并从账本取本轮 `launchId`）；启动即登记自己。自测：在临时工作区逐个模式运行（`tcc` 只核对将要执行的命令，不实际截图、不发 Apple Events；`pi` 转交桩 S-4），退出码与登记记录符合模式定义；`hang-once`、`escape-once` 留下的进程由自测按第 2.4 节收尾 | 用真实 pi 才能测的状态机问题和用假 Agent 能测的混在一起；脱组进程无人登记 | P5、P6、P8 |
 | S-4 | 隔离运行器 | 以第 2.3 节固定参数运行 pi；先跑离线预检（独立进程组、登记、超时整组 KILL），R1 清单或自检任一不符即退出 97 且不运行 pi；IM-only 限制写入本轮目录并接在提示词后；JSON 事件、独立会话目录、唯一证据目录；按第 2.4 节登记 pi、运行器与后代（每秒采样，监听器模式结束时登记组内成员）；`--own-group` 时收到中断先 TERM 整组、10 秒后 KILL（只在 pi 未回收时对其组发信号）；按 P8 G-W 在规定区间做前后快照并写 `ws-diff.json`，记录退出码、信号、会话文件。自测（用桩 pi）：预检任一项不符 → 退出 97 且正式运行次数为 0；同秒两次运行目录不同；`--own-group` 中断时只对自己的组发信号；G-W：只有并发写入的 ledger 变化 → 满足；inbox 变化而无成功的 edit / write → 不满足；出现他轮 launchId 日志 → 不满足；本轮 launchId 日志 → 满足。临时文件（用桩确定调度，不靠时机碰巧）：W1 快照时 `ledger/.listener.json.<h>.tmp` 存在、复查时已替换 → 满足；W2 枚举列出该临时文件、打开前被 `os.replace` → 记入 `vanished`、满足；W3 同名临时文件在后快照 10 秒后仍在 → 不满足；W4 前后快照都有同名临时文件 → 不满足；W5 `ledger/.events.jsonl.<h>.tmp` 或 `<h>` 不是 8 位十六进制 → 不满足；W6 白名单外的稳定新文件（如 `ledger/foo.txt`）→ 不满足；W7 白名单外文件只出现在 `vanished` 中 → 不满足；W8 `lock.json` 在 `vanished` 中（释放锁）→ 满足 | 预检失败仍调用模型；证据只有最终回答（第一轮 B5）；同秒重试目录冲突；预检进程无人收尾（第二轮 B4） | 3.3.8、P0.9、P8、P9.2–9.3 |
@@ -534,7 +536,7 @@ T14 记「未执行，不构成能力结论」：回答它必须给 pi 开放 `p
 - **目的**：本期验收证明 IM 决策回路在隔离配置（独立测试应用、测试工作区、第 2.3 节的隔离 pi）下的行为。第一期**不向任何真实 HR 外发**，不写生产（第 1.1、1.4 节）。
 - **证据完整性缺口不再阻塞**：第五版之后，执行阶段（kit 实现与自测、P0–P9）若发现证据完整性的细微缺口——检查器证明力不足，例如需同时改写多份独立证据才能骗过的组合、判据未覆盖的罕见合法形态——且不涉及下面的中止类后果，一律记入最终报告「已知残余风险」（K4 起）或对应门槛项的「未验证」，**不作为继续验收或开工的前置条件**，不为此再开方案修订轮次。审查员写明缺口、触发条件、影响的判据和第二期建议。
 - **单轮判定不变**：检查器对某一轮实际报出的 unverified / failed 仍按第 1.2 节处理（该阶段复测或判不通过）；不停工的只是「发现检查器还可以更严」这一类发现。合法运行被误拒（如 PA3 重放未覆盖的形态）时，该轮记「未验证」并复测，列出调用与原因，也不修订方案。
-- **立即中止**：下列发现按第 6.3 节立即中止，第一期判**不通过**，不得记为残余风险：① 已经或可能造成真实外发——向任何 HR 或招聘平台发出消息、测试消息进入生产应用或生产私聊、默认配置档被切换；② 生产写入——写入 job-hunt、生产应用配置、`~/.config/job-wingman/`、本仓库 `skills scripts shared tests`，或旧 plist 被加载、改名；③ 进程误杀——对未登记或无法归属的进程发过信号，或结束了本人的其他 pi / 监听器会话。
+- **立即中止**：下列发现按第 6.3 节立即中止，第一期判**不通过**，不得记为残余风险：① 已经或可能造成真实外发——向任何 HR 或招聘平台发出消息、测试消息进入生产应用或生产私聊、默认配置档被切换；② 生产写入——写入 private-job-workspace、生产应用配置、`~/.config/job-wingman/`、本仓库 `skills scripts shared tests`，或旧 plist 被加载、改名；③ 进程误杀——对未登记或无法归属的进程发过信号，或结束了本人的其他 pi / 监听器会话。
 - 除本人另行决定外，执行阶段不修改本节。
 
 ### 8.2 已知残余风险（第五版固定，报告第 8 项预填）

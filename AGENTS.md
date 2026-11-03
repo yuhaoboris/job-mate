@@ -1,13 +1,13 @@
 # job-mate · 职伴
 
-求职助手 Agent plugin，包含 `setup`、`apply`、`followup` 三个技能。
+求职助手 skills / plugin，包含 `setup`、`apply`、`followup` 三个技能。
 
 ## 项目依据
 
 - 修改技能、脚本或产品规则前，先读 [docs/design.md](docs/design.md) 对应章节。
-- 判断实现进度、验收范围与待复测项时，读 [docs/status.md](docs/status.md)。历史评审与演练材料在 [docs/archive/](docs/archive/README.md)，只作追溯。
+- 判断实现进度、验收范围与待复测项时，读 [docs/status.md](docs/status.md)。文档入口见 [docs/README.md](docs/README.md)；历史材料只作追溯，不作为当前操作指引。
 - 技能的共享规则在 `shared/`，平台差异在各技能的 `platforms/`；独立技能由 `scripts/build.py` 构建，`dist/` 不提交。
-- `job-wingman.json`、`~/.config/job-wingman/`、launchd 服务名与 `JOB_WINGMAN_*` 是保留的兼容标识，改品牌名时不直接替换；历史报告保留当时的项目名。
+- `job-wingman.json`、`~/.config/job-wingman/`、`JOB_WINGMAN_*` 与已记录的服务名属于持久化数据与接口契约，不按品牌文字批量替换；历史报告保留当时的项目名。
 
 ## 开发与验证
 
@@ -19,7 +19,7 @@
 
 - 已定的原则不重新讨论：按授权和风险拆技能，不按平台拆；筛选与首次沟通同属 `apply`；`followup` 默认 L2；风控只做节奏、配额和遇限即停，**不模拟人工、不规避平台检测**。
 - 真实求职数据（偏好、个人事实、沟通记录、简历）保存在独立求职工作区，不进本仓库。示例、报告和配置模板中的私人标识、本机路径需脱敏。
-- 本人提出的求职规则写进 job-mate（默认值、技能说明、`setup` 的提问），由本人用 `setup` 同步到求职工作区；只有本人明确要求时才直接修改真实工作区（含 job-hunt）。
+- 本人提出的求职规则写进 job-mate（默认值、技能说明、`setup` 的提问），由本人用 `setup` 同步到求职工作区；只有本人明确要求时才直接修改真实求职工作区。
 - 不在招聘平台上实际外发；需要实测时由本人发起，并按求职工作区的规则执行。
 - BOSS 会检测 CDP / Playwright，不使用这类工具访问 BOSS；使用本人日常已登录的可见浏览器，经辅助功能树或桌面 UI 工具操作。
 - 提交可以在本地进行；创建远程仓库、推送须本人授权，公开或私有也由本人决定。

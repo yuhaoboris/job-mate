@@ -210,7 +210,8 @@ class ExecutionRulesTest(unittest.TestCase):
                 parsed = urlsplit(target)
                 if parsed.scheme or parsed.netloc:
                     continue
-                resolved = (source.parent / unquote(parsed.path)).resolve()
+                resolved = ((source.parent / unquote(parsed.path)).resolve()
+                            if parsed.path else source.resolve())
                 with self.subTest(source=source, target=target):
                     self.assertTrue(resolved.is_relative_to(ROOT), target)
                     self.assertTrue(resolved.is_file(), target)
@@ -230,7 +231,7 @@ class ExecutionRulesTest(unittest.TestCase):
         lark = REFERENCES[2].read_text(encoding="utf-8")
         self.assert_terms(lark, ("message_id", "chat_id", "sender.sender_type", "create_time", "parent_id",
                                  "连续前缀", "complete 为 false", "deliveryDeadlineMs", "幂等窗口按 0",
-                                 "未探测真实账号", "旧无身份历史默认不继承"))
+                                 "字段须在接入时核对", "旧无身份历史默认不继承"))
 
     def test_all_skill_entries_check_capability_before_lock(self):
         for name in ("apply", "followup", "setup"):
@@ -303,11 +304,59 @@ class ExecutionRulesTest(unittest.TestCase):
         for relative, link in (
             ("skills/followup/SKILL.md", "../../shared/notify.md#其他路由待办的本地恢复"),
             ("skills/setup/SKILL.md", "../../shared/notify.md#其他路由待办的本地恢复"),
-            ("README.md", "shared/notify.md#其他路由待办的本地恢复"),
         ):
             content = (ROOT / relative).read_text(encoding="utf-8")
             self.assertEqual(LINK.findall(content).count(link), 1, relative)
         self.assertIn("未明确决定放弃的批准事项仍保留", contract)
+
+    def test_all_repository_document_links_and_anchors_resolve(self):
+        documents = sorted({*ROOT.glob("*.md"),
+                            *(p for directory in ("docs", "assets", "integrations", "shared", "skills")
+                              for p in (ROOT / directory).rglob("*.md"))})
+        cached_anchors = {}
+        for source in documents:
+            for target in LINK.findall(source.read_text(encoding="utf-8")):
+                parsed = urlsplit(target)
+                if parsed.scheme or parsed.netloc:
+                    continue
+                resolved = ((source.parent / unquote(parsed.path)).resolve()
+                            if parsed.path else source.resolve())
+                with self.subTest(source=source.relative_to(ROOT), target=target):
+                    self.assertTrue(resolved.is_relative_to(ROOT), target)
+                    self.assertTrue(resolved.exists(), target)
+                    if parsed.fragment:
+                        self.assertTrue(resolved.is_file(), target)
+                        if resolved not in cached_anchors:
+                            cached_anchors[resolved] = anchors(resolved.read_text(encoding="utf-8"))
+                        self.assertIn(unquote(parsed.fragment), cached_anchors[resolved])
+
+    def test_current_guides_do_not_embed_development_history(self):
+        guides = [ROOT / name for name in ("README.md", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md",
+                                           "docs/README.md", "docs/design.md", "docs/status.md")]
+        guides.extend(REFERENCES)
+        for source in guides:
+            with self.subTest(source=source.relative_to(ROOT)):
+                self.assertNotRegex(source.read_text(encoding="utf-8"),
+                                    r"父会话|W/N/X|已移除|解耦后|旧格式安装|执行层迁移|更名同步|原环境检测选项")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertNotIn("其他路由待办的本地恢复", readme)
+        self.assertNotRegex(readme, r"notify\s+(?:wait|listen|service)\b|scripts/desktop\.py")
+
+    def test_document_examples_do_not_expose_account_ids_or_home_paths(self):
+        documents = [*ROOT.glob("*.md"),
+                     *(p for directory in ("docs", "assets", "integrations", "shared", "skills")
+                       for p in (ROOT / directory).rglob("*.md"))]
+        for source in documents:
+            with self.subTest(source=source.relative_to(ROOT)):
+                self.assertNotRegex(source.read_text(encoding="utf-8"),
+                                    r"(?:cli_|ou_|oc_)[A-Za-z0-9]{4,}|/(?:Users|home)/(?![.<])[^/\s<>]+")
+
+    def test_archived_documents_are_labeled_as_historical(self):
+        for source in (ROOT / "docs/archive").rglob("*.md"):
+            if source.name == "README.md":
+                continue
+            with self.subTest(source=source.relative_to(ROOT)):
+                self.assertIn("历史归档", "\n".join(source.read_text(encoding="utf-8").splitlines()[:5]))
 
     def test_removed_executor_and_preserved_workspace_tests(self):
         for relative in ("scripts/desktop.py", "tests/test_desktop.py",

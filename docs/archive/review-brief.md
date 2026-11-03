@@ -6,10 +6,10 @@
 
 ## 约束
 
-- **只读评审**：不修改仓库内任何文件，唯一例外是把报告写到 `docs/reviews/<日期>-<评审者>.md`。
+- **只读评审**：不修改仓库内任何文件，唯一例外是把报告写到 `docs/archive/reviews/<日期>-<评审者>.md`。
 - **不访问招聘平台**，不打开 BOSS 直聘，不发送任何消息。
 - **不修改 `<求职工作区>`**。需要看真实工作区的样子时可以只读查看，其中是本人的真实求职数据，不得复制进报告或外传；报告中引用时只写字段名和结构。
-- 运行测试可以：`python3 -m unittest discover -s tests`。用临时目录试 `scripts/*.py` 可以，不要指向 job-hunt 执行会写入的命令（`append`、`lock`、`stoplist add`、`migrate`、`init`、`backup`、`restore`）。
+- 运行测试可以：`python3 -m unittest discover -s tests`。用临时目录试 `scripts/*.py` 可以，不要指向 private-job-workspace 执行会写入的命令（`append`、`lock`、`stoplist add`、`migrate`、`init`、`backup`、`restore`）。
 
 ## 先读
 
@@ -38,7 +38,7 @@
 
 ## 报告格式
 
-写到 `docs/reviews/<YYYY-MM-DD>-<评审者>.md`：
+写到 `docs/archive/reviews/<YYYY-MM-DD>-<评审者>.md`：
 
 1. 一段总体结论：能否进入实测，最大的风险是什么。
 2. 问题列表，按严重程度排序（严重 / 重要 / 一般 / 建议）。每条包含：

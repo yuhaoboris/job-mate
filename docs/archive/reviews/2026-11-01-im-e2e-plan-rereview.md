@@ -27,9 +27,9 @@
 - 完整阅读方案 1–1766 行、回应 138 行、上轮报告 205 行；对照 `notify.py`、`ledger.py`、`shared/notify.md`、`followup/SKILL.md`、`build.py` 和设计 §10、§13 的实际执行路径。
 - 对照本机 pi 1.4.0 的 `dist/cli/args.js`、`dist/modes/print-mode.js`、`docs/cli.md`、`docs/extensions.md`、`docs/json.md`、`examples/extensions/protected-paths.ts`，并追到真实 read 工具的路径解析代码。
 - 方案提取正则原样使用，提取 **13/13**，逐个比较文件字节与代码块 `body + "\n"`：全部一致。未修改提取出的 13 个文件；测试配置、假程序、夹具另建于临时目录。
-- 临时根 `<审查临时目录>`（本机定位私下留存）；所有测试工作区、合成 job-hunt、假 lark-cli、假 pi、测试 HOME、构建产物和证据都在其下。没有使用 `/tmp/jw-im-test`。
+- 临时根 `<审查临时目录>`（本机定位私下留存）；所有测试工作区、合成 private-job-workspace、假 lark-cli、假 pi、测试 HOME、构建产物和证据都在其下。没有使用 `/tmp/jw-im-test`。
 - 真实 pi 只运行 **`--offline` + `/jw-selftest` 的 `--preflight-only`**；HOME 指向临时目录，pi 指向本机安装的 1.4.0 可执行文件。没有真实模型调用。真实 read 工具的 canary 测试直接调用本机工具实现，不经过模型。
-- 没有真实飞书、招聘平台或 launchd 安装/加载；没有修改真实 job-hunt、`~/.config/job-wingman`，没有创建 `~/jw-e2e`，没有提交。
+- 没有真实飞书、招聘平台或 launchd 安装/加载；没有修改真实 private-job-workspace、`~/.config/job-wingman`，没有创建 `~/jw-e2e`，没有提交。
 - `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests`：**109 tests / 6.181s / OK**。这不验证附录新脚本，也不是端到端验收通过。
 - 沙箱最初禁止 Python 启动 `ps`，实际报 `PermissionError`，没有把它算作产品缺陷。获准后沙箱外 `reap.py check` 返回 0、`alive: []`；假 pi / 假 Agent 进程登记测试也在获准范围内完成。
 
@@ -208,7 +208,7 @@ P2.9 的人工表格仍要求这些字段，所以仔细人工核对能挡住这
 
 **证据**：A.2:68–86（方案:806–824）只对 `other-mac.txt` 执行 `-s`；既不解析 cursor/pending，也不收集 orphans 的处理结论、S1 listener PID、S6 快照或 BOSS 人工核对结果。方案:529 却以「打印全部通过后解冻」作为最终动作。
 
-在合成 job-hunt、无存活登记进程、假 launchctl 返回服务不存在的环境执行原样 env.sh；另一台 Mac 文件内容为：
+在合成 private-job-workspace、无存活登记进程、假 launchctl 返回服务不存在的环境执行原样 env.sh；另一台 Mac 文件内容为：
 
 ```text
 核验失败：cursor=0，pendingCommands=1，尚未同步

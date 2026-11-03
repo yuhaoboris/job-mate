@@ -1,5 +1,7 @@
 # followup 旧会话登记与跟进：实现方案
 
+> 历史归档：本文记录当时版本的方案或实验结论，不是当前安装、配置或执行指引。当前规则见 [设计](../../design.md) 与[项目状态](../../status.md)。文中的接口须按当前契约重新核对，待验收事项不因归档而关闭。
+
 状态：2026-11-02 第三版，红队审查通过（第三轮必改项 R1–R6 与收口核对指出的 R3 问题均已修订）。第一、二版都没有通过红队审查。第二版试图在页面上把会话的全部历史条数和本人插手过的地方数清楚，红队指出这在 BOSS 页面上做不到可靠，每补一处又引出新的漏洞。本版改用更简单、更保守的模型（第 1 节 D4、D5），三轮意见的对照见第 14 节。实现完成后，规则并入 `docs/design.md` 第 8 节，本文件只作追溯。
 
 本文件只写要求、接口与判据，不含代码。权威依据：`docs/design.md` 第 8 节；`skills/followup/SKILL.md` 第 2–6、9 节；`shared/ledger.md`；`shared/notify.md`；`shared/safety.md`；`shared/workspace.md`；`scripts/ledger.py`；`scripts/workspace.py`。

@@ -100,7 +100,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 | 动作 | 例子 | 执行 |
 |---|---|---|
-| 交还会话 | 「这个会话交给 Agent」 | 已有 `adopted` 或 `sent` 时记 `observe/released`（带 `decision`）；未登记的旧会话按第 4.1 节重新读取、登记（`adopted`），不再用 `released` 代替登记 |
+| 交还会话 | 「这个会话交给 Agent」 | 已有 `adopted` 或 `sent` 时记 `observe/released`（带 `decision`）；未登记的旧会话按第 4.1 节重新读取、登记（`adopted`），不以 `released` 代替登记 |
 | 更新资料 | 「把这个口径加进问答库」「附件已上传」 | 先 `workspace backup`，再改 `qa.yaml` / `resumes/index.yaml`；停止名单用 `ledger stoplist add` / `remove` |
 | 外发 | 接受面试并回复时段、批准某条草稿、同意发某版简历 | 第 3 步；本轮禁发时不执行，只在汇报中列出 |
 | 解除暂停 | 「解除暂停」「先照常回复其他问题」 | 没有其他动作，直接第 4 步 |
@@ -109,7 +109,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
    **只有外发动作才发消息**，不要为了让事项「完成」而编一条回复。
 
 2. 先看 `ledger decision --id <ID>`：
-   - `state` 为 `needs_review`：这个决定有不带步骤编号的外发记录（旧版本留下的），无法确定它对应哪个动作。**不要新建任何外发**，在汇报中列出该记录（`attempts`），请本人核对。本人确认决定已全部完成时，由 Agent 记带 `decision` 的 `observe/unpaused`（`skill: user`，`reason` 引用本人原话）；本人要求补做某个动作时，按本人的说明处理。
+   - `state` 为 `needs_review`：这个决定有不带步骤编号的外发记录，无法确定它对应哪个动作。**不要新建任何外发**，在汇报中列出该记录（`attempts`），请本人核对。本人确认决定已全部完成时，由 Agent 记带 `decision` 的 `observe/unpaused`（`skill: user`，`reason` 引用本人原话）；本人要求补做某个动作时，按本人的说明处理。
    - 其他状态：看 `localActions`，已做过的本地动作可以跳过，再做一次也无害。
 3. 每个外发步骤按顺序处理，先查 `ledger decision --id <ID> --step <编号>` 的 `stepState`：
 
@@ -124,7 +124,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 4. 全部动作完成后，**最后**记 `observe/unpaused`（带 `decision`）。这条记录解除该会话暂停；只有已有带该 ID 的 `unpaused`，且没有会话仍被该 ID 暂停时，`ledger decision` 才返回 `done`。
 5. 在 inbox 该事项末尾追加「已执行：<时间>，<做了什么>」。
 6. `notify send --kind done --decision <ID>` 只排队结果通知：正文包含**这一结果版本**的实际执行结果，例如实际发送的文字，或失败 / 结果不明 / 暂停的原因和本人要做什么，不拿用户决定原文代替。首次排队前把稳定正文保存到 inbox（例如「结果：…」），同一结果版本补发复用保存的正文；已有该键则以 notify 冻结原文为准。结果改变（如 uncertain → done）时保存新版本再排队，不更改原条目。投递与回执按第 2.0 节；执行时会话有 HR 新消息按第 4 节一并处理。
-7. 该回复是 `ready` 的，执行完后 `notify reply-state --message <ID> --state consumed --decision <ID>`。若本轮被**全局暂停或显式禁发**，不要标 `consumed`，保留 `ready` 到恢复 / 下一轮。若动作被人工接管、`uncertain` / `failed_no_send` / `needs_review` 阻断，不要因为修复而自动重新外发：按原规则停下来，在汇报中说明，并把回复标 `consumed`（`--note` 写原因），避免 runtime 反复唤起；ledger 中的决定状态仍以 `ledger decision` 为准。产生 uncertain 时按[结果不明事项](../../shared/notify.md#结果不明事项)在原决定中补记 attemptId 与结果，不另开事项或重复暂停。
+7. 该回复是 `ready` 的，执行完后 `notify reply-state --message <ID> --state consumed --decision <ID>`。若本轮被**全局暂停或显式禁发**，不要标 `consumed`，保留 `ready` 到恢复 / 下一轮。若动作被人工接管、`uncertain` / `failed_no_send` / `needs_review` 阻断，不要因状态恢复而自动重新外发：按原规则停下来，在汇报中说明，并把回复标 `consumed`（`--note` 写原因），避免 runtime 反复唤起；ledger 中的决定状态仍以 `ledger decision` 为准。产生 uncertain 时按[结果不明事项](../../shared/notify.md#结果不明事项)在原决定中补记 attemptId 与结果，不另开事项或重复暂停。
 
 中途在任何一步中断，`ledger decision` 返回 `partial` 或 `in_progress`，并列出已完成的步骤；下一轮按上面的步骤接着做，已完成的会被跳过。
 
@@ -330,4 +330,4 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 - 本人接管、停止名单新增、风险信号。
 - 需要本人在平台上处理的事（上传简历附件等）。
 - **旧会话**：查找翻到哪天、点开几个、停止原因；超出范围写「尚未检查」。列出登记了哪些、哪个批量 ID、结束了哪些及原因。「仍需你处理」逐行列职位待确认 / 遗留事项，说明可在终端说「把 X 交给 Agent」。列出不满 1 小时、读取失败、只有卡片、身份不确定、停止名单等跳过原因。
-- 旧会话 IM `summary` 只写数量和事项编号，不带历史原文。不再笼统说不能自动跟进；说明当前设置和入口，例如「已列入 D-…，等你选择」或「旧会话查找已关闭（legacyThreads=off），可在 setup 中开启」。
+- 旧会话 IM `summary` 只写数量和事项编号，不带历史原文。说明当前设置和入口，例如「已列入 D-…，等你选择」或「旧会话查找已关闭（legacyThreads=off），可在 setup 中开启」。

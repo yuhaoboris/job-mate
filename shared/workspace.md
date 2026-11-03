@@ -2,7 +2,7 @@
 
 求职数据存放在用户的工作区，与 plugin 分离。不把真实数据写进 plugin 目录、提交到 plugin 仓库或上传外部服务。
 
-项目现名为 job-mate（职伴）；`job-wingman.json` 是保留的工作区格式标识，新旧工作区都沿用此文件名。
+工作区以 `job-wingman.json` 为标记文件，文件名属于工作区格式契约。本文示例均为虚构数据，不表示默认求职偏好或个人事实。
 
 ## 定位
 
@@ -52,9 +52,9 @@
 
 输出一个 JSON 对象；退出码 0 成功、1 体检未通过、2 错误。草稿已有时 `start` 报错并返回摘要，不覆盖。本人可稍后继续或确认放弃。新建 `clear` 删除草稿与工作区标记，目录与其他文件保留；标记撤销后该目录不再是工作区，`ledger` / `workspace` 找不到它。若已有事件则保留标记并说明原因，不宣称工作区已停用。新建从头开始时，`clear` 后须重新 `init`、`progress start`。
 
-`check` 对新建草稿报 `problems`（初始化未完成，第 n/N 步），对重新设置或部分重新设置草稿报 `warnings`（当前配置仍有效）；损坏草稿报问题并建议本人确认放弃。草稿不属于配置文件，`backup` 不包含它，`restore` 和 `changed` 不动它。完成应使用 `finish` 后再 `check`，不要用 `clear` 绕过体检。`workspace check` 只检查工作区数据，不检查或安装服务、不检查执行环境。环境能力由实际 runtime 按执行契约自检；原环境检测选项已删除。
+`check` 对新建草稿报 `problems`（初始化未完成，第 n/N 步），对重新设置或部分重新设置草稿报 `warnings`（当前配置仍有效）；损坏草稿报问题并建议本人确认放弃。草稿不属于配置文件，`backup` 不包含它，`restore` 和 `changed` 不动它。完成应使用 `finish` 后再 `check`，不要用 `clear` 绕过体检。`workspace check` 只检查工作区数据，不检查或安装服务、不检查执行环境。环境能力由实际 runtime 按执行契约自检。
 
-旧 setup 草稿保持原计划和 browser、im、listener 的原答案，不自动插入 browser；继续可正常完成，goto / record browser 在不含它的计划上报错，提示完成后另做只选 browser 的部分重新设置。步骤 id 与顺序不变，listener 的显示名改为「无人值守唤起」。该步只记录本人决定，`show` / `record` / `finish` 的 `unapplied` 列表提示答案「未应用」；不会把旧监听器答案变成 runtime 调度配置，也不读写旧服务配置或安装任何东西。无人值守执行须由 runtime 保证单实例、超时、进程树清理和防睡眠，并遵守 [notify.md](notify.md) 的 trigger 契约；做不到时不设置无人值守唤起。
+旧 setup 草稿保持原计划和 browser、im、listener 的原答案，不自动插入 browser；继续可正常完成，goto / record browser 在不含它的计划上报错，提示完成后另做只选 browser 的部分重新设置。步骤 `listener` 显示为「无人值守唤起」。该步只记录本人决定，`show` / `record` / `finish` 的 `unapplied` 列表提示答案「未应用」；不会把旧监听器答案变成 runtime 调度配置，也不读写旧服务配置或安装任何东西。无人值守执行须由 runtime 保证单实例、超时、进程树清理和防睡眠，并遵守 [notify.md](notify.md) 的 trigger 契约；做不到时不设置无人值守唤起。
 
 ## job-wingman.json
 
@@ -79,7 +79,7 @@
   "schemaVersion": 2,
   "updatedAt": "2026-10-28T10:00:00+08:00",
   "targetRoles": ["AI 应用工程师", "前端开发工程师"],
-  "locations": ["东莞", "深圳"],
+  "locations": ["杭州", "上海"],
   "salary": {
     "currency": "CNY", "period": "month", "taxBasis": "pre_tax",
     "min": 8000, "max": 12000, "matchRule": ["overlap", "lower_bound"]
@@ -124,7 +124,7 @@
 - `greeting.mode`：`dynamic`（默认）读完详情后针对职位生成招呼语；`static` 每次发 `text` 原文。招呼语由 Agent 作为第一条消息发送，需在平台关闭自动打招呼，见 `apply` 技能。`text` 是 `setup` 设计、本人认可的通用招呼语，`dynamic` 时作为找不到对应点时的基础。
 - `authorization.followup.legacyThreads`：`auto`（缺省）按规则直接登记没有遗留问题的旧会话候选；`ask` 将候选汇总为批量待决定；`off` 不查找我方最后发言的旧会话。仅 L3 查找这类旧会话，职位待确认或有遗留事项的仍不是候选，HR 有未答消息的入口不变。缺少字段时按 `auto` 处理，本人可以改成 `ask` / `off`；已有设置不变，IM 不新增授权。
 - `limits.legacyScanPerRun`、`legacyMaxAgeDays`：每轮点开旧会话上限和扫描日期范围，非负整数，缺省 20 / 30；`legacyFollowupBudget` 是登记后最多再主动跟进次数（0–3 整数，缺省 1，0 仅登记不主动跟进）。额度登记时固化，以后改设置不影响已登记会话；我方连续 3 条没回的不再跟进。
-- setup 不增步骤：L3 时在 followupLevel 内追问旧会话处理和额度，非 L3 不追问。答案没带新字段时保留 profile 原值，原来也没有才补 auto / 1；改级别与合并 pacing 默认不能覆盖已有设置。体检缺字段只给 warnings，非法取值给 problems。
+- setup 在 followupLevel 内向 L3 用户追问旧会话处理和额度，非 L3 不追问。答案没带新字段时保留 profile 原值，原来也没有才补 auto / 1；改级别与合并 pacing 默认不能覆盖已有设置。体检缺字段只给 warnings，非法取值给 problems。
 - `limits` 缺省时用上面的默认值。
 - `schedule.activeHours` 约束 `apply` 和主动跟进；回复 HR 不受限。
 - `im`：与本人沟通的通道，见 [notify.md](notify.md)。`channel` 为 `none`（只写本地 inbox，缺省）、`runtime` 或兼容旧值 `lark`；`waitMinutes` 为处理完会话后由 runtime 等待本人答复的最长分钟数，0–240 的整数（非布尔值），`0` 表示不等待。
@@ -139,8 +139,8 @@
 只支持下面这种格式，`ledger.py` 遇到无法识别的行会报错：
 
 ```yaml
-- name: 软通动力信息技术(集团)股份有限公司
-  aliases: [软通动力, iSoftStone]
+- name: 示例外包服务有限公司
+  aliases: [示例外包]
   reason: 人员外包
   source: 本人
   added: 2026-10-27
@@ -157,11 +157,11 @@
 HR 常见问题的回答口径。`followup` 只在这里有依据时直接回答；每条都要指向 `candidate.md` 的出处。
 
 ```yaml
-- id: education
-  ask: [学历, 是不是本科, 统招吗, 全日制吗]
-  answer: 大专，计算机应用技术；有 14 年一线开发和团队交付经验，可以用项目和技术面验证。
-  basis: candidate.md 第 1 节「学历」
-  avoid: 全日制、学信网、证书编号未确认，不要答「是」
+- id: experience
+  ask: [工作几年, 有多少开发经验]
+  answer: 有 3 年 Web 开发经验，主要做订单管理系统。
+  basis: candidate.md 第 2 节「示例工作经历」
+  avoid: 未确认的学历、客户数量或项目收益不能补充
 ```
 
 - `ask`：问法示例，用于识别意图，不要求逐字匹配。
