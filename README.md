@@ -61,12 +61,6 @@ BOSS 只操作你日常已登录的可见浏览器，经辅助功能树或桌面
 - 旧 IM 历史缺身份字段，默认不继承私聊、游标或 ready。按 [旧历史身份绑定](shared/notify.md#旧历史的显式身份绑定) 先核对原私聊对方和应用元数据，再显式本地确认；能力不足就保留待核对。绑定不是业务执行，旧 ready 仍须按原决定 ID 完成 F1/F2 对账。
 - legacyUnbound / otherRoutes 只报告计数，不能说没有旧答复。其他 route 待办保守阻断所有自动唤起，处理仅按 [其他路由待办的本地恢复](shared/notify.md#其他路由待办的本地恢复)，不能临时改回配置后直接运行 followup。replyRecovery 提示元数据不足时，在同一已验证通道重发带事项 ID 的新回复或在终端明确处理，不猜旧引用。
 
-## 从 job-wingman 升级
-
-插件名与独立技能前缀已改为 `job-mate`；旧插件和旧 `job-wingman-*` 技能需在各自 Agent 中停用，再安装新版，避免同时启用两套技能。
-
-工作区标记 `job-wingman.json` 保留，无需重命名数据文件。`~/.config/job-wingman/`、旧服务名 `com.job-wingman.listener` 与 `JOB_WINGMAN_*` 是历史兼容标识，不因改品牌直接替换；不表示新版仍读取旧监听器配置或保留已删除的执行器功能。IM 展示标题改为「职伴」，同一结果的通知去重键保持兼容。
-
 ## 开发
 
 ```sh
