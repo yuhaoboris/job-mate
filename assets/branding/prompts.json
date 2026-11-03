@@ -1,0 +1,29 @@
+{
+  "generator": "built-in image_gen",
+  "palette_reference": "https://ima.qq.com/download?webFrom=10000075",
+  "reference_usage": "仅参考 ima 的薄荷绿至黄绿配色，保留职伴现有单字母图形；不使用 ima 图形或字标。",
+  "design_color_targets": {
+    "mint": "#D0F7E4",
+    "fresh_green": "#85DF77",
+    "lime": "#D2EB35",
+    "wordmark_accent": "#49B86E",
+    "black": "#111111"
+  },
+  "assets": [
+    {
+      "file": "job-mate-square.png",
+      "background": "white",
+      "prompt": "Use case: logo-brand, precise recoloring edit.\nImage 1 is the EXISTING job mate icon and is the strict GEOMETRY EDIT TARGET. Image 2 is Tencent ima's official logo and is ONLY a PALETTE AND FINISH reference. Do NOT copy any ima panda, eyes, ears, facial features, typography or silhouette.\nDeliver ONE updated square job mate icon. Preserve image 1's exact single-letter abstract j geometry: one small circular dot above a single vertical stem with rounded top-left and bottom-right, straight upper-right and lower-left edges. Preserve the rounded-square tile shape, internal proportions, spacing, and optical centering. No extra symbols, no second figure, no text.\nRecolor the tile with a restrained, beautifully smooth ima-inspired fresh MINT-GREEN to LIME/YELLOW-GREEN gradient. Soft pale mint #D0F7E4 at top left, clean fresh green #85DF77 around lower left/center, luminous lime-yellow #D2EB35 toward bottom right. Keep the gradient elegant and airy, no teal, cyan or blue. Recolor the inner j dot and stem to solid near-black #111111 so they contrast crisply with the light green tile, as ima's black-on-green palette does. This is a professional software identity, not a playful character.\nThe background OUTSIDE the rounded square is pure opaque white #FFFFFF with small even margins. The tile is a flat 2D shape with color gradient only: NO cast shadow, NO 3D, NO bevel, NO shiny highlights, NO texture, NO grain, NO mockup, no labels. Smooth vector-like contours. Square composition, tile fills about 84-88% of canvas."
+    },
+    {
+      "file": "job-mate-horizontal.png",
+      "background": "white",
+      "prompt": "Use case: logo-brand, precise identity lockup edit. Create ONE clean horizontal logo on a pure white opaque background.\nImage 1 is the APPROVED NEW ICON reference: a rounded-square tile with pale mint to fresh green to yellow-lime gradient, containing one black circular dot and one black abstract j-stem. Preserve its exact icon geometry, gradient colors, black symbol, proportions and finish, without adding or removing details. Image 2 is ONLY the horizontal layout and typography reference; replace its old teal icon with image 1's new green-gradient icon and update the wordmark as specified below.\nPosition this exact new icon to the left of the wordmark, vertically center the two, use measured professional spacing similar to image 2, and compact balanced white outer margins. Modern mature geometric sans-serif software identity. Crisp vector-like edges, no shadows, no 3D, no texture, no mockup, no decorative elements. Keep gradients confined to the icon tile only; all typography uses flat solid fills. No Chinese/English subtitle line, no tagline, no variation label.\nWordmark: exact lowercase \"job mate\", two words with ONE SPACE and absolutely no hyphen or dash. Preserve the existing clean geometric bold Latin letterforms from image 2. Color ONLY the entire first letter \"j\" including its dot, and ONLY the first letter \"m\" in \"mate\", in the brand emphasis GREEN #49B86E, a legible deeper green in the icon's mint/lime palette. The letters o,b,a,t,e must be solid near-black #111111. Exact letter color map: j GREEN; o BLACK; b BLACK; space; m GREEN; a BLACK; t BLACK; e BLACK. All Latin letter shapes, sizes, and baselines remain a single coherent wordmark. No other visible text. Landscape proportion around 3.5:1 to 4:1."
+    },
+    {
+      "file": "job-mate-horizontal-zh.png",
+      "background": "white",
+      "prompt": "Use case: logo-brand, precise identity lockup edit. Create ONE clean horizontal logo on a pure white opaque background.\nImage 1 is the APPROVED NEW ICON reference: a rounded-square tile with pale mint to fresh green to yellow-lime gradient, containing one black circular dot and one black abstract j-stem. Preserve its exact icon geometry, gradient colors, black symbol, proportions and finish, without adding or removing details. Image 2 is ONLY the horizontal layout and typography reference; replace its old teal icon with image 1's new green-gradient icon and update the wordmark as specified below.\nPosition this exact new icon to the left of the wordmark, vertically center the two, use measured professional spacing similar to image 2, and compact balanced white outer margins. Modern mature geometric sans-serif software identity. Crisp vector-like edges, no shadows, no 3D, no texture, no mockup, no decorative elements. Keep gradients confined to the icon tile only; all typography uses flat solid fills. No Chinese/English subtitle line, no tagline, no variation label.\nWordmark: exactly TWO Chinese characters \"职伴\". They REPLACE the entire English wordmark. Use a beautifully drawn modern Chinese geometric sans-serif HEITI, bold/semibold, comparable in authority and weight to the Latin reference, with disciplined straight terminals and balanced interior space. BOTH characters solid near-black #111111, with zero green inside the Chinese text. Moderate natural spacing between the characters, not wide tracking. Character height should be approximately 65-75 percent of the icon tile height, optically centered. No English letters anywhere, no subtitle, no hyphen, no punctuation. A naturally compact Chinese horizontal lockup, around 2.3:1 to 2.8:1 canvas proportion; do NOT leave the excess white space of the longer English version."
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+.DS_Store
+.env
+.env.*
+*.log
+
+# Build output; released as zips, not versioned.
+/dist/
+
+# Local installed copies are generated, not source.
+/.agents/skills/job-mate-*/
+
+# Never commit a real job-search workspace here.
+job-wingman.json
+/setup-progress.json
+/profile.json
+/candidate.md
+/qa.yaml
+/rules.md
+/stoplist.yaml
+/resumes/
+/ledger/
+/inbox/
+/backups/
+
+# Python bytecode.
+__pycache__/
+*.pyc

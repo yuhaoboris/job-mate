@@ -1,0 +1,14 @@
+{
+  "name": "job-mate",
+  "description": "job-mate 职伴插件市场",
+  "owner": {
+    "name": "job-mate maintainers"
+  },
+  "plugins": [
+    {
+      "name": "job-mate",
+      "description": "职伴：在招聘平台上筛选职位、发起首次沟通、跟进 HR 消息，关键决定由本人拍板。",
+      "source": "./"
+    }
+  ]
+}

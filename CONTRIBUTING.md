@@ -1,0 +1,47 @@
+# 贡献指南
+
+## 先确认范围
+
+1. 阅读 [仓库约定](AGENTS.md) 和 [README](README.md)；修改脚本、技能或产品规则前，阅读 [设计](docs/design.md) 的对应章节。
+2. 用 [项目状态](docs/status.md) 确认已实现、待迁移与待验收范围，不把历史抽查当作当前完整支持。
+
+job-mate 面向不同 Agent runtime，定义求职流程、授权、安全边界与结果判据；工具调用、调度和执行由 runtime 负责。核心保留确定性的台账、工作区与通知状态脚本，不执行工具、不联网、不等待或常驻；自带启动器、监听器、桌面包装与防睡眠逻辑已移除，具体接入参考位于 integrations，不随核心分发。变更不得重新引入工具调用或出包依赖，须遵守 shared/execution.md；解耦后实际 runtime 接入和 Agent 行为仍须复测，不能放宽安全规则或宣称所有环境兼容。Pi 原生 package 不在范围内。
+
+## 本地开发与验证
+
+- Python 脚本仅用标准库。代码使用 `zoneinfo`、`Path.is_relative_to` 等 Python 3.9 起提供的接口；尚无完整 Python 版本支持矩阵。
+- 台账依赖 POSIX 的 `fcntl` 文件锁，历史桌面与服务实测主要在 macOS（对应执行器已移除）；不能据“标准库”宣称支持 Windows、所有系统或所有 runtime。新增支持需附对应环境验证。
+- 探针、测试和构建均使用临时目录、合成账号与合成工作区；IM、桌面和 Agent 调用用替身隔离，不接真实服务。
+
+在仓库根目录执行（子 shell 退出时清理本次临时目录）：
+
+```sh
+(
+  set -eu
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  export PYTHONDONTWRITEBYTECODE=1
+  python3 -m unittest discover -s tests
+  python3 scripts/build.py --out "$tmp/dist"
+  python3 scripts/workspace.py init "$tmp/workspace" \
+    --boss-account synthetic --boss-name 合成测试用户
+  python3 scripts/ledger.py --workspace "$tmp/workspace" validate
+)
+```
+
+最后两条仅检查合成骨架与空台账，不代表工作区已完成 setup 或具备外发条件。安装验证也只指向临时技能目录，不覆盖日常使用的安装。
+
+## 为变更提供证据
+
+- 脚本变更：在 `tests/` 补可复现用例，写清输入、操作、预期和失败分支；缺陷修复的用例应能在修复前复现问题。
+- 技能或共享规则变更：同步设计依据，添加适用的静态契约测试；涉及多步判断时另给合成环境的 Agent 行为场景、预期终态和证据，未执行的标为待测。共享规则放在 `shared/`，平台差异放在技能的 `platforms/`，避免复制维护。
+- 分开报告：**已实现 / 单测或静态检查通过 / Agent 行为抽查 / 正式验收**。文字断言只能证明规则存在，不能证明 Agent 遵循；假工具测试和行为抽查均不替代本人发起的正式验收。
+- 提交说明列出变更目的、复现步骤、运行命令、环境、结果与未覆盖项。更新状态时保留待验收事项，不用文档整理抵销它们。纯文档变更至少检查本地链接与 `git diff --check`。
+
+## 数据与提交边界
+
+- 贡献验证不在真实招聘平台外发，不修改真实求职工作区、生产监听器或个人配置；真实实测只能由本人发起并按工作区规则执行。不得使用 CDP / Playwright 访问 BOSS，不模拟人工、不规避检测，遇限即停。
+- 个人偏好、事实、聊天、简历、账号凭据和本机私人路径不进仓库、日志附件或公开讨论；复现材料用脱敏合成数据。敏感问题按 [安全说明](SECURITY.md) 报告。
+- 提交源码与必要测试，不提交 `dist/`、本地安装的技能副本、字节码缓存、运行日志或私人工作区；提交前检查 `git status --short` 和暂存差异，忽略规则不是隐私审查的替代品。
+- 保留兼容标识 `job-wingman.json`、`~/.config/job-wingman/`、launchd 服务名与 `JOB_WINGMAN_*`，品牌变更不直接替换；历史报告保留当时名称。
+- 许可证尚待本人决定，本指南不代替许可证选择。创建远程仓库、推送和发布须另获本人授权。
