@@ -402,6 +402,12 @@ def event_keys(ev):
     return thread, job_key
 
 
+def thread_scope(ev):
+    """外部键的转义不保证可逆；内部关联须另带原始平台、账号。"""
+    thread = ev["threadKey"] if "threadKey" in ev else event_keys(ev)[0]
+    return ev["platform"], ev["account"], thread
+
+
 def prepare_event(ev, tz=None):
     """内部生成事件身份；调用方的批准原文不规范化或改写。"""
     ev = dict(ev)
@@ -684,7 +690,7 @@ def validate_history_event(events, ev):
     if ev["observed"] == "tail":
         if any(e["kind"] == "observe" and e["observed"] == "tail" and e["tailId"] == ev["tailId"] for e in events):
             raise LedgerError("tailId 重复")
-        state = tail_state(events, ev["threadKey"])
+        state = tail_state(events, thread_scope(ev))
         if ev["baseTailId"] and ev["baseTailId"] not in state["tails"]:
             raise LedgerError("baseTailId 不属于该会话")
         if state["latest"] and parse_at(ev["readAt"]) < parse_at(state["latest"]["readAt"]):
@@ -702,7 +708,7 @@ def validate_history_event(events, ev):
             raise LedgerError("decision.steps 名称不能跨版本重复")
     if ev["observed"] == "handled":
         tails = [e for e in events if e["kind"] == "observe" and e["observed"] == "tail"
-                 and e["threadKey"] == ev["threadKey"]]
+                 and thread_scope(e) == thread_scope(ev)]
         if not tails or tails[-1]["tailId"] != ev["tailId"] or tails[-1]["baseTailId"] != ev["baseTailId"]:
             raise LedgerError("handled 只能引用同一会话最新 tail 与其 baseTailId")
         tail = tails[-1]
@@ -1170,7 +1176,7 @@ def build_threads(events, platform=None, profile=None, account=None):
                 if check not in data["checks"]:
                     data["checks"].append(check)
         if ev["kind"] == "observe" and ev["observed"] in ("tail", "handled"):
-            tails.setdefault(ev["threadKey"], []).append(ev)
+            tails.setdefault(thread_scope(ev), []).append(ev)
         identity = thread_identity(ev, atts)
         key = thread_key(identity)
         if key not in threads:
@@ -1228,7 +1234,8 @@ def build_threads(events, platform=None, profile=None, account=None):
             order.extend(item for item in INFO_GROUPS[group] if item not in order)
         thread["info"] = {"known": known, "pending": [item for item in order if item not in known and item not in gave_up],
                           "askedUnanswered": unanswered, "gaveUp": sorted(gave_up)}
-        state = tail_state(tails.get(thread["threadKey"], []), thread["threadKey"])
+        scope = thread_scope(thread)
+        state = tail_state(tails.get(scope, []), scope)
         latest, handled = state["latest"], state["handled"]
         thread["lastOpenedAt"] = latest["readAt"] if latest else None
         if state["pending"]:
@@ -1430,7 +1437,7 @@ def decision_attempt(attempt, decision, owners, effective, invitations, position
     steps = {e["step"] for e in attempt["events"] if e.get("step")}
     owner = owners.get(attempt["step"])
     claims = [e["decisionVersion"] for e in attempt["events"] if e.get("decisionVersion") is not None]
-    invitation = next((e for e in invitations if e["threadKey"] == event_keys(attempt)[0]
+    invitation = next((e for e in invitations if thread_scope(e) == thread_scope(attempt)
                        and positions[e["eventId"]] < positions[first["eventId"]]), None)
     ack = attempt["step"] == "ack" and invitation is not None
     issue, version = None, None
@@ -1826,12 +1833,12 @@ def sequence_equal(left, right):
     return len(left) == len(right) and all(fingerprints_equal(a, b) for a, b in zip(left, right))
 
 
-def tail_state(events, thread):
-    """仅供尾部安全检查；完整 threads 派生在后续任务实现。"""
+def tail_state(events, scope):
+    """按 (原始平台, 原始账号, 外部 threadKey) 聚合尾部安全状态。"""
     latest, handled, handled_event, review = None, None, None, False
     tails, review_reasons = {}, []
     for event in events:
-        if event["kind"] != "observe" or event.get("threadKey") != thread:
+        if event["kind"] != "observe" or thread_scope(event) != scope:
             continue
         if event["observed"] == "tail":
             latest = event
@@ -1844,7 +1851,7 @@ def tail_state(events, thread):
             handled, handled_event = tails[event["tailId"]], event
             if event["skill"] == "user" and isinstance(event.get("evidence"), str) and event["evidence"].strip():
                 review, review_reasons = False, []
-    return {"latest": latest, "handled": handled, "handledEvent": handled_event, "review": review,
+    return {"scope": scope, "latest": latest, "handled": handled, "handledEvent": handled_event, "review": review,
             "reviewReasons": review_reasons, "tails": tails,
             "pending": latest is not None and (handled is None or handled["tailId"] != latest["tailId"])}
 
@@ -1896,8 +1903,11 @@ def bridge_evidence(raw_bridge, base, read_at, tz, platform, known_attempts):
     return proof
 
 
-def bridge_verified(atts, base, anchor, messages, bridge, proof, complete, run, read_at, platform, thread):
+def bridge_verified(atts, base, anchor, messages, bridge, proof, complete, run, read_at, scope):
     """只用持久化指纹及发送证据验证连续覆盖；写入和重读共用，不依赖原文。"""
+    platform, account, _ = scope
+    if thread_scope(base) != scope:
+        return False, True, "bridge_target_mismatch"
     if not complete or not bridge:
         return False, True, "incomplete_bridge"
     start = 0 if base["anchor"] == "start" else 1
@@ -1929,12 +1939,12 @@ def bridge_verified(atts, base, anchor, messages, bridge, proof, complete, run, 
     for i in us:
         message = proof[i]
         attempt_id = message.get("attemptId")
-        attempt = atts.get((platform, base["account"], attempt_id))
+        attempt = atts.get((platform, account, attempt_id))
         if not attempt or attempt_id in used or attempt["runId"] != run or attempt["status"] != "sent":
             return False, True, "bridge_unconfirmed_send"
         used.add(attempt_id)
         sent = next((e for e in reversed(attempt["events"]) if e["status"] == "sent"), None)
-        if not sent or sent["threadKey"] != thread or sent["runId"] != run:
+        if not sent or thread_scope(sent) != scope or sent["runId"] != run:
             return False, True, "bridge_target_mismatch"
         # 不依赖后续身份冻结功能：bridge 自身拒绝用改绑目标的终态证明连续性。
         for field in ("platform", "account", *load_platform(platform)["conversationKey"]):
@@ -1967,9 +1977,13 @@ def bridge_verified(atts, base, anchor, messages, bridge, proof, complete, run, 
 
 def tail_outcome(events, ev, state=None):
     """线性处理历史前缀；比较与未决语义不信任事件自报的结果布尔。"""
-    thread = ev["threadKey"]
-    state = state if state is not None else tail_state(events, thread)
+    scope = thread_scope(ev)
+    state = state if state is not None else tail_state(events, scope)
+    if state["scope"] != scope:
+        raise LedgerError("尾部状态不属于该平台账号会话")
     base = state["tails"].get(ev["baseTailId"])
+    if base is not None and thread_scope(base) != scope:
+        raise LedgerError("baseTailId 不属于该平台账号会话")
     explicit = ev["baseExplicit"]
     if explicit and base is None:
         raise LedgerError("显式 baseTailId 不属于该会话")
@@ -1980,13 +1994,13 @@ def tail_outcome(events, ev, state=None):
     settled = explicit and result == "same"
     # 每次判定只聚合一次尝试；bridge 内逐条引用，不逐消息重扫全表。
     atts = attempts_of(events)
-    thread_atts = [a for a in atts.values() if event_keys(a)[0] == thread]
+    thread_atts = [a for a in atts.values() if thread_scope(a) == scope]
     if ev["anchor"] == "start" and any(a["status"] == "sent" for a in thread_atts):
         result, count, reason, review, settled = "mismatch", None, "start_conflicts_with_sent", True, False
     if base and result == "new_anchor":
         settled, failed, reason = bridge_verified(atts, base, ev["anchor"], ev["fingerprints"],
             ev.get("bridge", []), ev.get("bridgeEvidence", []), ev.get("bridgeComplete", False),
-            ev["runId"], parse_at(ev["readAt"]), ev["platform"], thread)
+            ev["runId"], parse_at(ev["readAt"]), scope)
         settled = explicit and settled
         review |= failed
     if state["pending"]:
@@ -2025,6 +2039,8 @@ def cmd_tail(args, ws):
         identities = [e for e in events if e.get("threadKey") == args.thread]
         if not identities:
             raise LedgerError("threadKey 未登记，请先记录该会话的页面身份")
+        if len({(e["platform"], e["account"]) for e in identities}) != 1:
+            raise LedgerError("threadKey 对应多个平台/账号，存在歧义；须本人核对，不能自动读取")
         source = identities[-1]
         platform = source["platform"]
         anchor_raw = body.get("anchor")
@@ -2038,7 +2054,7 @@ def cmd_tail(args, ws):
             bridge.append(message_fingerprint(message, message["speaker"], read_at, tz, platform))
         if body.get("bridgeComplete") and "bridge" not in body:
             raise LedgerError("bridgeComplete 缺少 bridge")
-        state = tail_state(events, args.thread)
+        state = tail_state(events, thread_scope(source))
         if state["latest"] and read_at < parse_at(state["latest"]["readAt"]):
             raise LedgerError("readAt 不能早于该会话最新读取")
         base = state["tails"].get(args.base) if args.base else state["handled"]

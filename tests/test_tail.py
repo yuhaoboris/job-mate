@@ -425,7 +425,7 @@ class TailTest(unittest.TestCase):
         code, out = self.handled(last, listMark=mark)
         self.assertEqual(code, 0, out)
         self.assertEqual(out["event"]["listMark"], mark)
-        self.assertEqual(out["event"]["fingerprints"], ledger.tail_state(ledger.read_events(self.ws)[0], self.thread)["latest"]["fingerprints"])
+        self.assertEqual(out["event"]["fingerprints"], ledger.tail_state(ledger.read_events(self.ws)[0], ("boss", "boss-main", self.thread))["latest"]["fingerprints"])
 
     def test_card_send_can_prove_a_bridge_but_old_or_mismatched_time_cannot(self):
         base = self.ok_tail()
@@ -500,7 +500,7 @@ class TailTest(unittest.TestCase):
                     child.kill()
                 child.communicate()
         self.assertNotEqual(results[0]["tailId"], results[1]["tailId"])
-        latest = ledger.tail_state(ledger.read_events(self.ws)[0], self.thread)["latest"]["tailId"]
+        latest = ledger.tail_state(ledger.read_events(self.ws)[0], ("boss", "boss-main", self.thread))["latest"]["tailId"]
         for result in results:
             code, out = self.handled(result)
             self.assertEqual(code, 0 if result["tailId"] == latest else 2, out)
@@ -644,7 +644,7 @@ print(json.dumps({"count": len(events), "errors": errors}), flush=True)
         self.assertEqual(self.handled(current, runId=run)[0], 2)
         again = self.ok_tail(base=current["tailId"], run=run)
         self.assertFalse(again["settled"])
-        self.assertTrue(ledger.tail_state(ledger.read_events(self.ws)[0], self.thread)["pending"])
+        self.assertTrue(ledger.tail_state(ledger.read_events(self.ws)[0], ("boss", "boss-main", self.thread))["pending"])
         self.assertEqual(self.handled(again, user=True, runId=run)[0], 0)
 
     def test_old_handled_base_cannot_hide_withdrawn_pending_extension(self):

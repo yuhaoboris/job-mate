@@ -20,7 +20,11 @@ python3 <技能目录>/scripts/workspace.py init <目录> --account 'boss:main:�
 
 完整尝试身份是 `(platform, account, attemptId)`；不同平台或账号可有相同本地 ID。恢复收尾、reconciled、unresolved、通知核对与 inbox 都用三元组对照，不能只按 attemptId 合并。旧事项缺平台/账号时先请本人补证，不以当前账号填补历史归属。
 
-threadKey 已含账号；jobKey 保持原格式（平台加职位 ID，或公司/职位名），实际职位信息与导出行仍按平台、账号、jobKey 隔离。同 jobKey 的另一账号不会贡献 known、问询次数或处理尾部。stats 的分类键为 platform/account/kind（观察为 observed）。
+threadKey 保持现有外部格式，但其中分量的转义不可逆；例如合法账号 `a|b` 与 `a｜b` 可能有相同的显示键，仍是两个账号。内部尾部状态、base / handled、bridge 的发送证据与邀约 ack 匹配均带原始 platform / account 核对，不靠字符串键认定账号相同。
+
+`tail --thread` 的字符串若命中多个原始平台/账号，退出码 2，且不写新 tail；暂停该键的自动读取并请本人核对歧义，不按默认账号或最后一条身份猜测，不自行改名或改历史。threads 仍按原始账号分别显示各自的 pendingTail / lastHandled，历史账号事实及原尝试的明确终态仍可精确回填。
+
+jobKey 保持原格式（平台加职位 ID，或公司/职位名），实际职位信息与导出行仍按平台、账号、jobKey 隔离。同 jobKey 的另一账号不会贡献 known、问询次数或处理尾部。stats 的分类键为 platform/account/kind（观察为 observed）。
 
 ## 有效配置
 
