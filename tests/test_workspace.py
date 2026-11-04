@@ -1,7 +1,10 @@
+import ast
 import contextlib
+import copy
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import workspace  # noqa: E402
+import ledger  # noqa: E402
 
 PROFILE = {
     "schemaVersion": 2,
@@ -96,7 +100,7 @@ class WorkspaceTest(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertEqual(out["plan"], [s["id"] for s in workspace.STEPS])
             self.assertEqual(out["current"], "materials")
-            self.assertEqual((out["position"], out["total"]), (2, 20))
+            self.assertEqual((out["position"], out["total"]), (2, 19))
             self.assertEqual(out["answers"]["directory"]["value"], str(self.ws.resolve()))
             self.assertEqual(set(out["answers"]), {"directory", "activity", "pacing"}
                              if variant == "typical" else {"directory"})
@@ -204,7 +208,7 @@ class WorkspaceTest(unittest.TestCase):
         self.progress("clear")
         self.start_reset("resetup")
         _, out = self.progress("record", "candidate", "--status", "changed")
-        self.assertEqual(len(out["plan"]), 19)
+        self.assertEqual(len(out["plan"]), 18)
         self.assertEqual(out["added"], {})
 
     def test_progress_review_inserted_in_catalog_order(self):
@@ -342,7 +346,7 @@ class WorkspaceTest(unittest.TestCase):
         self.progress("start", "--mode", "new", "--variant", "custom")
         code, out = run("--workspace", str(self.ws), "check")
         self.assertEqual(code, 1)
-        self.assertIn("第 2/20 步", out["problems"][0]["problem"])
+        self.assertIn("第 2/19 步", out["problems"][0]["problem"])
         for mode in ("resetup", "partial"):
             self.progress("clear")
             self.init()
@@ -457,10 +461,10 @@ class WorkspaceTest(unittest.TestCase):
         self.assertIn("basis", msgs)
         self.assertIn("missing.pdf", msgs)
 
-    def test_check_validates_im_and_flags_legacy_notify(self):
+    def test_check_validates_im(self):
         self.init()
         self.fill()
-        good = dict(PROFILE, im={"channel": "lark", "userId": "ou_abc", "waitMinutes": 60})
+        good = dict(PROFILE, im={"channel": "lark", "ownerId": "synthetic-owner", "larkProfile": "default", "waitMinutes": 60})
         (self.ws / "profile.json").write_text(json.dumps(good))
         code, out = run("--workspace", str(self.ws), "check")
         self.assertEqual(code, 0, out)
@@ -469,8 +473,7 @@ class WorkspaceTest(unittest.TestCase):
         code, out = run("--workspace", str(self.ws), "check")
         self.assertEqual(code, 1)
         fields = {p.get("field") for p in out["problems"]}
-        self.assertTrue({"im.userId", "im.waitMinutes"} <= fields)
-        self.assertIn("notify", {w["field"] for w in out["warnings"]})
+        self.assertIn("im", fields)
 
     def test_check_flags_unusable_qa_and_resume_index(self):
         self.init()
@@ -767,57 +770,163 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(len(out["backups"]), 2)
 
 
-class LegacyProfileTest(unittest.TestCase):
-    def check(self, legacy="auto", budget=1, **limits):
-        p = json.loads(json.dumps(PROFILE))
-        p["authorization"]["followup"]["legacyThreads"] = legacy
-        p["limits"].update(legacyScanPerRun=20, legacyMaxAgeDays=30, legacyFollowupBudget=budget)
-        p["limits"].update(limits)
-        problems, warnings = [], []
-        workspace.check_profile(p, problems, warnings)
-        return problems, warnings
+def invoke_data(main, *argv):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main(list(argv))
+    return code, json.loads(out.getvalue())
 
-    def test_legacy_threads_values(self):
-        for value in ("ask", "auto", "off"):
-            self.assertEqual(self.check(legacy=value)[0], [])
-        for value in (None, True, "AUTO", "", [], {}):
-            problems, _ = self.check(legacy=value)
-            self.assertIn("authorization.followup.legacyThreads", [p["field"] for p in problems])
 
-    def test_legacy_budget_values_and_integer_limits(self):
-        for budget in range(4):
-            self.assertEqual(self.check(budget=budget)[0], [])
-        for value in (-1, 4, 1.0, True, None, "1", [], {}):
-            problems, _ = self.check(budget=value)
-            self.assertIn("limits.legacyFollowupBudget", [p["field"] for p in problems])
-        for field in ("legacyScanPerRun", "legacyMaxAgeDays"):
-            for value in (0, 100):
-                self.assertEqual(self.check(**{field: value})[0], [])
-            for value in (-1, 1.0, True, None, "1", [], {}):
-                problems, _ = self.check(**{field: value})
-                self.assertIn(f"limits.{field}", [p["field"] for p in problems])
+class WorkspaceIsolationTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ws = Path(self.tmp.name) / "jobs"
+        invoke_data(workspace.main, "init", str(self.ws), "--boss-account", "demo", "--boss-name", "示例账号")
+        self.profile = copy.deepcopy(PROFILE)
+        self.save_profile()
+        (self.ws / "candidate.md").write_text("# 个人事实\n" + "示例经历，仅供合成测试。" * 10)
+        (self.ws / "rules.md").write_text("# 规则\n")
+        (self.ws / "stoplist.yaml").write_text("# 无\n")
+        (self.ws / "qa.yaml").write_text("[]\n")
+        (self.ws / "resumes/a.pdf").write_text("合成附件")
+        (self.ws / "resumes/index.yaml").write_text(
+            "default: a\nversions:\n  - id: a\n    file: a.pdf\n    use: 默认\n    uploaded: {boss: a.pdf}\n")
 
-    def test_missing_legacy_fields_only_warns(self):
-        problems, warnings = [], []
-        workspace.check_profile(json.loads(json.dumps(PROFILE)), problems, warnings)
-        self.assertEqual(problems, [])
-        self.assertTrue({"authorization.followup.legacyThreads", "limits.legacyScanPerRun",
-                         "limits.legacyMaxAgeDays", "limits.legacyFollowupBudget"}
-                        <= {w["field"] for w in warnings})
-        legacy_warning = next(w for w in warnings if w["field"] == "authorization.followup.legacyThreads")
-        self.assertEqual(legacy_warning["warning"], "缺少，将使用默认值 auto")
-        problems, warnings = self.check()
-        self.assertEqual(problems, [])
-        self.assertFalse(any("legacy" in w["field"] for w in warnings))
+    def tearDown(self):
+        self.tmp.cleanup()
 
-    def test_limits_defaults_and_setup_steps_unchanged(self):
-        self.assertEqual({k: workspace.ledger.DEFAULT_LIMITS[k] for k in
-                          ("legacyScanPerRun", "legacyMaxAgeDays", "legacyFollowupBudget")},
-                         {"legacyScanPerRun": 20, "legacyMaxAgeDays": 30, "legacyFollowupBudget": 1})
-        self.assertEqual([s["id"] for s in workspace.STEPS],
-                         ["directory", "materials", "account", "browser", "roles", "locations", "salary",
-                          "requirements", "exclusions", "companies", "activity", "candidate",
-                          "resumes", "qa", "greeting", "applyAuth", "followupLevel", "pacing", "im", "listener"])
+    def save_profile(self):
+        (self.ws / "profile.json").write_text(json.dumps(self.profile))
+
+    def work(self, *argv):
+        return invoke_data(workspace.main, "--workspace", str(self.ws), *argv)
+
+    def led(self, *argv):
+        return invoke_data(ledger.main, "--workspace", str(self.ws), *argv)
+
+    def partial(self):
+        _, backup = self.work("backup")
+        return self.work("progress", "start", "--mode", "partial", "--select", "browser",
+                         "--base-backup", backup["backup"])
+
+    def test_browser_accepts_only_empty_object_or_missing(self):
+        self.assertEqual(self.work("check")[0], 0)
+        for value, expected in (({}, 0), (None, 1), ([], 1), ("agent", 1), ({"unknown": True}, 1)):
+            self.profile["browser"] = value
+            self.save_profile()
+            self.assertEqual(self.work("check")[0], expected)
+
+    def test_check_env_rejected_without_execution(self):
+        for value in (None, {}, {"unknown": True}):
+            self.profile["browser"] = value
+            self.save_profile()
+            before = (self.ws / "profile.json").read_bytes()
+            with patch("subprocess.Popen", side_effect=AssertionError("不得执行外部程序")), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as rejected:
+                    self.work("check", "--env")
+            self.assertEqual(rejected.exception.code, 2)
+            self.assertIn("--env", err.getvalue())
+            self.assertEqual((self.ws / "profile.json").read_bytes(), before)
+        del self.profile["browser"]
+        self.save_profile()
+        with patch("subprocess.Popen", side_effect=AssertionError("不得执行外部程序")):
+            self.assertEqual(self.work("check")[0], 0)
+
+    def test_new_browser_after_account_not_preanswered(self):
+        ids = [s["id"] for s in workspace.STEPS]
+        self.assertEqual(ids[ids.index("account") + 1], "browser")
+        _, out = self.work("progress", "start", "--mode", "new", "--variant", "typical")
+        self.assertIn("browser", out["plan"])
+        self.assertNotIn("browser", out["answers"])
+        self.assertNotIn("browser", self.profile)
+
+    def test_browser_partial_skip_keep_and_resume_do_not_write_profile(self):
+        for original in (None, {}):
+            if original is None:
+                self.profile.pop("browser", None)
+            else:
+                self.profile["browser"] = original
+            self.save_profile()
+            for status in ("skipped", "kept", "changed"):
+                before = (self.ws / "profile.json").read_bytes()
+                code, out = self.partial()
+                self.assertEqual(code, 0, out)
+                self.assertEqual(out["plan"], ["browser"])
+                self.assertEqual(self.work("progress", "show")[1]["current"], "browser")
+                code, out = self.work("progress", "record", "browser", "--status", status,
+                                      "--value", '{}')
+                self.assertEqual(code, 0, out)
+                self.assertIsNone(out["current"])
+                self.assertEqual(self.work("progress", "show")[1]["answers"]["browser"]["status"], status)
+                self.assertEqual((self.ws / "profile.json").read_bytes(), before)
+                self.assertEqual(self.work("progress", "finish")[0], 0)
+                self.assertEqual((self.ws / "profile.json").read_bytes(), before)
+
+    def test_core_has_no_external_execution_or_desktop_import(self):
+        source = Path(workspace.__file__)
+        tree = ast.parse(source.read_text())
+        imports = {n.name for node in ast.walk(tree) if isinstance(node, ast.Import) for n in node.names}
+        imports.update(node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+        self.assertFalse({"desktop", "subprocess"} & imports)
+        self.assertFalse(any(n and n.startswith("integrations") for n in imports))
+        # 仅拷贝数据脚本，验证脱离 desktop 模块仍能加载、体检和拒绝旧选项。
+        scripts = Path(self.tmp.name) / "isolated"
+        scripts.mkdir()
+        for name in ("workspace.py", "ledger.py", "notify.py"):
+            shutil.copy2(source.parent / name, scripts / name)
+        for tail, expected in ((["check"], 0), (["check", "--env"], 2)):
+            result = subprocess.run([sys.executable, "-I", str(scripts / "workspace.py"),
+                                     "--workspace", str(self.ws), *tail],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, expected, result.stderr)
+            self.assertNotIn("ModuleNotFoundError", result.stderr)
+            if expected == 0:
+                self.assertNotIn("desktop", json.loads(result.stdout)["info"])
+            else:
+                self.assertIn("--env", result.stderr)
+
+    def test_lark_wait_minutes_are_data_only(self):
+        for wait in (0, 60, 240):
+            self.profile["im"] = {"channel": "lark", "ownerId": "synthetic-owner", "larkProfile": "default", "waitMinutes": wait}
+            self.save_profile()
+            self.assertEqual(self.work("check")[0], 0)
+        for wait in (None, True, False, -1, 241, 60.0, "60"):
+            self.profile["im"]["waitMinutes"] = wait
+            self.save_profile()
+            code, out = self.work("check")
+            self.assertEqual(code, 1, out)
+            self.assertIn("im", {p.get("field") for p in out["problems"]})
+
+    def test_no_send_lock_rejects_pending_and_guard(self):
+        _, out = self.led("lock", "acquire", "--skill", "followup")
+        run_id = out["lock"]["runId"]
+        event = {"platform": "boss", "skill": "followup", "runId": run_id,
+                 "kind": "reply", "status": "pending", "company": "示例公司", "reason": "合成测试"}
+        code, out = self.led("append", "--json", json.dumps(event))
+        self.assertEqual(code, 0, out)
+        attempt = out["event"]["attemptId"]
+        self.led("lock", "release", "--run", run_id)
+        _, out = self.led("lock", "acquire", "--skill", "followup", "--no-send")
+        no_send = out["lock"]["runId"]
+        event["runId"] = no_send
+        self.assertEqual(self.led("append", "--json", json.dumps(event))[0], 2)
+        code, out = self.led("guard", "--run", no_send, "--attempt", attempt)
+        self.assertEqual(code, 2)
+        self.assertIn("禁发", out["error"])
+
+    def test_reacquire_same_run_never_changes_no_send(self):
+        for no_send in (False, True):
+            argv = ["lock", "acquire", "--skill", "apply"] + (["--no-send"] if no_send else [])
+            _, out = self.led(*argv)
+            run_id = out["lock"]["runId"]
+            code, out = self.led("lock", "acquire", "--skill", "apply", "--run", run_id,
+                                  *([] if no_send else ["--no-send"]))
+            self.assertEqual(code, 0)
+            self.assertTrue(out["reused"])
+            self.assertEqual(out["lock"]["noSend"], no_send)
+            self.led("lock", "release", "--run", run_id)
+
 
 
 if __name__ == "__main__":

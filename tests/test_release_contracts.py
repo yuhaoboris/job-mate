@@ -78,14 +78,6 @@ class ReleaseStaticContractTest(unittest.TestCase):
         self.assertIn("../../shared/notify.md#结果不明事项", decided)
         self.assertIn("attemptId", decided)
 
-    def test_legacy_uncertain_without_attempt_id_requires_reconciliation_not_guessing(self):
-        for path in ("shared/notify.md", "shared/ledger.md"):
-            with self.subTest(path=path):
-                text = (ROOT / path).read_text(encoding="utf-8")
-                for phrase in ("历史结果不明事项缺少 attemptId", "不按公司 / 招聘者猜合并",
-                               "不自动新开", "列待对账报告", "本人核对或明确证据", "补 ID 后", "状态保持阻断"):
-                    self.assertIn(phrase, text)
-
     def test_setup_test_instruction_and_restore_output_contract(self):
         setup = self.skill("setup")
         self.assertIn("引用测试消息回复「收到」", setup)

@@ -37,7 +37,7 @@ description: 巡检招聘平台（首批 BOSS 直聘）的 HR 会话：分类新
 | L2 | L1 + 按 `qa.yaml` 回答有依据的问题、对方索要时发简历 |
 | L3 | L2 + 按第 6 节主动跟进 |
 
-**由 IM 唤起时**：提示词保留「由 IM 监听器唤起」兼容标记，但不是内建监听器。本人不在电脑前，不在终端提问，需要本人的事写 inbox 并排队通知；本轮做完第 2 节和相关会话就收尾，不巡检其他会话、不进入等待。`ready` 只执行已落盘结论，不重新解释。runtime 用 `notify trigger claim` 只认领数据、不由核心启动 Agent；旧 started 即使很久以前也永久阻断，状态未知先报告。只有确认实例及全部后代结束后才 `notify trigger finish --launch-id <ID> --status <状态> --confirmed-stopped`，不能用锁过期或进程主程序退出代替确认。
+**由定时任务运行时**：先同步 IM，执行已落盘的决定，处理相关会话后收尾；定时执行与进程互斥由所用 Agent 或系统负责。
 
 运行超过 30 分钟时，每处理完一个会话执行一次 `ledger lock renew --run <runId>`；返回失败说明已失去运行锁，**立即停止**，不再操作浏览器。
 
@@ -49,17 +49,13 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 所有 IM 检查点都按 [同步 IM](../../shared/notify.md#同步-im) 执行，不把 poll 当作已经读取远端：
 
-1. `notify poll` 取得 ownerId、chatId、sinceMs、transport、readable。runtime 从 sinceMs 包含边界起按时间升序连续分页，用 `notify incoming --json <批次>` 入账；readable 为 false 时不读历史，先通过出站建立私聊和时间边界。没有 IM 能力时保留本地状态与待投递队列并报告，不另找通道、不声称没有答复。
+1. `notify poll` 取得 ownerId、chatId、sinceMs、larkProfile、readable。runtime 从 sinceMs 包含边界起按时间升序连续分页，用 `notify incoming --json <批次>` 入账；readable 为 false 时不读历史，先通过出站建立私聊和时间边界。没有 IM 能力时保留本地状态与待投递队列并报告，不另找通道、不声称没有答复。
 2. incoming 的 complete 为 false 或 poll.lastIncomplete 为 true 时报告「IM 未读完」。`notify status` 的 incomingRejected 提示冲突 / 编辑等拒收时请本人重新发一条新消息，不按被拒正文执行；ledger 损坏时普通答复保留 received（ledger_unreadable），不猜唯一事项，暂停等合法指令仍按核心处理。
-3. 排队的通知、确认与追问统一 `notify outbox --claim` → runtime 实际投递 → `notify receipt --key <K> --token <T> --result <结果>`。投递前核对冻结 route / channel / ownerId / transport、正文、replyTo、token 和原 idempotencyKey，不临时换配置、换键。requiresIdempotencyGuarantee 为 true 时须仍满足原保证且未过 deliveryDeadlineMs；等待后重查，过期或无法确认不投递、用 unknown 收口。只有真实 messageId、chatId 才回 sent；明确未投递才 failed，超时或不明为 unknown。handoff 无 receipt（含 stale）不重投；unknown 不自动重发，任何例外严格按通知契约。
+3. 排队通知、确认与追问统一 `notify outbox --claim` → 实际投递 → `notify receipt --key <K> --token <T> --result <结果>`。核对冻结 channel、ownerId、larkProfile、正文、replyTo、token、原 idempotencyKey。真实 messageId、chatId 才回 sent，可信 createTime 建立读取起点；明确未投递 failed（最多共 3 次），超时 unknown 不重发。handoff 无 receipt（含 stale）不重投，核对后用 unknown 收口。
 4. `notify replies --state received` 逐条按事项与含义处理：明确结论写入 inbox / ledger，再 `notify reply-state --message <消息ID> --state ready --decision <事项ID>`。不带引用的「已发出 / 未发出」也只能对应核心给出的既有 uncertain 候选，多个候选先澄清，不能扩大授权。
-5. 对应不上或含义不清先排队 clarify，再走同一认领 / 投递 / receipt 链路，**clarify 已 sent 才标 clarifying**。queued、blocked、failed、unknown 都保留原回复状态并报告未确认追问送达；queued 的 received 可能有限自动唤起，最多 2 次后提醒，不能为省唤起伪报成功或消费。replyToBlockedReason 为 missing_message_metadata 时按 replyRecovery：请本人在同一已验证通道重新发带事项 ID 的新回复，或在终端明确处理；不猜旧引用。可选独立 alert 仅请求重发，用唯一键、不带旧正文，也不能冒充追问已送达。
+5. 对应不上或含义不清先排队 clarify，走同一认领、投递、回执链；**clarify 已 sent 才标 clarifying**。queued、blocked、failed、unknown 均保留原回复状态并报告，不冒充已追问。
 
 本轮禁发或全局暂停仍可同步 IM 和落盘本人结论，只是不执行平台外发。send / test 只 queued，不等于 sent；channel 为 none 只保留 inbox 并汇报。
-
-**历史与路由门禁**：legacyUnbound 只含计数，不能说「没有旧答复」；先请本人核对原私聊对方与应用的可信元数据，再按 [旧历史的显式身份绑定](../../shared/notify.md#旧历史的显式身份绑定) 使用 migrate-legacy，能力不足则停，不自动认领。otherRoutes 同样只汇报待办数量；route_changed_pending 保守阻断所有自动唤起（包括新路由自己的答复）。需要处理时转交 setup，严格按 [其他路由待办的本地恢复](../../shared/notify.md#其他路由待办的本地恢复)；本技能不改配置、不在恢复旧 route 期间运行或同步 IM，不从新路由接管。
-
-身份绑定不是业务执行。旧 ready 的 needsReconcile 先按第 2.2 / 2.3 节 F1/F2 只核对已落盘结果、不执行新的外发，保留原决定 ID 与结论，再明确 `notify reply-state --message <旧回复ID> --state ready --decision <原ID> --confirmed-reconciled --note <核对结果>`；已完成且仅需收尾可用 consumed。未确认对账不能执行旧 ready 或绕过 trigger；已完成步骤不重发 HR，暂未执行的原批准事项不因迁移作废。
 
 `ready` 表示结论已落盘、尚待执行：`notify replies --state ready` 里的回复只执行 inbox / ledger 中已有的结论，**不重新解释原始答复**。按事项当前状态分流：
 
@@ -71,28 +67,17 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 | 结论是「先不回」「保持暂停」等无需动作 | 第 2.3 节记录后标 `consumed` |
 | 全局暂停或本轮显式禁发 | **保留 `ready`**，本轮不执行也不消费；恢复 / 下一轮继续 |
 
-`notify status` 的 `needsReconcile` 列出旧版 `consumed` 回复，它们无法判断是否完成，不自动重放；按 inbox 与 `ledger decision` 核对后显式处理。
-
 ### 2.1 对账（每轮都做，本轮禁发时也做）
 
 持锁后先按 [ledger.md 的释放与对账契约](../../shared/ledger.md#释放与对账契约) 完成入口对账：即使 acquire 的 `reconciled` 为空，也用完整 `ledger threads` 的全部 `unresolved` 与 inbox 对账，补齐缺失的 uncertain 核对事项，再做以下 `pausedBy` 对账；不先执行任何已决定的外发。
 
 1. `inbox/decisions.md` 中每个涉及会话的「待决定」事项：`ledger threads --company <公司> --recruiter <招聘者>` 的 `pausedBy` 里没有该决策 ID 时，补记 `observe/paused`（带 `decision`）。
 2. `ledger threads` 中每个 `pausedBy` 里的决策 ID，在 inbox 里找不到对应事项时：用 `ledger decision --id <ID>` 返回的 `pausedRecords`（原因、时间、公司、招聘者）补写一条「待决定」事项，只写这些已知信息，不臆造选项和截止时间；在汇报中说明。
-3. 带 `legacy-batch` 标签的暂停在 inbox 中找不到时，用 `ledger decision --id <ID>` 的 `members`（编号、公司、岗位、招聘者、基线、`reason`）重建一条旧会话批量事项，选项按第 4.1 节，再经 IM 发送。只写了部分成员的暂停时，先恢复这些已落盘成员，不臆造未落盘的成员。
-4. inbox 中的「已执行」标记只是展示：`ledger decision` 不是 `done` 的已决定事项，无论 inbox 怎么标，都按第 2.2 节继续执行，并在汇报中说明。
+3. inbox 中的「已执行」标记只是展示：`ledger decision` 不是 `done` 的已决定事项，无论 inbox 怎么标，都按第 2.2 节继续执行，并在汇报中说明。
 
 ### 2.2 执行已决定的事项
 
 处理 inbox 中标题为「已决定」、且 `ledger decision --id <ID>` 不是 `done` 的事项。结论含义不清时不猜，在汇报中请本人澄清。
-
-**旧会话批量事项先走以下三步，不走下面的外发步骤，也不写 `pending`**。全局暂停或本轮显式禁发时保留 `ready`，不执行。
-
-按 `ledger decision` 的 `members` 逐个处理，字母只在本事项内有效：
-
-1. **登记或留给本人**：`result` 已非 `null` 的跳过这一步。本人选「不纳入」时，记带 `decision`、`member` 的 `observe/manual`，`reason` 引用本人原话。选「纳入」时，重新记 `readAt` 并做第 4.1 节的两种读取；页面打不开或读不出，保留该成员未处理，下轮继续。逐一核对我方活动：对应不上本地记录，且时间区间晚于或可能晚于该成员暂停时的 `baseline.readAt`（含跨界模糊活动），记带 `decision`、`member` 的 `manual`，不登记，结果说明可再交给 Agent。否则（包括 HR 新来消息）记 `adopted`，带同一 `decision`、`member`、这次新基线与登记时设置的 `followupBudget`。`duplicate: true` 且无 `conflict` 才算重试成功；`conflict` 的成员不解除暂停，在汇报中请本人核对。
-2. **登记后分诊**：对 `result: adopted` 且尚未解除批量暂停的成员，一律重读页面，按第 4.3 节只判断是否需要本人决定，**不发送**。需要时先记新的 `observe/paused`（新决策 ID），确认写入后再写 inbox、通知。`pausedBy` 已含其他 ID 时不重复暂停。恢复时即使已经登记，也不能跳过这一步。
-3. **解除批量暂停**：第一步已有结果、第二步已完成（需暂停的已确认写入）后，才记该成员带原 `decision` 的 `unpaused`。全部成员解除后才是 `done`；部分成员完成仍为 `partial`，未确认外发等阻断优先。页面读取失败时保留 `ready`，下一轮续做，不把部分完成当作整体完成。回复 HR 留到批量事项完成后按正常流程处理；最后按本节结果通知规则收尾。
 
 **本人已接管（`manual`）的会话，旧决定一律不执行**，在汇报中列出，等本人明确交还后再处理。结论本身就是「交还会话」的除外。
 
@@ -100,7 +85,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 | 动作 | 例子 | 执行 |
 |---|---|---|
-| 交还会话 | 「这个会话交给 Agent」 | 已有 `adopted` 或 `sent` 时记 `observe/released`（带 `decision`）；未登记的旧会话按第 4.1 节重新读取、登记（`adopted`），不以 `released` 代替登记 |
+| 交还会话 | 「这个会话交给 Agent」 | 已有 `adopted` 或 `sent` 时记 `observe/released`（带 `decision`）；本地无记录时按第 4.1 节本人点名交出的流程记 adopted |
 | 更新资料 | 「把这个口径加进问答库」「附件已上传」 | 先 `workspace backup`，再改 `qa.yaml` / `resumes/index.yaml`；停止名单用 `ledger stoplist add` / `remove` |
 | 外发 | 接受面试并回复时段、批准某条草稿、同意发某版简历 | 第 3 步；本轮禁发时不执行，只在汇报中列出 |
 | 解除暂停 | 「解除暂停」「先照常回复其他问题」 | 没有其他动作，直接第 4 步 |
@@ -146,11 +131,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 3. 对每个会话，读完整上下文：从我方第一条消息或最近 20 条消息起，包括 HR 的请求卡片（交换联系方式、简历请求、面试邀约）。不只看列表摘要。
 4. 用 `ledger threads --company <公司> --recruiter <姓名(职务)>` 查本地状态。招聘者写法见 boss.md。
 5. 只有公司名精确匹配、招聘者也一致才认作同一会话；疑似匹配不点开，汇报「身份不确定」。
-6. **查找旧会话**：先完成未读与 `canFollowup: true` 的会话。仅 L3 且 `authorization.followup.legacyThreads` 为 `auto`（缺省）或 `ask` 时，在「全部」列表向下找我方最后发言（`[送达]` / `[已读]`）的旧会话；L1 / L2 或 `off` 不查找这类会话。HR 最后发言仍按第 4.1 节原入口处理。全局暂停不浏览；本轮「只看看」可以只读查找，但旧会话不写 ledger / inbox / IM，只汇报。
-   - 有 `adopted` 或 `sent` 尝试是已登记，跳过；有 `pending` / `uncertain`、`closed`、`manual` 或非空 `pausedBy` 也跳过。没有记录，或只有 `already_contacted` / `skipped` / `failed_no_send` 与其他观察事件的，是未登记。
-   - 停止名单命中，或公司 `check` 返回 `rejected` / `risk` 的不点开。
-   - 满足任一即停：连续 3 个非置顶项早于 `limits.legacyMaxAgeDays`（缺省 30 天，置顶不参与计数）；本轮已点开 `limits.legacyScanPerRun`（缺省 20）个旧会话；到达底部；任何风控提示（按 safety.md 停止整轮）。扫描限额为 0 时不点开。
-7. **检查点**：每处理完一个会话，完整执行第 2.0 节同步链（poll → runtime 连续分页 → incoming → outbox 认领 / 投递 / receipt）；有新答复先按第 2.0、2.2 节处理，再继续下一个。未读完不说没有答复；超过 30 分钟按第 1 节续锁。
+6. **检查点**：每处理完一个会话，完整执行第 2.0 节同步链（poll → runtime 连续分页 → incoming → outbox 认领 / 投递 / receipt）；有新答复先按第 2.0、2.2 节处理，再继续下一个。未读完不说没有答复；超过 30 分钟按第 1 节续锁。
 
 ## 4. 分诊
 
@@ -160,42 +141,11 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 |---|---|---|
 | 新入站会话 | 会话里**没有任何我方消息**，本地也没有记录：HR 主动来信 | 按第 4.2 节，先评估职位 |
 | 已登记会话 | 本地有 `adopted` 或 `sent` 尝试 | 按第 4.3 节 |
-| 未登记的旧会话 | 页面已有我方活动，本地状态按第 3 节仍未登记 | 按下面的旧会话分诊；HR 有未答消息时，所有级别仍可起草、先记 `paused` 再写 inbox，请本人交给 Agent；批准后取执行时页面基线登记，不用 `released` |
+| 本人自己的会话 | 页面已有我方活动，本地无记录 | 不回复、不跟进，只汇报；本人点名交给 Agent 才记 adopted |
 
 已登记会话中 HR 推来**另一个职位**时，对新职位先按第 4.2 节评估，再处理消息本身。
 
-#### 旧会话：读取、分诊、登记
-
-开始读取页面**之前**记下 `readAt`，分别做两种读取，不能互相替代：
-
-- **基线读取**：从末尾向上，读到 HR 一条文字、会话开头、或数到我方连续 3 条文字，任一即停。记录 `baseline`：`readAt`、`lastSpeaker`（`us` / `hr`）、`trailingOur`（0–3）、`lastOurAt`、`lastHrAt`、`lastOurState`（`delivered` / `read` / `null`）。消息时间取上界，只显示日期取当天 23:59:59；`null` 只表示读取范围内没读到。HR 最后发言时条数为 0、状态为 null、HR 时间必填；我方最后发言时条数至少 1、我方时间必填。读取失败、加载不出、分不清发言人或只有卡片，跳过并汇报，不登记。
-- **分诊读取**：从我方第一条消息或最近 20 条起读，包括请求卡片；有未了结事项线索就继续往前追溯。
-
-逐项检查全部类别，只有 A、B 可直接结束：
-
-| 类别 | 检查与动作 |
-|---|---|
-| A 风险 | 按第 4.3 节记 `risk`、加停止名单、写 inbox，结束 |
-| B 对方结束 | 页面明确拒绝、职位关闭 / 下线才记 `rejected` / `job_closed`，结束 |
-| C 职位 | 打开详情按 apply 条件评估（主动来信不受招聘者活跃度限制）；公司用工性质不符记 `declined` 加停止名单，职位条件不符只记 `declined`；待确认不是候选 |
-| D 遗留事项 | 未了结的面试邀约、地点 / 驻场 / 出差、薪资数字 / Offer、交换联系方式、问是不是 AI，不是候选 |
-| E 时间 | 我方最后一条不满 1 小时，本轮跳过 |
-| F 读取 | 历史读不出、只有卡片，本轮跳过；详情加载失败 / 空白不当成职位关闭；登录失效 / 访问限制停止整轮 |
-
-A、B、C 的观察带 `tags: ["legacy"]`，`reason` 以「旧会话：」开头。C 待确认、D 遗留事项不写 ledger，不重复发 IM，汇报「仍需你处理」。**C 符合、D 无遗留、E/F 都通过才是候选**。
-
-授权入口：
-
-- `legacyThreads: auto`（缺省，缺少字段时同样适用）：直接 `observe/adopted`（`skill: followup`、`reason: legacyThreads=auto`）。`ask`：按下面的批量事项询问；`off` 不查找我方最后发言的旧会话。
-- 本人在终端本轮要求「把旧会话也跟进」：本轮按 auto，不写回设置。点名「把 X 交给 Agent」：`skill: user`，`reason` 引用原话；只交处理权，不放宽条件。C 待确认须明确允许条件例外，否则先问清楚；D 遗留事项须先按第 2.2 节写新的 `paused` 与 inbox，再继续。
-- HR 未答消息的旧会话，本人交给时同样登记。已有 `adopted` / `sent` 的交还仍用 `released`，不重新分配额度。
-- IM 自由文本只可对应明确引用通知或决策 ID 的未决批量事项，且只选已列成员；扩大范围、长期授权用 `clarify` 指向 setup 或本轮终端入口。
-
-登记用 `baseline` 与登记时 `limits.legacyFollowupBudget`（缺省 1，0–3）；有效锁内追加，由 ledger 原子检查全部准入条件。自己的批量暂停可保留；其他暂停、已关闭、未确认外发、已有 sent 都不能登记；manual 只有本人明确交出（`skill: user`）可解除。重复登记以第一次为准，`decision` / `member` 不同会返回 `conflict`，不能当成功。
-
-**ask 批量事项**：一个事项最多 10 个，发现顺序编号 A–J，一字母一会话。inbox 已有未决旧会话事项时不新开，新候选留到后轮。先为所有成员写 `observe/paused`，带同一 `decision`、各自 `member`、`baseline`、`title`、`tags: ["legacy", "legacy-batch"]`，`reason` 写脱敏摘要；全部写完才写 inbox、发 IM。每行列编号、公司 / 岗位 / 招聘者、末条日期状态、我方连续条数、登记后可跟进几次（已连续 3 条为 0）。选项「全部纳入 / 只纳入 A、C / 都不纳入（留给我自己）」，注明只交给 Agent 按现有规则处理；编号或含义不清就 clarify。执行与恢复按第 2.2 节三步，事项本身不外发。
-
-`baseline`、`reason`、`evidence`、inbox / IM 均不保存历史消息原文；只写判断结论、时间、状态和读取范围等可核对元数据。
+页面有我方活动而本地无记录，视为本人自己的会话：不回复、不跟进，只汇报。只有本人明确点名交出时，在读取页面前记录 `readAt`，有效锁内记 `observe/adopted`（`skill: user`，带 `readAt`，reason 引用本人原话），再按正常会话处理；不批量登记。
 
 ### 4.2 评估职位（新入站会话、已有会话中的新职位）
 
@@ -232,7 +182,7 @@ A、B、C 的观察带 `tags: ["legacy"]`，`reason` 以「旧会话：」开头
 | HR 回复了但无需回答（如「好的」「收到」） | 记 `observe/replied`；不必回复 |
 | 我方最后发言，HR 未回 | 仅 L3：第 6 节 |
 
-**接管分界（所有会话）**：用 `threads.boundaryAt`，取本地 `sent` 时间、登记的 `baseline.readAt`、最近交还 `released` 事件时间中的最晚者。登记不用写入时间；交还不能把分界推到未来。
+**接管分界（所有会话）**：用 `threads.boundaryAt`，取本地 `sent` 时间、登记的 `readAt`、最近交还 `released` 事件时间中的最晚者。登记不用写入时间；交还不能把分界推到未来。
 
 逐一核对我方文字与发简历、同意交换联系方式、接受面试等卡片活动。页面「10:00」为 [10:00, 10:01)，只显示日期为当天全天；看不清时间或执行者按无法判断，不能断言接管或没有接管。
 
@@ -290,7 +240,6 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 1. 只跟进 `ledger threads` 返回 `canFollowup: true` 的会话；第 5.0 节的 `check --kind followup` 会再核对一次：每天至多 1 次、连续 2 次未回停 7 天、总数至多 3 次、未接管、未暂停、未结束。
 2. 还要满足页面状态：我方最后一条消息「已读」满 1 小时未回，或「送达」满 1 小时仍未读。以消息气泡上的时间起算，不从记录写入时间算。
 3. 只在 `profile.json` 的 `schedule.activeHours` 内跟进。
-4. 登记过的旧会话先读职位详情（本轮评估时已读的可沿用），不重复我方历史消息的意思。额度看 `legacyBudgetLeft`，实际次数看 `followupsSinceAdoption`；`followupsSent` 含额度占位值，不能汇报成实际跟进次数。额度 0 只登记，L2 代答照常；我方已连续 3 条未回不跟进；其他每日一次、连续 2 次未回冷却 7 天规则不变。本人亲自发的消息不计 Agent 次数，交还不重置计数。
 5. 内容：一条与 JD 相关、`candidate.md` 有依据的真实经历，或一个具体问题；不催促，不重复上一条，不写「再跟进一下」。
 6. 过第 5.0 节的检查，`pending` 为 `kind: followup`，发送确认同第 5.1 节。
 
@@ -311,11 +260,11 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 1. runtime 在不超过 im.waitMinutes 的期限内定期执行第 2.0 节完整同步链；任何等待后重新核对状态，不以只读 poll 代替远端读取，分页不完整明确汇报。
 2. 每次同步前 `ledger lock renew --run <runId>`，失败立即停止并收尾；有答复按第 2.0、2.2 / 2.3 节处理。paused 非空结束等待，ready 保留；未知 / 环境受阻不再等待。
 3. 每 10 分钟检查平台未读列表（仅环境可用且未暂停时），有新未读按第 4 节处理；完整读取后才下否定结论。
-4. 事项已处理或累计达到期限即收尾。之后由 runtime 在满足第 1 节 trigger 门禁时唤起新一轮，未配置自动唤起则下次手动运行先处理。
+4. 事项已处理或达到期限即收尾，下次运行先处理已有答复。
 
 ## 9. 收尾与汇报
 
-**结束前必查**：运行环境受阻且 `im.channel` 为 `none`（或 IM 送达未确认）时，按 [环境受阻与恢复](../../shared/execution.md#7-环境受阻通知与恢复)，最终答复必须包含 **原因、环境恢复办法、恢复后如何重新发起** 三项；runtime 唤起且仍有待办时可经可用入口请求「重试」，手动运行则重新发起本技能。结果待核对另行说明，不能代替恢复指引。
+**结束前必查**：运行环境受阻且 `im.channel` 为 `none`（或 IM 送达未确认）时，按 [环境受阻与恢复](../../shared/execution.md#7-环境受阻通知与恢复)，最终答复必须包含 **原因、环境恢复办法、恢复后如何重新发起** 三项；由本人重新发起本技能。结果待核对另行说明，不能代替恢复指引。
 
 所有 runtime 的任何停止分支（含读取失败）都先按 [尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 给本轮所有 pending 收尾；已有终态不覆盖，已见成功证据优先记 sent。unknown 或环境受阻时结束整轮，不再新建尝试，不靠同一 runId 重取锁降级（noSend 不会改变），不进入第 8 节等待。安全信号优先全局暂停；纯环境受阻不全局暂停，按共享通知规则分流 ready、分别排队环境提醒与按[结果不明事项](../../shared/notify.md#结果不明事项)记录的 uncertain 通知，不承诺自动续发。
 
@@ -326,8 +275,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 - 本轮是否禁发、授权级别。
 - 巡检范围：处理了哪些会话、未检查的范围及原因。不能把「未读为 0」或只看列表摘要写成「没有新回复」。
 - 每个会话一行：公司、招聘者、HR 最新消息要点、本轮动作（已回复 / 已发简历请求 / 已跟进 / 已上报 / 暂停中 / 未处理及原因）。
-- 新写入 inbox 的事项和决策 ID；执行了哪些已决定事项；读到了哪些 IM 答复、如何处理。分别报告 queued / handoff / sent / failed / unknown / blocked；退出码 0 不等于送达。IM 未读完、legacyUnbound / otherRoutes 待核对计数、incomingRejected 与 replyRecovery 需要本人重发的提示不能省略。
+- 新写入 inbox 的事项和决策 ID、已执行的决定、IM 答复及处理。分别报告 queued / handoff / sent / failed / unknown / blocked；退出码 0 不等于送达。IM 未读完、incomingRejected 与路由冲突不得省略。
 - 本人接管、停止名单新增、风险信号。
 - 需要本人在平台上处理的事（上传简历附件等）。
-- **旧会话**：查找翻到哪天、点开几个、停止原因；超出范围写「尚未检查」。列出登记了哪些、哪个批量 ID、结束了哪些及原因。「仍需你处理」逐行列职位待确认 / 遗留事项，说明可在终端说「把 X 交给 Agent」。列出不满 1 小时、读取失败、只有卡片、身份不确定、停止名单等跳过原因。
-- 旧会话 IM `summary` 只写数量和事项编号，不带历史原文。说明当前设置和入口，例如「已列入 D-…，等你选择」或「旧会话查找已关闭（legacyThreads=off），可在 setup 中开启」。
+- 页面有我方活动而本地无记录的会话只列出，说明未回复、未跟进；本人可明确点名交给 Agent。

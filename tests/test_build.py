@@ -23,7 +23,17 @@ def run_build(*argv):
     return code, json.loads(out.getvalue())
 
 
+# 已完整改写的文档进入体量预算；其余在对应任务重写时加入。
+TEXT_BUDGETS = {"shared/notify.md": 16000, "shared/ledger.md": 16000,
+                "shared/workspace.md": 16000, "skills/setup/SKILL.md": 20000}
+
+
 class BuildTest(unittest.TestCase):
+    def test_rewritten_document_size_budgets(self):
+        for name, maximum in TEXT_BUDGETS.items():
+            with self.subTest(path=name):
+                self.assertLessEqual((ROOT / name).stat().st_size, maximum)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.out = Path(self.tmp.name) / "dist"
@@ -104,7 +114,7 @@ class BuildTest(unittest.TestCase):
         self.assertIn("本轮**实际处理过会话或执行过已决定事项**（含本地动作）时", skill)
         # shared/notify.md 与技能说的一致
         self.assertIn("**不发 `done`、不发 `summary`**", notify_md)
-        self.assertIn("只做收尾（消费 `ready`、补发结果通知、结论「无需动作」）的轮次不发", notify_md)
+        self.assertIn("已 done 只补通知与消费，不重发 HR、不发 summary", notify_md)
 
     def test_install_replaces_only_managed_dirs(self):
         target = Path(self.tmp.name) / "skills"
@@ -591,43 +601,7 @@ class BuildSafetyTest(unittest.TestCase):
             self.assertNotIn(str(self.base), raw)
 
 
-class LegacyRulesBuildTest(unittest.TestCase):
-    def test_three_built_skills_include_legacy_interfaces(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "built"
-            code, result = run_build("--out", str(out))
-            self.assertEqual(code, 0, result)
-            self.assertEqual(len(result["built"]), 3)
-            for path in result["built"]:
-                d = Path(path)
-                for file, terms in {
-                    "shared/ledger.md": ("adopted", "baseline", "followupBudget", "legacy_contact",
-                                         "members", "boundaryAt", "acknowledged", "conflict"),
-                    "shared/workspace.md": ("legacyThreads", "legacyFollowupBudget",
-                                            "legacyScanPerRun", "legacyMaxAgeDays"),
-                    "shared/notify.md": ("只纳入 A、C", "决策 ID", "不消费 ready"),
-                    "scripts/ledger.py": ("decision_completed", "require_live_lock", "adoption_result"),
-                    "scripts/workspace.py": ("legacyThreads", "legacyFollowupBudget"),
-                }.items():
-                    content = (d / file).read_text()
-                    for term in terms:
-                        self.assertIn(term, content, (d.name, file, term))
-            followup = (out / "job-mate-followup/SKILL.md").read_text()
-            for term in ("登记后分诊", "baseline.readAt", "重新记", "两种读取", "legacy-batch",
-                         "conflict", "不解除暂停", "全部成员解除后", "尚未检查", "仍需你处理"):
-                self.assertIn(term, followup)
-            self.assertIn("legacy_contact", (out / "job-mate-apply/SKILL.md").read_text())
-            setup = (out / "job-mate-setup/SKILL.md").read_text()
-            for term in ("不新增步骤", "保留 profile 已有值", "不能把已有 ask / off", "旧草稿"):
-                self.assertIn(term, setup)
-            for path in result["built"]:
-                d = Path(path)
-                self.assertIn('"legacyThreads": "auto"', (d / "shared/workspace.md").read_text())
-                self.assertIn("缺少，将使用默认值 auto", (d / "scripts/workspace.py").read_text())
-            self.assertIn("`auto`（缺省）或 `ask`", followup)
-            self.assertIn("`legacyThreads: auto` 自动登记（缺省）", setup)
-            self.assertIn("原来没有才补 auto / 1", setup)
-
+class TakeoverRulesBuildTest(unittest.TestCase):
     def test_takeover_rule_contract_covers_synthetic_time_scenarios(self):
         # 方案 13.2(10)：这里只锁住技能规则，页面区间判读无脚本实现，
         # 不以静态检查冒充真实 Agent 行为抽查（仍属 13.3 待验）。
@@ -637,7 +611,7 @@ class LegacyRulesBuildTest(unittest.TestCase):
             "分钟 [10:00,10:01) 跨过 10:00:30": ("[10:00, 10:01)", "跨分界", "暂停询问"),
             "日期全天跨分界": ("只显示日期为当天全天", "同一天日期标签"),
             "跨午夜：前日全天早于次日分界": ("区间整个早于分界", "历史"),
-            "读后、登记前本人发出": ("baseline.readAt", "登记不用写入时间", "整个晚于分界"),
+            "读后、登记前本人发出": ("`readAt`", "登记不用写入时间", "整个晚于分界"),
             "构成分界的 sent 当天日期仍可匹配": ("包括构成分界的那条", "前后 2 分钟"),
             "本人发简历或同意卡片": ("同意交换联系方式", "接受面试", "简历卡片"),
             "上午交还，下午分钟新活动接管": ("下午新发「14:00」是接管",),
@@ -649,13 +623,6 @@ class LegacyRulesBuildTest(unittest.TestCase):
                     self.assertIn(term, skill)
         for term in ("置顶", "往上滚动", "23:59:59", "时间或执行者看不清"):
             self.assertIn(term, boss)
-
-    def test_batch_recovery_rule_contract(self):
-        skill = (ROOT / "skills/followup/SKILL.md").read_text()
-        for term in ("只写了部分成员", "members", "result", "一律重读页面",
-                     "恢复时即使已经登记，也不能跳过这一步", "不重复暂停",
-                     "全部写完才写 inbox", "不走下面的外发步骤", "不写 `pending`"):
-            self.assertIn(term, skill)
 
 
 if __name__ == "__main__":

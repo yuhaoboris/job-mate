@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ledger  # noqa: E402
+import notify  # noqa: E402
 
 MARKER = ledger.MARKER
 CONFIG_FILES = [
@@ -52,7 +53,6 @@ STEPS = [
                               "activeHours": {"weekdays": [1, 2, 3, 4, 5],
                                               "start": "09:00", "end": "18:00"}}}},
     {"id": "im", "phase": "notify", "name": "IM 通知", "required": False},
-    {"id": "listener", "phase": "notify", "name": "无人值守唤起", "required": False},
 ]
 STEP_BY_ID = {s["id"]: s for s in STEPS}
 
@@ -60,17 +60,15 @@ GREETING_MODES = {"dynamic", "static"}
 FOLLOWUP_LEVELS = {"L1", "L2", "L3"}
 MATCH_RULES = {"overlap", "lower_bound", "contained"}
 DEDUP_SCOPES = {"company", "job"}
-LIMIT_KEYS = ["greetsPerRun", "greetsPerDay", "detailsPerRun", "minSendIntervalSeconds",
-              "legacyScanPerRun", "legacyMaxAgeDays"]
+LIMIT_KEYS = ["greetsPerRun", "greetsPerDay", "detailsPerRun", "minSendIntervalSeconds"]
 # 新版本加入的 profile 字段：缺少时技能按默认值运行，体检给出提示，重新设置时补上。
 PROFILE_DEFAULTS = {
     "recruiterActivity": {"maxAgeDays": 7},
     "greeting": {"mode": "dynamic"},
     "limits": dict(ledger.DEFAULT_LIMITS),
     "schedule": {"timezone": ledger.DEFAULT_TZ},
-    "im": {"channel": "none", "waitMinutes": 60},
+    "im": {"channel": "none"},
 }
-IM_CHANNELS = {"lark", "runtime", "none"}
 
 
 class WorkspaceError(Exception):
@@ -155,12 +153,6 @@ def check_profile(p, problems, warnings):
         bad("authorization.apply.send", "应为 true 或 false")
     if (auth.get("followup") or {}).get("level") not in FOLLOWUP_LEVELS:
         bad("authorization.followup.level", f"应为 {sorted(FOLLOWUP_LEVELS)} 之一")
-    followup = auth.get("followup") or {}
-    if "legacyThreads" not in followup:
-        warnings.append({"file": "profile.json", "field": "authorization.followup.legacyThreads",
-                         "warning": "缺少，将使用默认值 auto"})
-    elif followup["legacyThreads"] not in ("ask", "auto", "off"):
-        bad("authorization.followup.legacyThreads", "应为 ask、auto 或 off")
     g = p.get("greeting") or {}
     if g.get("mode", "dynamic") not in GREETING_MODES:
         bad("greeting.mode", f"应为 {sorted(GREETING_MODES)} 之一")
@@ -172,13 +164,6 @@ def check_profile(p, problems, warnings):
     for k in LIMIT_KEYS:
         if k in limits and (type(limits[k]) is not int or limits[k] < 0):
             bad(f"limits.{k}", "应为非负整数")
-    for k in ("legacyScanPerRun", "legacyMaxAgeDays", "legacyFollowupBudget"):
-        if k not in limits:
-            warnings.append({"file": "profile.json", "field": f"limits.{k}",
-                             "warning": f"缺少，将使用默认值 {ledger.DEFAULT_LIMITS[k]}"})
-    if "legacyFollowupBudget" in limits and (type(limits["legacyFollowupBudget"]) is not int
-                                            or not 0 <= limits["legacyFollowupBudget"] <= 3):
-        bad("limits.legacyFollowupBudget", "应为 0–3 的整数")
     if limits.get("dedupScope", "company") not in DEDUP_SCOPES:
         bad("limits.dedupScope", f"应为 {sorted(DEDUP_SCOPES)} 之一")
     ra = (p.get("recruiterActivity") or {}).get("maxAgeDays")
@@ -195,59 +180,15 @@ def check_profile(p, problems, warnings):
 
 
 def check_browser(p, bad, warnings):
-    if "browser" not in p:
-        return
-    browser = p["browser"]
-    if not isinstance(browser, dict):
-        bad("browser", "应为对象，不能为 null")
-    elif browser.get("control") == "agent":
-        if set(browser) != {"control"}:
-            bad("browser", "agent 只允许 control 字段，不能有 input 或未知字段")
-    elif browser.get("control") == "agent-desktop":
-        if set(browser) != {"control", "input"} or browser.get("input") not in ("background", "foreground"):
-            bad("browser", "agent-desktop 需要 input 为 background 或 foreground，且不能有未知字段")
-    else:
-        bad("browser.control", "应为 agent 或 agent-desktop；配置不合法时不操作平台，不回退")
+    if "browser" in p and (not isinstance(p["browser"], dict) or p["browser"]):
+        bad("browser", "当前只允许空对象或缺失")
 
 
 def check_im(p, bad, warnings):
-    if "notify" in p:
-        warnings.append({"file": "profile.json", "field": "notify",
-                         "warning": "notify 已停用，由 im 取代（见 shared/notify.md）；重新设置时改写"})
-    if "im" not in p:
-        return
-    im = p["im"]
-    if not isinstance(im, dict):
-        bad("im", "应为对象")
-        return
-    channel = im.get("channel", "none")
-    if not isinstance(channel, str) or channel not in IM_CHANNELS:
-        bad("im.channel", f"应为 {sorted(IM_CHANNELS)} 之一")
-    if channel == "lark":
-        user_id = im.get("userId")
-        if not isinstance(user_id, str) or not user_id.startswith("ou_") or not user_id[3:].strip():
-            bad("im.userId", "lark 需要本人的 open_id（ou_ 开头）")
-        warnings.append({"file": "profile.json", "field": "im.channel",
-                         "warning": "lark 是兼容配置；请经 setup 显式迁移为 runtime。"
-                                    "文件保持不变，兼容路由的幂等窗口按 0 处理"})
-    if channel == "runtime":
-        owner_id = im.get("ownerId")
-        if not isinstance(owner_id, str) or not owner_id.strip():
-            bad("im.ownerId", "runtime 需要本人的非空字符串 ID")
-        transport = im.get("transport", {})
-        if not isinstance(transport, dict):
-            bad("im.transport", "应为可 JSON 序列化的对象")
-        else:
-            try:
-                json.dumps(transport, allow_nan=False)
-            except (TypeError, ValueError):
-                bad("im.transport", "应为可 JSON 序列化的对象")
-            window = transport.get("idempotencyWindowSeconds", 0)
-            if type(window) is not int or not 0 <= window <= 86400:
-                bad("im.transport.idempotencyWindowSeconds", "应为 0–86400 的整数")
-    wait = im.get("waitMinutes", 60)
-    if type(wait) is not int or not 0 <= wait <= 240:
-        bad("im.waitMinutes", "应为 0–240 的整数")
+    try:
+        notify.im_config(p)
+    except notify.NotifyError as e:
+        bad("im", str(e))
 
 
 def meaningful_lines(text):
@@ -529,17 +470,10 @@ def read_progress(ws):
         raise WorkspaceError(f"setup 草稿损坏：{e}；请本人确认后用 progress clear 放弃草稿")
 
 
-def unapplied_answers(draft):
-    # listener ID 与旧答案保留；此脚本不把答案应用到任何执行环境。
-    return ([{"step": "listener", "reason": "无人值守唤起答案未应用；仅记录决定，由 runtime 配置调度"}]
-            if "listener" in draft["answers"] else [])
-
-
 def progress_summary(draft):
     current = draft["current"]
     return {**draft, "position": draft["plan"].index(current) + 1 if current else len(draft["plan"]),
-            "total": len(draft["plan"]), "currentStep": STEP_BY_ID[current] if current else None,
-            "unapplied": unapplied_answers(draft)}
+            "total": len(draft["plan"]), "currentStep": STEP_BY_ID[current] if current else None}
 
 
 def next_unanswered(draft):
@@ -637,11 +571,9 @@ def cmd_progress(args):
         out = check_workspace(ws, include_progress=False)
         if out["ok"]:
             path.unlink()
-        return emit({**out, "finished": out["ok"], "unapplied": unapplied_answers(draft)},
+        return emit({**out, "finished": out["ok"]},
                     0 if out["ok"] else 1)
     if args.step not in draft["plan"]:
-        if args.step == "browser":
-            raise WorkspaceError("旧草稿不含 browser 步骤，请完成后另做只选 browser 的部分重新设置")
         raise WorkspaceError(f"步骤不在计划中：{args.step}")
     if args.action == "goto":
         draft["current"] = args.step
@@ -701,7 +633,7 @@ def build_parser():
     record.add_argument("step")
     record.add_argument("--status", choices=["changed", "kept", "default", "skipped"], required=True)
     record.add_argument("--value", help="JSON 取值")
-    record.add_argument("--source", choices=["user", "current", "resume", "legacy", "default"], default="user")
+    record.add_argument("--source", choices=["user", "current", "resume", "default"], default="user")
     go = actions.add_parser("goto", help="回到指定步骤")
     go.add_argument("step")
     actions.add_parser("finish", help="体检通过后完成并删除草稿")

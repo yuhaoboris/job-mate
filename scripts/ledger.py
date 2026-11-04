@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""job-mate 事件记录工具：校验、外发检查、追加、配额、会话汇总、决策执行状态、统计、运行锁、全局暂停、停止名单、迁移。
+"""job-mate 事件记录工具：校验、外发检查、追加、配额、会话汇总、决策执行状态、统计、运行锁、全局暂停、停止名单。
 
 仅用 Python 标准库。所有命令向 stdout 输出一个 JSON 对象。
 退出码：0 成功 / 允许；1 不允许（检查不通过、额度用尽、锁被占用）；2 错误（参数、文件损坏、工作区缺失、未持锁）。
@@ -52,9 +52,6 @@ DEFAULT_LIMITS = {
     "detailsPerRun": 50,
     "minSendIntervalSeconds": 5,
     "dedupScope": "company",
-    "legacyScanPerRun": 20,
-    "legacyMaxAgeDays": 30,
-    "legacyFollowupBudget": 1,
 }
 DEFAULT_TZ = "Asia/Shanghai"
 DEFAULT_LOCK_TTL_MINUTES = 60
@@ -190,34 +187,6 @@ def job_id_from_url(url):
 
 # ---------- 事件读写 ----------
 
-def validate_baseline(baseline, at):
-    errs = []
-    fields = {"readAt", "lastSpeaker", "trailingOur", "lastOurAt", "lastHrAt", "lastOurState"}
-    if not isinstance(baseline, dict) or set(baseline) != fields:
-        return ["baseline 须包含 readAt、lastSpeaker、trailingOur、lastOurAt、lastHrAt、lastOurState，且不含其他字段"]
-    for k in ("readAt", "lastOurAt", "lastHrAt"):
-        if k != "readAt" and baseline[k] is None:
-            continue
-        try:
-            value = parse_at(baseline[k])
-            if k == "readAt" and value > parse_at(at):
-                errs.append("baseline.readAt 不能晚于事件写入时间")
-        except (TypeError, ValueError):
-            errs.append(f"baseline.{k} 须为带时区的 ISO 时间")
-    speaker, trailing, state = (baseline[k] for k in ("lastSpeaker", "trailingOur", "lastOurState"))
-    if speaker not in ("us", "hr"):
-        errs.append("baseline.lastSpeaker 须为 us 或 hr")
-    if type(trailing) is not int or not 0 <= trailing <= 3:
-        errs.append("baseline.trailingOur 须为 0–3 的整数")
-    if state not in ("delivered", "read", None):
-        errs.append("baseline.lastOurState 须为 delivered、read 或 null")
-    if speaker == "hr" and (trailing != 0 or state is not None or baseline["lastHrAt"] is None):
-        errs.append("HR 最后发言时 trailingOur 须为 0、lastOurState 须为 null、lastHrAt 不能为空")
-    if speaker == "us" and (type(trailing) is not int or trailing < 1 or baseline["lastOurAt"] is None):
-        errs.append("我方最后发言时 trailingOur 须至少为 1、lastOurAt 不能为空")
-    return errs
-
-
 def validate_acknowledged(items):
     if not isinstance(items, list):
         return ["acknowledged 须为数组"]
@@ -280,20 +249,14 @@ def validate_event(ev):
     if "tags" in ev and (not isinstance(ev["tags"], list)
                          or any(not isinstance(tag, str) or not tag.strip() for tag in ev["tags"])):
         errs.append("tags 须为非空字符串组成的数组")
-    if "member" in ev:
-        if not isinstance(ev["member"], str) or not re.fullmatch(r"[A-J]", ev["member"]):
-            errs.append("member 须为 A–J 的单个字母")
-        if not ev.get("decision") or kind != "observe":
-            errs.append("member 须用于带 decision 的观察事件")
-    if "baseline" in ev:
-        errs.extend(validate_baseline(ev["baseline"], ev["at"]))
     if kind == "observe" and ev.get("observed") == "adopted":
-        if "baseline" not in ev:
-            errs.append("adopted 须带 baseline")
-        if "followupBudget" not in ev:
-            errs.append("adopted 须带 followupBudget")
-    if "followupBudget" in ev and (type(ev["followupBudget"]) is not int or not 0 <= ev["followupBudget"] <= 3):
-        errs.append("followupBudget 须为 0–3 的整数")
+        if ev["skill"] != "user":
+            errs.append("adopted 只允许 skill: user，由本人点名交给 Agent")
+        try:
+            if parse_at(ev.get("readAt")) > parse_at(ev["at"]):
+                errs.append("readAt 不能晚于事件时间")
+        except (TypeError, ValueError):
+            errs.append("adopted 须带有效的带时区 readAt")
     if "acknowledged" in ev:
         if kind != "observe" or ev.get("observed") != "released":
             errs.append("acknowledged 只用于 released")
@@ -639,8 +602,7 @@ def build_threads(events, platform=None):
             "lastOutbound": None, "lastObserved": None, "lastReplyAt": None,
             "followupsSent": 0, "followupsSinceReply": 0, "lastFollowupAt": None,
             "manual": False, "pausedBy": [], "closed": None, "closedBy": [], "unresolved": [], "outboundTexts": [],
-            "baseline": None, "boundaryAt": None, "acknowledged": [],
-            "legacyBudgetLeft": None, "followupsSinceAdoption": 0,
+            "readAt": None, "boundaryAt": None, "acknowledged": [],
         })
         t["title"] = ev.get("title") or t["title"]
         t["jobId"] = ev.get("jobId") or t["jobId"]
@@ -656,18 +618,9 @@ def build_threads(events, platform=None):
             elif obs == "released":
                 t["manual"] = False
                 t["acknowledged"] = ev.get("acknowledged", [])
-            elif obs == "adopted" and t["baseline"] is None:
-                b = ev["baseline"]
-                t["baseline"] = b
-                t["followupsSent"] = 3 if b["trailingOur"] >= 3 else 3 - ev["followupBudget"]
-                t["legacyBudgetLeft"] = 3 - t["followupsSent"]
-                t["followupsSinceReply"] = b["trailingOur"] if b["lastSpeaker"] == "us" else 0
-                t["lastFollowupAt"] = b["lastOurAt"] if b["lastSpeaker"] == "us" else None
-                t["lastReplyAt"] = b["lastHrAt"]
-                if b["lastOurAt"] is not None:
-                    t["lastOutbound"] = {"kind": "legacy", "at": b["lastOurAt"]}
-                if ev["skill"] == "user":
-                    t["manual"] = False
+            elif obs == "adopted":
+                t["readAt"] = ev["readAt"]
+                t["manual"] = False
             elif obs == "paused":
                 d = ev.get("decision") or "未注明"
                 if d not in t["pausedBy"]:
@@ -683,7 +636,7 @@ def build_threads(events, platform=None):
                 t["closedBy"] = [c for c in t["closedBy"] if c != "declined"]
             hard = [c for c in t["closedBy"] if c != "declined"]
             t["closed"] = hard[0] if hard else (t["closedBy"][0] if t["closedBy"] else None)
-            boundary = ev["baseline"]["readAt"] if obs == "adopted" else ev["at"] if obs == "released" else None
+            boundary = ev["readAt"] if obs == "adopted" else ev["at"] if obs == "released" else None
             if boundary and (t["boundaryAt"] is None or parse_at(boundary) > parse_at(t["boundaryAt"])):
                 t["boundaryAt"] = boundary
         elif ev["status"] == "sent":
@@ -696,9 +649,6 @@ def build_threads(events, platform=None):
                 t["followupsSent"] += 1
                 t["followupsSinceReply"] += 1
                 t["lastFollowupAt"] = ev["at"]
-                if t["baseline"] is not None:
-                    t["followupsSinceAdoption"] += 1
-                    t["legacyBudgetLeft"] = max(0, 3 - t["followupsSent"])
     for key, t in threads.items():
         for a in atts.values():
             if a["status"] in ("pending", "uncertain") and \
@@ -787,10 +737,8 @@ def first_contact_reasons(args, events, scope):
     reasons = []
     job_id = args.job_id or job_id_from_url(args.job_url)
     contacts = [a for a in attempts_of(events).values() if attempt_blocks(a, args.run)]
-    contacts += [{**ev, "lastAt": ev["at"], "jobId": ev.get("jobId"), "status": "legacy_contact"}
-                 for ev in events if ev["kind"] == "observe" and
-                 (ev["observed"] == "adopted" or ("legacy" in ev.get("tags", []) and
-                  ev["observed"] in {"paused", "declined", "rejected", "job_closed", "risk"}))]
+    contacts += [{**ev, "lastAt": ev["at"], "jobId": ev.get("jobId"), "status": "adopted"}
+                 for ev in events if ev["kind"] == "observe" and ev["observed"] == "adopted"]
     for a in contacts:
         if a["platform"] != args.platform:
             continue
@@ -812,8 +760,6 @@ def first_contact_reasons(args, events, scope):
         elif same_company == "suspect" and scope == "company":
             reasons.append({"type": "company_suspect", "detail": f"公司名疑似相同：{tag}", "_at": a["lastAt"]})
         if reasons and "_at" not in reasons[-1]:
-            if a["status"] == "legacy_contact" and reasons[-1]["type"] in ("same_job", "same_company", "same_title"):
-                reasons[-1]["type"] = "legacy_contact"
             reasons[-1]["_at"] = a["lastAt"]
     # 同一类原因只保留最近的一条
     latest = {}
@@ -847,7 +793,7 @@ def conversation_reasons(args, events, now, tz):
             if not ok:
                 reasons.append({"type": "followup_not_eligible", "detail": f"{why}：{who}"})
     if args.kind == "followup" and not threads:
-        reasons.append({"type": "no_thread", "detail": "本地没有该会话的记录；旧会话须先按 followup 的设置分诊并登记（observe/adopted），再判断跟进条件"})
+        reasons.append({"type": "no_thread", "detail": "本地没有该会话的记录；只有本人明确点名交给 Agent 才能登记（observe/adopted）"})
     return reasons, threads
 
 
@@ -879,29 +825,8 @@ def decision_completed(events, decision):
     return marked and not any(decision in t["pausedBy"] for t in build_threads(events).values())
 
 
-def decision_members(events, decision):
-    obs = [ev for ev in events if ev["kind"] == "observe" and ev.get("decision") == decision]
-    members = {}
-    threads = build_threads(events)
-    for ev in obs:
-        if ev["observed"] != "paused" or not ev.get("member"):
-            continue
-        key = thread_key(ev)
-        if key in members:
-            continue
-        related = [e for e in obs if thread_key(e) == key]
-        members[key] = {
-            **{k: ev.get(k) for k in ("member", "company", "title", "recruiter", "baseline", "reason")},
-            "result": next((e["observed"] for e in reversed(related)
-                            if e["observed"] in ("adopted", "manual") and e.get("member") == ev["member"]), None),
-            "unpaused": (any(e["observed"] == "unpaused" for e in related)
-                         and decision not in threads[key]["pausedBy"]),
-        }
-    return list(members.values())
-
-
 def unstepped_decision_attempts(events, decision):
-    """同一决定中没有 step 的外发尝试（旧版记录或漏写编号）。决定未完成时，它们与新步骤的对应关系须本人核对。"""
+    """同一决定中漏写 step 的外发尝试。决定未完成时，它们与新步骤的对应关系须本人核对。"""
     if decision_completed(events, decision):
         return []
     return [a for a in attempts_of(events).values() if a["decision"] == decision and not a["step"]]
@@ -946,7 +871,6 @@ def cmd_decision(args, ws):
         "decision": args.id, "state": state, "advice": advice,
         "steps": step_states,
         "localActions": local_done,
-        "members": decision_members(events, args.id),
         "attempts": [{k: a[k] for k in ("attemptId", "kind", "step", "status", "company", "recruiter", "lastAt")}
                      for a in linked],
         "pausedRecords": [{k: ev.get(k) for k in ("at", "platform", "company", "recruiter", "title", "reason")}
@@ -980,45 +904,15 @@ def cmd_guard(args, ws):
 
 # ---------- 命令：append ----------
 
-def check_member_identity(events, ev):
-    """同一决定的成员与会话一一对应；同一操作的重试可以重复写观察。"""
-    if not ev.get("member"):
-        return
-    for old in events:
-        if old["kind"] != "observe" or not old.get("member") or old.get("decision") != ev.get("decision"):
-            continue
-        same_thread = thread_key(old) == thread_key(ev)
-        same_member = old["member"] == ev["member"]
-        if same_member != same_thread:
-            raise LedgerError("同一 decision 下 member 与会话须一一对应")
-
-
 def adoption_result(events, ev):
-    """重复优先于准入；调用方已持有运行锁协调互斥。"""
     key = thread_key(ev)
     existing = next((e for e in events if e["kind"] == "observe" and e["observed"] == "adopted"
                      and thread_key(e) == key), None)
     if existing:
-        conflict = any(existing.get(k) != ev.get(k) for k in ("decision", "member"))
-        return {"ok": not conflict, "duplicate": True, "conflict": conflict,
-                "event": public_entry(existing)}, 1 if conflict else 0
-    threads = build_threads(events, ev["platform"])
-    t = threads.get(key)
-    if not t:
-        return None
-    reasons = []
-    if any(a["status"] == "sent" and thread_key(a) == key for a in attempts_of(events).values()):
-        reasons.append("已有 sent 外发，是已登记会话")
-    if t["unresolved"]:
-        reasons.append("有 pending / uncertain，先核对未确认的外发")
-    if t["closed"]:
-        reasons.append(f"会话已关闭（{t['closed']}）")
-    if any(d != ev.get("decision") for d in t["pausedBy"]):
-        reasons.append("会话被其他决定暂停")
-    if t["manual"] and ev["skill"] != "user":
-        reasons.append("本人已接管，只有 skill: user 明确交出才能登记")
-    if reasons:
-        raise LedgerError("不能登记旧会话：" + "；".join(reasons))
+        return {"ok": True, "duplicate": True, "event": public_entry(existing)}, 0
+    t = build_threads(events, ev["platform"]).get(key)
+    if t and (t["unresolved"] or t["closed"] or t["pausedBy"]):
+        raise LedgerError("会话有未确认外发、已关闭或仍暂停，不能登记")
     return None
 
 
@@ -1059,7 +953,6 @@ def cmd_append(args, ws):
             result = adoption_result(events, ev)
             if result is not None:
                 return result
-        check_member_identity(events, ev)
         if ev["kind"] in ACTION_KINDS:
             check_transition([e for e in events if e["attemptId"] == ev["attemptId"]], ev)
             if ev["status"] == "pending" and ev.get("decision") and unstepped_decision_attempts(events, ev["decision"]):
@@ -1069,7 +962,7 @@ def cmd_append(args, ws):
         append_line(ws, ev)
         return {"ok": True, "event": ev}, 0
 
-    # 登记和 pending 共用运行锁检查；观察事件也串行化成员身份的检查与追加。
+    # 本人交出会话与 pending 共用有效锁检查。
     with lock_mutex(ws):
         if adopting or (ev["kind"] in ACTION_KINDS and ev["status"] == "pending"):
             require_live_lock(ws, ev["runId"], tz, renew=True)
@@ -1414,84 +1307,6 @@ def cmd_stoplist(args, ws):
         return emit({"added": True, "entry": entry})
 
 
-# ---------- 命令：migrate ----------
-
-V1_STATUS = {"greeted": "sent"}
-V1_GREETING = {"platform_default": "static", "custom": "static"}
-V1_RECRUITER_RE = re.compile(r"^\d{1,2}:\d{2}\s+(.*?)\s*(?:\[.*)?$")
-
-
-def clean_v1_recruiter(raw, company):
-    """旧记录有时把消息列表整行抄进 recruiter，如「16:28 曹正达标国际招聘者 [送达] 您好」。
-    能按公司名切开时规整为「曹正(招聘者)」，否则原样保留。"""
-    if not raw or not company:
-        return raw
-    m = V1_RECRUITER_RE.match(raw)
-    if not m:
-        return raw
-    body = m.group(1)
-    name, sep, title = body.partition(company)
-    if not sep or not name.strip():
-        return raw
-    title = title.strip()
-    return f"{name.strip()}({title})" if title else name.strip()
-
-
-def cmd_migrate(args, ws):
-    src = Path(args.source).expanduser()
-    if not src.is_file():
-        raise LedgerError(f"找不到旧记录：{src}")
-    target = events_path(ws)
-    if target.exists() and target.stat().st_size and not args.dry_run:
-        raise LedgerError("目标事件记录已有内容，拒绝迁移以免重复；请先核对")
-    out, errors = [], []
-    for no, line in enumerate(src.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            old = json.loads(line)
-        except json.JSONDecodeError as e:
-            errors.append({"line": no, "error": f"JSON 损坏：{e.msg}"})
-            continue
-        status = V1_STATUS.get(old.get("status"), old.get("status"))
-        url = normalize_job_url(old.get("jobUrl"))
-        ev = {
-            "schemaVersion": SCHEMA_VERSION,
-            "at": old.get("at"),
-            "platform": args.platform,
-            "account": old.get("accountKey"),
-            "runId": old.get("runId"),
-            "attemptId": f"{old.get('runId')}/{old.get('attemptId')}",
-            "skill": "apply",
-            "kind": "greet",
-            "status": status,
-            "company": old.get("company"),
-            "title": old.get("title"),
-            "location": old.get("location"),
-            "recruiter": clean_v1_recruiter(old.get("recruiter"), old.get("company")),
-            "reason": old.get("reason"),
-            "evidence": old.get("evidence"),
-            "jobId": old.get("jobId") or job_id_from_url(url),
-            "jobUrl": url,
-            "text": old.get("messageText"),
-            "tags": ["migrated:v1", f"greeting:{V1_GREETING.get(old.get('greetingMode'), old.get('greetingMode'))}"],
-        }
-        errs = validate_event(ev)
-        if errs:
-            errors.append({"line": no, "error": "；".join(errs)})
-            continue
-        out.append(ev)
-    if errors:
-        return emit({"migrated": 0, "errors": errors}, 2)
-    if not args.dry_run:
-        for ev in out:
-            append_line(ws, ev)
-    statuses = {}
-    for a in attempts_of(out).values():
-        statuses[a["status"]] = statuses.get(a["status"], 0) + 1
-    return emit({"migrated": len(out), "dryRun": args.dry_run, "attemptsByStatus": statuses})
-
-
 # ---------- 入口 ----------
 
 def build_parser():
@@ -1558,10 +1373,6 @@ def build_parser():
     sl.add_argument("--reason")
     sl.add_argument("--source")
 
-    m = sub.add_parser("migrate", help="把 apply-job-boss 的 applications.jsonl 转为当前格式")
-    m.add_argument("source")
-    m.add_argument("--platform", default="boss")
-    m.add_argument("--dry-run", action="store_true")
     return p
 
 
@@ -1569,7 +1380,7 @@ COMMANDS = {
     "validate": cmd_validate, "check": cmd_check, "decision": cmd_decision, "guard": cmd_guard,
     "append": cmd_append,
     "quota": cmd_quota, "threads": cmd_threads, "stats": cmd_stats, "lock": cmd_lock,
-    "pause": cmd_pause, "stoplist": cmd_stoplist, "migrate": cmd_migrate,
+    "pause": cmd_pause, "stoplist": cmd_stoplist,
 }
 
 

@@ -86,7 +86,6 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 
 1. 运行超过 30 分钟时先 `ledger lock renew --run <runId>`；失败说明已失去运行锁，立即停止。`ledger quota --platform boss --run <runId>`：`canGreet` 为 `false` 时结束本轮；`waitSeconds` 大于 0 时先等待这么久。这是固定的最小间隔，不另加随机延时。
 2. `ledger check --platform boss --company <公司> --title <职位> --job-url <链接> --run <runId>`：不允许时记 `skipped`（`reason` 写 check 返回的原因），处理下一个。
-   `legacy_contact` 表示旧会话已登记，或带 legacy 标签的暂停 / 结束 / 风险记录证明联系过；按同一 `dedupScope` 跳过，不占招呼额度、不补造 greet。普通 paused 不算历史联系；疑似公司名或重发职位仍按 company_suspect / reposted_suspect 处理。
 3. 重新确认详情仍符合硬条件、职位开放，目标公司和招聘者正确。
 4. 按 boss.md 判断沟通按钮：显示已联系时追加 `already_contacted`，不点击。
 
@@ -153,7 +152,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 
 ## 7. 汇报
 
-**结束前必查**：运行环境受阻且 `im.channel` 为 `none`（或 IM 送达未确认）时，按 [环境受阻与恢复](../../shared/execution.md#7-环境受阻通知与恢复)，最终答复必须包含 **原因、环境恢复办法、恢复后如何重新发起** 三项；runtime 唤起且有待执行答复时可经可用入口请求「重试」，手动运行则重新发起本技能。恢复后发前重做去重检查；结果待核对的事项另行说明，不能代替恢复指引或据恢复重发 uncertain。
+**结束前必查**：运行环境受阻且 `im.channel` 为 `none`（或 IM 送达未确认）时，按 [环境受阻与恢复](../../shared/execution.md#7-环境受阻通知与恢复)，最终答复必须包含 **原因、环境恢复办法、恢复后如何重新发起** 三项；由本人重新发起本技能。恢复后发前重做去重检查；结果待核对的事项另行说明，不能代替恢复指引或据恢复重发 uncertain。
 
 - 本轮模式和实际使用的条件；哪些是本轮临时覆盖、哪些写回了 `profile.json`。
 - 读详情数、合格数、已发起沟通数、已联系跳过数、其他跳过数、待核对数；今日已用 / 剩余招呼额度。

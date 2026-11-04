@@ -153,8 +153,7 @@ class ExecutionRulesTest(unittest.TestCase):
                 self.assertIsNone(TOOL_CALL.search(path.read_text(encoding="utf-8")))
 
     def test_tool_call_detector_accepts_compatibility_literals_only(self):
-        for literal in ('"lark"', '`agent-desktop`', 'control: agent-desktop`',
-                        'agent-desktop 需要 input，兼容旧配置', 'agent-desktop 含 control 与 input'):
+        for literal in ('"lark"', '`agent-desktop`'):
             self.assertIsNone(TOOL_CALL.search(literal))
         for call in ("lark-cli im", "agent-desktop click", "agent-desktop --headed", "scripts/desktop.py",
                      "launchctl bootout", "caffeinate", "npm install", "import subprocess",
@@ -250,26 +249,19 @@ class ExecutionRulesTest(unittest.TestCase):
     def test_followup_im_chain_and_fail_closed_states_are_explicit(self):
         skill = (ROOT / "skills/followup/SKILL.md").read_text(encoding="utf-8")
         sync = skill.split("### 2.0 同步 IM", 1)[1].split("### 2.1", 1)[0]
-        self.assert_terms(sync, ("notify poll", "包含边界", "连续分页", "notify incoming", "notify outbox --claim",
-                                "notify receipt", "原 idempotencyKey", "requiresIdempotencyGuarantee",
-                                "deliveryDeadlineMs", "handoff 无 receipt", "unknown 不自动重发", "IM 未读完",
+        self.assert_terms(sync, ("notify poll", "包含边界", "连续分页", "notify incoming",
+                                "notify outbox --claim", "notify receipt", "原 idempotencyKey",
+                                "larkProfile", "handoff 无 receipt", "unknown 不重发", "IM 未读完",
                                 "没有 IM 能力", "不另找通道", "incomingRejected", "ledger_unreadable",
-                                "clarify 已 sent 才标 clarifying", "queued、blocked、failed、unknown",
-                                "最多 2 次", "missing_message_metadata", "replyRecovery", "不带旧正文",
-                                "legacyUnbound", "otherRoutes", "route_changed_pending", "包括新路由自己的答复",
-                                "其他路由待办的本地恢复", "本技能不改配置", "--confirmed-reconciled",
-                                "--decision <原ID>", "--note", "F1/F2", "不带引用的「已发出 / 未发出」"))
-        self.assert_terms(skill, ("第 2.0 节完整同步链", "核心脚本不等待", "trigger claim", "trigger finish",
-                                 "--confirmed-stopped", "全部后代结束", "不是内建监听器"))
+                                "clarify 已 sent 才标 clarifying", "queued、blocked、failed、unknown"))
+        self.assert_terms(skill, ("第 2.0 节完整同步链", "核心脚本不等待"))
 
-    def test_setup_keeps_data_ids_preferences_and_runtime_im_test(self):
+    def test_setup_uses_lark_configuration_and_explicit_im_test(self):
         skill = (ROOT / "skills/setup/SKILL.md").read_text(encoding="utf-8")
-        self.assert_terms(skill, ("`listener` | 无人值守唤起", "旧 listener 答案保留", "未应用", "不安装",
-                                 "不预先记默认", "不增、不删、不改当前 browser", "保留兼容 / 显式迁移为 runtime",
-                                 "owner / transport / 应用身份不猜", "幂等窗口默认 0", "本人明确确认实际保证",
-                                 "migrate-legacy", "可信 runtime", "能力不足就停", "身份确认不等于业务执行",
-                                 "notify test", "只排队（queued）", "notify outbox --claim", "notify receipt",
-                                 "notify incoming", "引用测试消息回复「收到」", "普通业务答复仍 received"))
+        self.assert_terms(skill, ("ownerId", "larkProfile", "waitMinutes", "larkCommand",
+                                 "notify test", "只排队（queued）", "notify outbox --claim",
+                                 "notify receipt", "notify incoming", "引用测试消息回复「收到」",
+                                 "普通业务答复仍 received", "能力不足就停"))
 
     def test_platform_facts_do_not_reintroduce_tool_instructions(self):
         for name in ("apply", "followup"):
@@ -279,34 +271,6 @@ class ExecutionRulesTest(unittest.TestCase):
             self.assertNotIn("agent-desktop", content)
         apply = (ROOT / "skills/apply/platforms/boss.md").read_text(encoding="utf-8")
         self.assert_terms(apply, ("`jobUrl`、`jobId` 记 null", "不通过其他接口补取"))
-
-    def test_other_route_local_recovery_has_one_controlled_contract(self):
-        notify = (ROOT / "shared/notify.md").read_text(encoding="utf-8")
-        contract = notify.split("### 其他路由待办的本地恢复\n", 1)[1].split("## 发送", 1)[0]
-        self.assert_terms(contract, (
-            "仅由 setup 修改模式执行", "followup 不能自行修改 profile", "取得明确确认",
-            "备份当前新配置", "获取 setup 运行锁", "改配置前先暂停 runtime",
-            "暂停所有自动 IM 收发、outbox 投递与 trigger 调度", "已有投递任务已停或结果已核对收口",
-            "相关实例及全部后代已停止", "不能仅靠 ledger 锁", "无法确认就拒绝临时恢复",
-            "核心不安装或停止任何服务", "后台 worker", "仅允许本地 `notify replies`、`notify reply-state`",
-            "禁止 `poll`、`incoming`、`outbox --claim`、`trigger`", "禁止 runtime 收发", "不运行 followup",
-            "不操作招聘平台", "不重放旧指令", "不因消费 ready 另排队旧 done / summary",
-            "原排队通知保持原样", "禁止认领 / 投递", "并不会自动保持 blocked", "安全来自暂停 runtime",
-            "F1/F2", "原决定 ID", "--confirmed-reconciled", "不执行新的业务外发",
-            "完成或中断都优先恢复已备份的新配置", "不覆盖并发人工修改", "恢复后读回核验",
-            "ledger.md#释放与对账契约", "released / reconciled 与释放失败", "runtime 保持停用",
-            "只有新配置核验通过且本人确认", "汇报实际本地操作", "不需要旧 IM 在线",
-            "不默认放弃已批准事项", "另行明确决定、另走正常授权流程",
-            "迁移为 runtime **之前**", "原 lark 配置核对可信元数据", "runtime 配置下不能 migrate-legacy",
-            "不表示迁移后永远无法绑定", "会继续阻断自动唤起", "可选择只手动使用"))
-        self.assertLess(contract.index("改配置前先暂停 runtime"), contract.index("恢复原 owner / channel"))
-        for relative, link in (
-            ("skills/followup/SKILL.md", "../../shared/notify.md#其他路由待办的本地恢复"),
-            ("skills/setup/SKILL.md", "../../shared/notify.md#其他路由待办的本地恢复"),
-        ):
-            content = (ROOT / relative).read_text(encoding="utf-8")
-            self.assertEqual(LINK.findall(content).count(link), 1, relative)
-        self.assertIn("未明确决定放弃的批准事项仍保留", contract)
 
     def test_all_repository_document_links_and_anchors_resolve(self):
         documents = sorted({*ROOT.glob("*.md"),
@@ -354,14 +318,15 @@ class ExecutionRulesTest(unittest.TestCase):
         for relative in ("scripts/desktop.py", "tests/test_desktop.py",
                          "shared/browser/agent-desktop.md", "shared/browser/pi.md"):
             self.assertFalse((ROOT / relative).exists(), relative)
-        # 明确保留迁入的纯配置 / 锁测试；不导入或执行被删除的桌面测试。
-        migrated = ast.parse((ROOT / "tests/test_workspace_runtime.py").read_text(encoding="utf-8"))
-        methods = {node.name for node in ast.walk(migrated) if isinstance(node, ast.FunctionDef)}
-        self.assertTrue({"test_browser_configuration_all_cases", "test_new_browser_after_account_not_preanswered",
+        # 保留纯配置、禁发锁与运行隔离回归，统一放在工作区测试中。
+        maintained = ast.parse((ROOT / "tests/test_workspace.py").read_text(encoding="utf-8"))
+        methods = {node.name for node in ast.walk(maintained) if isinstance(node, ast.FunctionDef)}
+        self.assertTrue({"test_browser_accepts_only_empty_object_or_missing",
+                         "test_new_browser_after_account_not_preanswered",
                          "test_browser_partial_skip_keep_and_resume_do_not_write_profile",
-                         "test_old_draft_keeps_plan_rejects_browser_then_finishes",
                          "test_no_send_lock_rejects_pending_and_guard",
                          "test_reacquire_same_run_never_changes_no_send"} <= methods)
+        self.assertFalse((ROOT / "tests/test_workspace_runtime.py").exists())
 
 
 if __name__ == "__main__":

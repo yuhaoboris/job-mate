@@ -24,7 +24,7 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 | `check --platform boss --kind <reply\|resume\|followup\|intro> --company <公司> --recruiter <姓名(职务)> --run <runId> [--decision <ID>]` | 会话内每次发送前：停止名单、会话结束、本人接管、等待决定的暂停、未确认的外发；`followup` 另查跟进条件 |
 | `quota --platform boss --run <runId>` | 剩余招呼额度、距上次外发的秒数、需等待的秒数 |
 | `append --json '<事件>'` | 追加一条事件；也可从 stdin 读入 |
-| `decision --id <决策 ID> [--step <编号>]` | 查某个已决定事项的执行状态：`not_started` / `partial` / `in_progress` / `failed` / `needs_review` / `done`。`needs_review` 表示有不带步骤编号的外发记录，无法确定对应哪个动作，须本人核对，期间不能为该决定新建外发。另返回各外发步骤的状态（`steps`、`stepState`）、已做的本地动作（`localActions`）、暂停记录的原因与会话（`pausedRecords`）、仍被它暂停的会话（`stillPausing`）。`members` 提供成员进度，`localActions` 为字符串列表。**已有带该 ID 的 unpaused，且没有会话仍被它暂停才算完成**；部分解除不能盖过 in_progress / needs_review / failed 等阻断 |
+| `decision --id <决策 ID> [--step <编号>]` | 查某个已决定事项的执行状态：`not_started` / `partial` / `in_progress` / `failed` / `needs_review` / `done`。`needs_review` 表示有不带步骤编号的外发记录，无法确定对应哪个动作，须本人核对，期间不能为该决定新建外发。另返回各外发步骤的状态（`steps`、`stepState`）、已做的本地动作（`localActions`）、暂停记录的原因与会话（`pausedRecords`）、仍被它暂停的会话（`stillPausing`）。`localActions` 为字符串列表。**已有带该 ID 的 unpaused，且没有会话仍被它暂停才算完成**；部分解除不能盖过 in_progress / needs_review / failed 等阻断 |
 | `guard --run <runId> --attempt <attemptId>` | 每次可能把消息发出去的点击之前：确认本轮仍持有有效锁、该尝试仍是本轮的 `pending`，并续期。失败时立即停止，不点击 |
 | `threads [--platform boss] [--company <公司>] [--recruiter <姓名(职务)>]` | 按会话汇总：最近外发与文字、HR 回复时间、跟进次数、是否本人接管、等待哪些决定、是否已结束、能否主动跟进及原因 |
 | `stats [--since YYYY-MM-DD] [--until YYYY-MM-DD]` | 统计 |
@@ -40,7 +40,7 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 - **新的可能外发必须由有效持锁者写入**：`append` 一条动作 `pending` 时，`ledger` 核对 `runId` 是当前未过期的持锁者，且本轮未禁发，同时自动续期。不满足就返回错误（退出码 2），此时立即停止，不操作浏览器。
 - **每次点击前再确认一次**：写入 `pending` 之后、真正点击之前可能停顿（进程暂停、工具超时），期间锁可能过期被接管，该尝试被改记 `uncertain`。所以每次可能发出消息的点击前都要 `guard`，通过后立即点击；失败就停止，不点击，也不新建尝试。
 - 长时间只读（读详情、巡检）时，定期 `lock renew`。
-- `observe/adopted` 与 pending 一样必须在有效运行锁内，禁发 / 全局暂停拒绝；在 lock_mutex 内读记录、去重、判断准入、追加。其他观察、终态和人工核对记录已发生事实，不要求运行锁。
+- `observe/adopted` 仅本人点名交出会话时使用，skill 必须为 user，带不晚于事件时间的有效 readAt；须在有效运行锁内，禁发 / 全局暂停拒绝。持锁读取、去重、校验并追加。其他观察、终态和人工核对记录已发生事实，不要求运行锁。
 - 上一轮崩溃没有释放锁时，默认等它过期；本人确认上一轮已经停止，才可以 `lock release --run <上一轮 runId>`。
 
 ## 事件字段
@@ -59,9 +59,7 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 | `evidence` | 必须给出：凭什么认定结果，例如「会话中出现本次新消息，显示已送达」；没有时为 `null` |
 | `decision` | 可选：执行或暂停所对应的决策 ID，形如 `D-20261028-01` |
 | `step` | 须与 `decision` 同用：同一事项中外发动作的步骤编号，如 `reply1`、`resume1`。执行决定的外发**必须**带 `step` |
-| `jobUrl`、`jobId`、`salaryText`、`text`、`resume`、`tags` | 可选；`text` 为实际发送的文字（可见时）；`tags` 是非空字符串数组，旧会话标 legacy，批量暂停另标 legacy-batch |
-| `baseline`、`followupBudget` | adopted 必填；基线见下，额度为 0–3 整数，登记时取 profile 设置，以后不变 |
-| `member` | 带 decision 的观察事件的批量编号 A–J；同一决定下字母与会话一一对应，重试保持身份 |
+| `jobUrl`、`jobId`、`salaryText`、`text`、`resume`、`tags` | 可选；`text` 为实际发送的文字（可见时）；`tags` 是非空字符串数组 |
 | `acknowledged` | 只用于 released：本人确认过的模糊活动数组，每项仅 shown（非空页面时间标签）、precision（day / minute）、kind（text / resume / contact / interview）、count（正整数），不记原文 |
 
 不记录密码、Cookie、令牌、手机号、完整简历或聊天全文。
@@ -100,15 +98,10 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 
 `replied`、`resume_delivered`（附件已送达）、`resume_viewed`（对方已查看）、`interview_invited`、`rejected`、`job_closed`、`declined`（我方判定职位不符，会话关闭）、`reopened`（HR 推来的新职位评估符合，只解除 `declined`；会话另有 `job_closed`、`rejected`、`risk` 时仍保持关闭）、`manual`（本人接管；须明确交还才能恢复发送，已决定事项也不能越过）、`released`（本人交还已登记会话，解除 `manual`，计数不变）、`paused`（等待本人决定，整个会话暂停，带 `decision`）、`unpaused`（解除暂停；带 `decision` 时只解除该决定，并作为该事项的完成标记，须在全部动作做完后最后写入；不带时解除全部）、`risk`（风险信号）、`limit_hit`（平台限额提示，`reason` 中注明当日已招呼数）。
 
-`adopted` 登记旧会话，必须带基线与额度，自己的批量暂停不解除。先查已有 adopted：不追加、返回 duplicate: true 与第一次事件；decision / member 相同为成功重试，不同返回 conflict、退出码 1，技能不能解除该成员暂停。无重复时同时判断：有 sent、pending / uncertain、closed、其他 decision 的暂停都拒绝（退出码 2）；manual 仅 skill: user 明确交出时能登记并解除，followup 不能。只有本 decision 的暂停可以保留着登记，不能越过上述任何限制。
+`adopted` 仅登记本人明确点名交出的会话，skill 必须为 user，携带开始读取页面时的 readAt，在有效运行锁内追加。已有登记返回 duplicate，不重复追加；有未确认外发、关闭或暂停时拒绝。登记不带旧消息基线或额外跟进额度。
 
-`baseline` 仅含 readAt（开始读取页面的带时区 ISO 时间，不晚于事件写入）、lastSpeaker（us / hr）、trailingOur（0–3 整数）、lastOurAt / lastHrAt（带时区 ISO 或 null）、lastOurState（delivered / read / null）。HR 最后发言：条数 0、状态 null、HR 时间非空；我方最后发言：条数至少 1、我方时间非空。null 只表示基线读取范围内没读到，日期精度取当天 23:59:59。基线不存原文；读取范围与分诊步骤见 followup。
 
-threads 输出 baseline、boundaryAt、acknowledged、legacyBudgetLeft、followupsSinceAdoption。登记时 trailingOur ≥ 3 视为额度用尽，否则 followupsSent 用 3 - followupBudget 占位；连续未回按 trailingOur（含第一条）计入，HR 最后发言则为 0。lastFollowupAt 为我方最后发言时的 lastOurAt，lastReplyAt 为 lastHrAt，有 lastOurAt 时 lastOutbound.kind 为 legacy。汇报只用剩余额度和登记后实际次数，不能将占位数说成实际跟进次数。
-
-boundaryAt 取本地 sent 时间、baseline.readAt、released 事件时间最晚者，不能通过事件指定或推到未来；acknowledged 输出最近一次 released 的数组，未带则为空。outboundTexts 保留全部本地 sent 文字与 resume 的类型 / 时间（resume 可无 text），包括分界那条，用于页面时间区间前后 2 分钟的匹配。其他跨界活动按 followup 暂停询问，同标签同类型只认可已确认的前 count 条，不豁免后来的活动。
-
-decision.members 从带 member 的 paused 按发现顺序给出 member、company、title、recruiter、baseline、reason，以及 result（adopted / manual / null）、unpaused。用于恢复缺失 inbox 与逐成员续做；登记后尚未 unpaused 的成员须重读、分诊并先写必要的新暂停，再解除原批量暂停。事项本身不写 pending；完成判定与无步骤外发阻断共用同一规则，单会话行为不变。
+boundaryAt 取本地 sent 时间、adopted.readAt、released 事件时间最晚者，不能通过事件指定或推到未来；acknowledged 输出最近一次 released 的数组，未带则为空。outboundTexts 保留全部本地 sent 文字与 resume 的类型 / 时间（resume 可无 text），包括分界那条，用于页面时间区间前后 2 分钟的匹配。其他跨界活动按 followup 暂停询问，同标签同类型只认可已确认的前 count 条，不豁免后来的活动。
 
 记 `rejected` 或 `risk` 后，`check` 会阻止再次联系该公司。
 
@@ -122,8 +115,7 @@ decision.members 从带 member 的 paused 按发现顺序给出 member、company
 
 1. 停止名单：公司名或别名精确命中；名称互相包含算疑似。
 2. 历史联系：所有动作（招呼、回复、跟进、发简历）建立的联系都算。`dedupScope` 为 `company`（默认）时，同一平台同一公司有阻止状态的尝试即命中；为 `job` 时比较 `jobId`，缺少 ID 时比较公司 + 职位名。同公司同职位名但 ID 不同，报告疑似重新发布。
-3. 旧会话历史联系：adopted，以及带 legacy 标签的 paused / declined / rejected / job_closed / risk，按相同的平台、dedupScope 比较；返回 legacy_contact，不占招呼额度、不伪造 greet。普通 paused 不算。job 范围下同公司不同职位 / ID 不命中，同职位不同 ID 仍是 reposted_suspect，缺 ID 按公司 + 职位；公司名疑似匹配仍为 company_suspect。
-4. 该公司的 `rejected`、`risk` 观察。
+3. 该公司的 `rejected`、`risk` 观察。
 
 `check` 通过后，平台页面状态仍是最终依据：页面显示已联系，记 `already_contacted`，不发送。
 

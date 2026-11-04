@@ -645,21 +645,21 @@ class LedgerTest(unittest.TestCase):
         self.ws.append(kind="observe", observed="unpaused", decision=d, **common)
         self.assertEqual(st()["state"], "done")
 
-    def legacy_attempt(self, statuses, **fields):
+    def unstepped_attempt(self, statuses, **fields):
         """模拟旧版写下的、没有 step 的决定外发记录（绕过 append 直接写文件）。"""
         base = {"schemaVersion": 2, "platform": "boss", "account": "zhipin-test", "runId": "old-run",
-                "attemptId": "att-legacy-" + statuses[-1], "skill": "followup", "kind": "reply",
+                "attemptId": "att-unstepped-" + statuses[-1], "skill": "followup", "kind": "reply",
                 "title": None, "location": None, "reason": "旧版执行决定", "evidence": None}
         base.update(fields)
         for st in statuses:
             ledger.append_line(self.ws.path, dict(base, status=st, at=datetime.now(TZ).isoformat(timespec="seconds")))
 
-    def test_legacy_unstepped_sent_needs_review(self):
+    def test_unstepped_sent_needs_review(self):
         """H01：旧版无 step 的已发送决定，在完成标记前恢复，不得被当成新步骤再次发送。"""
         d = "D-20261029-07"
         c = dict(company="旧步骤样例", recruiter="林女士(HR)")
         self.ws.append(kind="observe", observed="paused", decision=d, skill="followup", **c)
-        self.legacy_attempt(["pending", "sent"], decision=d, text="批准的回复", **c)
+        self.unstepped_attempt(["pending", "sent"], decision=d, text="批准的回复", **c)
         out = self.ws.run("decision", "--id", d, "--step", "reply1")[1]
         self.assertEqual(out["state"], "needs_review")
         self.assertEqual(out["stepState"], "needs_review")
@@ -675,17 +675,17 @@ class LedgerTest(unittest.TestCase):
         self.ws.append(kind="observe", observed="unpaused", decision=d, skill="user", **c)
         self.assertEqual(self.ws.run("decision", "--id", d)[1]["state"], "done")
 
-    def test_legacy_unstepped_pending_is_in_progress(self):
+    def test_unstepped_pending_is_in_progress(self):
         d = "D-20261029-08"
         c = dict(company="旧待定样例", recruiter="林女士(HR)")
-        self.legacy_attempt(["pending"], decision=d, **c)
+        self.unstepped_attempt(["pending"], decision=d, **c)
         self.assertEqual(self.ws.run("decision", "--id", d, "--step", "reply1")[1]["state"], "in_progress")
 
-    def test_legacy_partial_combo_needs_review(self):
+    def test_partial_combo_needs_review(self):
         d = "D-20261029-09"
         c = dict(company="旧组合样例", recruiter="林女士(HR)")
         self.ws.append(kind="observe", observed="released", decision=d, skill="followup", **c)
-        self.legacy_attempt(["pending", "sent"], decision=d, **c)
+        self.unstepped_attempt(["pending", "sent"], decision=d, **c)
         out = self.ws.run("decision", "--id", d, "--step", "resume1")[1]
         self.assertEqual(out["state"], "needs_review")
         self.assertEqual(out["stepState"], "needs_review")
@@ -812,268 +812,64 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out["reasons"][0]["type"], "rejected")
 
-    def test_clean_v1_recruiter(self):
-        c = ledger.clean_v1_recruiter
-        self.assertEqual(c("16:28 曹正达标国际招聘者 [送达] 您好，", "达标国际"), "曹正(招聘者)")
-        self.assertEqual(c("16:28 刘先生广州智用开物人工...招聘者 ", "广州智用开物人工..."), "刘先生(招聘者)")
-        self.assertEqual(c("16:30 王女士深圳市沃可达电子商务负责人 [", "深圳市沃可达电子商务"), "王女士(负责人)")
-        self.assertEqual(c("张先生(人事行政专员)", "柏瑞数据"), "张先生(人事行政专员)")
-        self.assertEqual(c("16:28 某人别的公司 [送达]", "达标国际"), "16:28 某人别的公司 [送达]")
-
-    def test_migrate_v1(self):
-        src = self.ws.path / "old.jsonl"
-        base = {"runId": "run-20261027-1", "attemptId": "att-001", "jobId": None,
-                "jobUrl": "https://www.zhipin.com/job_detail/73a02ddd9715a7f10nx43d-1FVtU.html",
-                "company": "柏瑞数据", "title": "AI Agent开发工程师", "location": "东莞",
-                "recruiter": None, "greetingMode": "platform_default", "messageText": None,
-                "reason": "匹配", "schemaVersion": 1, "accountKey": "zhipin-test",
-                "at": "2026-10-27T16:26:15+08:00"}
-        lines = [dict(base, status="pending"),
-                 dict(base, status="greeted", evidence="已发送", at="2026-10-27T16:26:35+08:00"),
-                 dict(base, attemptId="att-002", company="乙", status="pending"),
-                 dict(base, attemptId="att-002", company="乙", status="uncertain", evidence="不明")]
-        src.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n")
-        code, out = self.ws.run("migrate", str(src))
-        self.assertEqual(code, 0, out)
-        self.assertEqual(out["attemptsByStatus"], {"sent": 1, "uncertain": 1})
-        code, out = self.ws.run("check", "--platform", "boss", "--company", "柏瑞数据")
-        self.assertEqual(code, 1)
-        self.assertEqual(self.ws.run("validate")[0], 0)
-        self.assertEqual(self.ws.run("migrate", str(src))[0], 2)
-
-
-class LegacyThreadTest(unittest.TestCase):
-    """旧会话方案 13.2：只使用合成事件、临时工作区，不访问平台。"""
+class CurrentTakeoverTest(unittest.TestCase):
+    """当前会话交还、读取分界与模糊活动确认，不涉及旧数据。"""
 
     def setUp(self):
         self.ws = Workspace()
         self.ws.ensure_lock("run-1")
         self.now = datetime(2026, 11, 2, 12, tzinfo=TZ)
-        self.decision = "D-20261102-01"
 
     def tearDown(self):
         self.ws.close()
 
-    def baseline(self, trailing=1, days=8, **overrides):
-        b = {"readAt": self.now.isoformat(), "lastSpeaker": "us", "trailingOur": trailing,
-             "lastOurAt": (self.now - timedelta(days=days)).isoformat(),
-             "lastHrAt": None, "lastOurState": "read"}
-        b.update(overrides)
-        return b
-
     def observe(self, observed, **extra):
-        return self.ws.append(kind="observe", observed=observed, skill=extra.pop("skill", "followup"),
+        return self.ws.append(kind="observe", observed=observed, skill=extra.pop("skill", "user"),
                               recruiter="示例招聘者(HR)", **extra)
 
-    def adopt(self, b=None, budget=1, **extra):
-        return self.observe("adopted", baseline=b or self.baseline(), followupBudget=budget,
+    def adopt(self, **extra):
+        return self.observe("adopted", readAt=self.now.isoformat(),
                             at=(self.now + timedelta(minutes=5)).isoformat(), **extra)
 
     def thread(self, company="示例科技"):
         return self.ws.run("threads", "--company", company)[1]["threads"][0]
 
-    def allowed(self, t):
-        return ledger.followup_eligibility(t, self.now, TZ)[0]
-
-    def pause(self, member, **extra):
-        return self.observe("paused", decision=self.decision, member=member,
-                            company=f"成员{member}科技", baseline=self.baseline(),
-                            tags=["legacy", "legacy-batch"], **extra)
-
-    def member_event(self, observed, member, **extra):
-        return self.observe(observed, decision=self.decision, member=member,
-                            company=f"成员{member}科技", **extra)
-
-    def state(self):
-        return self.ws.run("decision", "--id", self.decision)[1]
-
-    def test_baseline_budget_result_table(self):
-        cases = [(1, 1, 1, True, 1), (1, 0, 1, False, 1),
-                 (2, 6, 1, False, 1), (2, 8, 1, True, 1),
-                 (3, 8, 1, False, 0), (1, 8, 0, False, 0),
-                 (1, 8, 2, True, 2)]
-        for i, (trailing, days, budget, allowed, left) in enumerate(cases):
-            with self.subTest(case=i):
-                company = f"结果表{i}科技"
-                self.assertEqual(self.adopt(self.baseline(trailing, days), budget, company=company)[0], 0)
-                t = self.thread(company)
-                self.assertEqual(self.allowed(t), allowed)
-                self.assertEqual(t["legacyBudgetLeft"], left)
-                self.assertEqual(t["followupsSinceAdoption"], 0)
-                self.assertEqual(t["followupsSinceReply"], trailing)
-                self.assertEqual(t["lastOutbound"]["kind"], "legacy")
-
-    def test_cooldown_seven_day_boundary(self):
-        for seconds, expected in [(-1, False), (0, True), (1, True)]:
-            company = f"边界{seconds}科技"
-            last = self.now - timedelta(days=7, seconds=seconds)
-            self.adopt(self.baseline(2, lastOurAt=last.isoformat()), company=company)
-            self.assertEqual(self.allowed(self.thread(company)), expected)
-
-    def test_date_upper_bound_blocks_same_day(self):
-        b = self.baseline(lastOurAt=self.now.replace(hour=23, minute=59, second=59).isoformat())
-        self.assertEqual(self.adopt(b)[0], 0)
-        t = self.thread()
-        self.assertFalse(self.allowed(t))
-        self.assertIn("今天", ledger.followup_eligibility(t, self.now, TZ)[1])
-
-    def test_budget_consumed_and_reply_only_resets_streak(self):
-        for budget in (1, 2):
-            company = f"额度{budget}科技"
-            self.adopt(budget=budget, company=company)
-            for n in range(budget):
-                self.ws.greet(kind="followup", skill="followup", company=company,
-                              recruiter="示例招聘者(HR)", at=self.now.isoformat())
-                t = self.thread(company)
-                self.assertEqual(t["legacyBudgetLeft"], budget - n - 1)
-                self.assertEqual(t["followupsSinceAdoption"], n + 1)
-            self.assertFalse(self.allowed(t))
-            self.observe("replied", company=company)
-            t = self.thread(company)
-            self.assertEqual(t["followupsSinceReply"], 0)
-            self.assertEqual(t["followupsSent"], 3)
-            self.assertEqual(t["legacyBudgetLeft"], 0)
-            self.assertEqual(t["followupsSinceAdoption"], budget)
-
-    def test_hr_baseline_without_our_time_then_agent_reply(self):
-        b = self.baseline(0, lastSpeaker="hr", lastOurAt=None,
-                          lastHrAt=(self.now - timedelta(days=1)).isoformat(), lastOurState=None)
-        self.assertEqual(self.adopt(b)[0], 0)
-        t = self.thread()
-        self.assertIsNone(t["lastOutbound"])
-        self.assertFalse(self.allowed(t))
-        self.assertEqual(t["followupsSinceReply"], 0)
-        self.assertEqual(t["lastReplyAt"], b["lastHrAt"])
-        self.ws.greet(kind="reply", recruiter="示例招聘者(HR)", at=self.now.isoformat())
-        self.assertTrue(self.allowed(self.thread()))
-
-    def test_baseline_each_invalid_field_rejected(self):
-        invalid = [None, [], {}, {**self.baseline(), "text": "不能存历史原文"}]
-        for field, values in {
-            "readAt": [None, "坏时间", "2026-11-02T12:00:00", (self.now + timedelta(days=1)).isoformat()],
-            "lastSpeaker": [None, "other", []],
-            "trailingOur": [-1, 4, 1.0, True, "1", 0],
-            "lastOurAt": [None, "坏时间", "2026-11-02"],
-            "lastHrAt": ["坏时间", "2026-11-02"],
-            "lastOurState": ["sent", 1],
-        }.items():
-            invalid += [{**self.baseline(), field: v} for v in values]
-        invalid += [self.baseline(0, lastSpeaker="hr", lastHrAt=None, lastOurState=None),
-                    self.baseline(1, lastSpeaker="hr", lastHrAt=self.now.isoformat(), lastOurState=None),
-                    self.baseline(0, lastSpeaker="hr", lastHrAt=self.now.isoformat(), lastOurState="read")]
-        for b in invalid:
-            with self.subTest(baseline=b):
-                code, out = self.observe("adopted", baseline=b, followupBudget=1,
-                                         at=(self.now + timedelta(minutes=5)).isoformat())
-                self.assertEqual(code, 2, out)
-        for missing in ("baseline", "followupBudget"):
-            event = {"baseline": self.baseline(), "followupBudget": 1}
-            del event[missing]
-            self.assertEqual(self.observe("adopted", at=self.now.isoformat(), **event)[0], 2)
-
-    def test_budget_type_range_and_no_future_boundary(self):
-        for value in (-1, 4, True, 1.0, "1", None):
-            self.assertEqual(self.adopt(budget=value)[0], 2)
-        self.assertEqual(self.adopt(boundaryAt=(self.now + timedelta(days=1)).isoformat())[0], 2)
-        for budget in range(4):
-            self.assertEqual(self.adopt(budget=budget, company=f"合法额度{budget}")[0], 0)
-
-    def test_admission_attempt_statuses(self):
-        for status in ("sent", "pending", "uncertain", "already_contacted", "skipped", "failed_no_send"):
-            company = f"准入{status}科技"
-            common = dict(company=company, recruiter="示例招聘者(HR)")
-            if status in ("already_contacted", "skipped"):
-                self.ws.append(status=status, **common)
-            else:
-                self.ws.greet(final=None if status == "pending" else status, **common)
-            code, out = self.adopt(company=company)
-            self.assertEqual(code, 2 if status in ("sent", "pending", "uncertain") else 0, out)
-
-    def test_admission_closed_and_other_pauses(self):
-        for obs in ("declined", "rejected", "job_closed", "risk"):
-            self.observe(obs, company=obs)
-            self.assertEqual(self.adopt(company=obs, skill="user")[0], 2)
-        self.observe("paused", company="别的暂停", decision="D-20261102-02")
-        self.assertEqual(self.adopt(company="别的暂停", decision=self.decision)[0], 2)
-        self.assertEqual(self.adopt(company="别的暂停")[0], 2)
-
-    def test_own_batch_pause_retained_and_all_admission_conditions_apply(self):
-        self.pause("A")
-        self.assertEqual(self.adopt(company="成员A科技", decision=self.decision, member="A")[0], 0)
-        self.assertEqual(self.thread("成员A科技")["pausedBy"], [self.decision])
-        for member, obs in [("B", "manual"), ("C", "job_closed")]:
-            self.pause(member)
-            self.member_event(obs, member)
-            self.assertEqual(self.adopt(company=f"成员{member}科技", decision=self.decision, member=member)[0], 2)
-        for member, status in [("D", None), ("E", "uncertain"), ("F", "sent")]:
-            self.pause(member)
-            self.ws.greet(final=status, company=f"成员{member}科技", recruiter="示例招聘者(HR)")
-            self.assertEqual(self.adopt(company=f"成员{member}科技", decision=self.decision, member=member)[0], 2)
-
-    def test_manual_adoption_only_explicit_user_clears_manual(self):
-        self.observe("manual")
-        self.assertEqual(self.adopt()[0], 2)
-        self.assertTrue(self.thread()["manual"])
-        self.assertEqual(self.adopt(skill="user")[0], 0)
-        self.assertFalse(self.thread()["manual"])
-
-    def test_duplicate_preserves_first_event_and_conflict_identity(self):
-        code, out = self.adopt(decision=self.decision, member="A")
-        self.assertEqual(code, 0, out)
-        first = out["event"]
-        before = ledger.events_path(self.ws.path).read_bytes()
-        # 即使后来接管，重复判断也先于准入；重试不能重新清除 manual。
-        self.observe("manual")
-        after_manual = ledger.events_path(self.ws.path).read_bytes()
-        code, out = self.adopt(self.baseline(2), budget=3, decision=self.decision, member="A")
-        self.assertEqual(code, 0, out)
-        self.assertTrue(out["duplicate"])
-        self.assertEqual(out["event"], first)
-        self.assertTrue(self.thread()["manual"])
-        self.assertEqual(ledger.events_path(self.ws.path).read_bytes(), after_manual)
-        for identity in ({}, {"decision": self.decision, "member": "B"},
-                         {"decision": "D-20261102-02", "member": "A"}):
-            code, out = self.adopt(**identity)
-            self.assertEqual(code, 1, out)
-            self.assertTrue(out["conflict"])
-            self.assertTrue(out["duplicate"])
-        self.assertTrue(after_manual.startswith(before))
-        self.assertEqual(ledger.events_path(self.ws.path).read_bytes(), after_manual)
-
-    def test_adoption_requires_live_send_lock_and_unpaused_workspace(self):
-        self.ws.expire_lock()
-        self.assertEqual(self.adopt()[0], 2)
+    def test_adoption_requires_explicit_user_valid_read_time_and_live_lock(self):
+        self.assertEqual(self.adopt(skill="followup")[0], 2)
+        for read_at in (None, "", "2026-11-02T12:00:00", "2026-11-03T12:00:00+08:00"):
+            self.assertEqual(self.observe("adopted", readAt=read_at, at=self.now.isoformat())[0], 2)
         self.ws.run("lock", "release", "--run", "run-1")
         self.assertEqual(self.adopt()[0], 2)
+        self.ws.ensure_lock("run-1")
+        self.assertEqual(self.adopt()[0], 0)
+        self.assertEqual(self.adopt()[1]["duplicate"], True)
+
+    def test_adoption_cannot_bypass_no_send_or_global_pause(self):
+        self.ws.run("lock", "release", "--run", "run-1")
         self.ws.run("lock", "acquire", "--skill", "followup", "--run", "run-1", "--no-send")
         self.assertEqual(self.adopt()[0], 2)
         self.ws.run("lock", "release", "--run", "run-1")
         self.ws.ensure_lock("run-1")
-        self.ws.run("pause", "on", "--reason", "合成暂停")
+        self.ws.run("pause", "on", "--reason", "合成安全暂停")
         self.assertEqual(self.adopt()[0], 2)
         self.ws.run("pause", "off")
         self.assertEqual(self.adopt()[0], 0)
-        self.ws.run("pause", "on", "--reason", "合成暂停")
-        self.assertEqual(self.adopt()[0], 2)  # 重试也不能越过有效锁检查
 
-    def test_concurrent_adoption_one_append_only(self):
-        event = {"platform": "boss", "runId": "run-1", "skill": "followup", "kind": "observe",
-                 "observed": "adopted", "company": "并发登记", "recruiter": "示例招聘者(HR)",
-                 "reason": "合成登记", "baseline": self.baseline(), "followupBudget": 1,
-                 "at": self.now.isoformat()}
-        cmd = [sys.executable, "-B", str(SCRIPTS / "ledger.py"), "--workspace", str(self.ws.path),
-               "append", "--json", json.dumps(event)]
-        procs = [subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
-        outputs = [json.loads(p.communicate()[0]) for p in procs]
-        self.assertEqual([p.returncode for p in procs], [0, 0])
-        self.assertEqual(sum(o.get("duplicate", False) for o in outputs), 1)
-        events, _ = ledger.read_events(self.ws.path)
-        self.assertEqual(len(events), 1)
+    def test_second_today_activity_still_pauses_after_one_acknowledged(self):
+        self.adopt()
+        item = {"shown": "今天", "precision": "day", "kind": "text", "count": 1}
+        self.observe("manual")
+        self.observe("released", acknowledged=[item])
+        self.assertFalse(self.thread()["manual"])
+        self.assertEqual(self.thread()["acknowledged"], [item])
+        # 页面第2条同标签活动超出已确认条数，技能须另行暂停，而非扩大确认范围。
+        self.observe("paused", decision="D-20261102-02", reason="今天第2条我方活动无法确定执行者")
+        self.assertEqual(self.thread()["pausedBy"], ["D-20261102-02"])
+        self.assertEqual(self.thread()["acknowledged"][0]["count"], 1)
 
     def test_boundary_uses_read_time_sent_and_release_max(self):
-        b = self.baseline()
-        self.adopt(b)
-        self.assertEqual(self.thread()["boundaryAt"], b["readAt"])
+        self.adopt()
+        self.assertEqual(self.thread()["boundaryAt"], self.now.isoformat())
         sent = self.now + timedelta(minutes=10)
         self.ws.greet(kind="reply", recruiter="示例招聘者(HR)", at=sent.isoformat())
         self.assertEqual(self.thread()["boundaryAt"], sent.isoformat())
@@ -1108,14 +904,14 @@ class LegacyThreadTest(unittest.TestCase):
         self.assertEqual(self.thread()["acknowledged"], [])
 
     def test_release_clears_manual_without_resetting_counts(self):
-        self.adopt(budget=2)
+        self.adopt()
         self.ws.greet(kind="followup", recruiter="示例招聘者(HR)")
         before = self.thread()
         self.observe("manual")
         self.observe("released", skill="user")
         after = self.thread()
         self.assertFalse(after["manual"])
-        for key in ("followupsSent", "followupsSinceReply", "followupsSinceAdoption", "legacyBudgetLeft", "baseline"):
+        for key in ("followupsSent", "followupsSinceReply", "readAt"):
             self.assertEqual(after[key], before[key])
 
     def test_all_local_sent_available_including_boundary_and_resume(self):
@@ -1126,168 +922,6 @@ class LegacyThreadTest(unittest.TestCase):
         self.assertEqual(len(t["outboundTexts"]), 9)
         self.assertEqual(t["outboundTexts"][-1]["kind"], "resume")
         self.assertEqual(t["outboundTexts"][-1]["at"], t["boundaryAt"])
-
-    def test_three_members_partial_not_done_and_compatible_local_actions(self):
-        for member in "ABC":
-            self.pause(member)
-        self.adopt(company="成员A科技", decision=self.decision, member="A")
-        self.member_event("unpaused", "A")
-        out = self.state()
-        self.assertEqual(out["state"], "partial")
-        self.assertEqual(out["localActions"], ["adopted"])
-        self.assertEqual([(m["member"], m["result"], m["unpaused"]) for m in out["members"]],
-                         [("A", "adopted", True), ("B", None, False), ("C", None, False)])
-        for m in out["members"]:
-            for key in ("company", "title", "recruiter", "baseline", "reason"):
-                self.assertIn(key, m)
-        self.assertEqual(len(out["stillPausing"]), 2)
-
-    def test_partial_unpause_does_not_clear_unstepped_block(self):
-        for status, expected in [("uncertain", "in_progress"), ("sent", "needs_review"),
-                                 ("failed_no_send", "needs_review")]:
-            with self.subTest(status=status):
-                for member in "ABC":
-                    self.pause(member)
-                self.member_event("unpaused", "A")
-                event = {"schemaVersion": 2, "platform": "boss", "account": "zhipin-test", "runId": "old-run",
-                         "attemptId": f"old-{status}", "skill": "followup", "kind": "reply", "status": status,
-                         "company": "成员B科技", "title": None, "location": None, "recruiter": "示例招聘者(HR)",
-                         "decision": self.decision, "reason": "旧版未编号", "evidence": None, "at": self.now.isoformat()}
-                ledger.append_line(self.ws.path, event)
-                self.assertEqual(self.state()["state"], expected)
-                code, out = self.ws.run("check", "--platform", "boss", "--kind", "reply", "--company", "成员C科技",
-                                        "--recruiter", "示例招聘者(HR)", "--decision", self.decision)
-                self.assertEqual(code, 1, out)
-                self.assertIn("decision_needs_review", [r["type"] for r in out["reasons"]])
-                self.assertEqual(self.ws.append(kind="reply", status="pending", company="成员C科技",
-                                               recruiter="示例招聘者(HR)", decision=self.decision, step="reply1")[0], 2)
-                ledger.events_path(self.ws.path).unlink()
-
-    def test_batch_interruptions_recover_from_members_and_idempotent_adopt(self):
-        # 部分 paused；全部 paused、无 inbox；A 登记后、分诊新 paused 前。
-        self.pause("A")
-        self.assertEqual(len(self.state()["members"]), 1)
-        self.pause("B")
-        self.pause("C")
-        self.assertEqual(len(self.state()["members"]), 3)
-        self.assertFalse((self.ws.path / "inbox/decisions.md").exists())
-        self.adopt(company="成员A科技", decision=self.decision, member="A")
-        a = self.state()["members"][0]
-        self.assertEqual((a["result"], a["unpaused"]), ("adopted", False))
-        # 这个输出要求技能恢复后重读分诊，不能将 adopted 当完成标记。
-        code, out = self.adopt(company="成员A科技", decision=self.decision, member="A")
-        self.assertEqual(code, 0)
-        self.assertTrue(out["duplicate"])
-        self.observe("paused", company="成员A科技", decision="D-20261102-02", reason="新面试邀约待决定")
-        self.member_event("unpaused", "A")
-        self.assertEqual(self.thread("成员A科技")["pausedBy"], ["D-20261102-02"])
-        self.adopt(company="成员B科技", decision=self.decision, member="B")
-        self.member_event("manual", "C", skill="user")
-        self.assertEqual(self.state()["state"], "partial")
-        self.member_event("unpaused", "B")
-        self.assertEqual(self.state()["state"], "partial")
-        self.member_event("unpaused", "C")
-        self.assertEqual(self.state()["state"], "done")
-        self.assertEqual(self.state()["stillPausing"], [])
-
-    def test_conflicting_adoption_stays_paused_without_member_result(self):
-        self.adopt(company="成员A科技", decision="D-20261102-02", member="A")
-        self.pause("A")
-        code, out = self.adopt(company="成员A科技", decision=self.decision, member="A")
-        self.assertEqual(code, 1, out)
-        self.assertTrue(out["conflict"])
-        self.assertIsNone(self.state()["members"][0]["result"])
-        self.assertFalse(self.state()["members"][0]["unpaused"])
-        self.assertEqual(self.thread("成员A科技")["pausedBy"], [self.decision])
-
-    def test_member_and_tags_validation_and_unique_identity(self):
-        for member in ("", "AA", "a", "K", 1, None):
-            self.assertEqual(self.observe("paused", decision=self.decision, member=member)[0], 2)
-        self.assertEqual(self.observe("paused", member="A")[0], 2)
-        for tags in (None, "legacy", [None], [1], [""], ["  "]):
-            self.assertEqual(self.observe("paused", tags=tags)[0], 2)
-        self.assertEqual(self.pause("A")[0], 0)
-        self.assertEqual(self.pause("A")[0], 0)
-        self.assertEqual(len(self.state()["members"]), 1)
-        self.assertEqual(self.observe("paused", decision=self.decision, member="A", company="另一家公司")[0], 2)
-        self.assertEqual(self.observe("paused", decision=self.decision, member="B", company="成员A科技")[0], 2)
-
-    def test_legacy_contact_sources_and_quota_unchanged(self):
-        before = self.ws.run("quota", "--platform", "boss")[1]
-        for obs in ("adopted", "paused", "declined", "rejected", "job_closed", "risk"):
-            company = f"去重{obs}科技"
-            if obs == "adopted":
-                self.adopt(company=company)
-            else:
-                self.observe(obs, company=company, tags=["legacy"])
-            code, out = self.ws.run("check", "--platform", "boss", "--company", company)
-            self.assertEqual(code, 1)
-            self.assertIn("legacy_contact", [r["type"] for r in out["reasons"]])
-        after = self.ws.run("quota", "--platform", "boss")[1]
-        for key in ("greetsToday", "remainingToday", "greetsThisRun", "remainingThisRun"):
-            self.assertEqual(after[key], before[key])
-        events, _ = ledger.read_events(self.ws.path)
-        self.assertTrue(all(e["kind"] == "observe" for e in events))
-
-    def test_legacy_contact_negative_and_existing_matching_rules(self):
-        self.observe("paused", company="普通暂停")
-        self.assertEqual(self.ws.run("check", "--platform", "boss", "--company", "普通暂停")[0], 0)
-        self.adopt(company="旧联系科技", jobId="old-job")
-        check = lambda *args: self.ws.run("check", "--company", "旧联系科技", *args)
-        self.assertEqual(check("--platform", "other")[0], 0)
-        self.assertEqual(check("--platform", "boss", "--scope", "job", "--title", "后端开发", "--job-id", "new-job")[0], 0)
-        self.assertEqual(check("--platform", "boss", "--scope", "job", "--job-id", "old-job")[1]["reasons"][0]["type"], "legacy_contact")
-        out = check("--platform", "boss", "--scope", "job", "--title", "前端开发", "--job-id", "new-job")[1]
-        self.assertEqual(out["reasons"][0]["type"], "reposted_suspect")
-        out = check("--platform", "boss", "--scope", "job", "--title", "前端开发")[1]
-        self.assertEqual(out["reasons"][0]["type"], "legacy_contact")
-        self.assertEqual(self.ws.run("check", "--platform", "boss", "--company", "旧联系科技分部")[1]["reasons"][0]["type"],
-                         "company_suspect")
-
-    def test_own_pause_does_not_override_another_pause_or_closed_for_user(self):
-        self.pause("A")
-        self.observe("paused", company="成员A科技", decision="D-20261102-02")
-        self.assertEqual(self.adopt(company="成员A科技", decision=self.decision, member="A", skill="user")[0], 2)
-        self.pause("B")
-        self.member_event("manual", "B")
-        self.assertEqual(self.adopt(company="成员B科技", decision=self.decision, member="B", skill="user")[0], 0)
-        t = self.thread("成员B科技")
-        self.assertFalse(t["manual"])
-        self.assertEqual(t["pausedBy"], [self.decision])
-
-    def test_profile_budget_change_does_not_change_adopted_budget(self):
-        self.adopt(budget=1)
-        before = self.thread()
-        (self.ws.path / "profile.json").write_text(json.dumps({"limits": {"legacyFollowupBudget": 3}}))
-        after = self.thread()
-        self.assertEqual(after["legacyBudgetLeft"], 1)
-        self.assertEqual(after["followupsSent"], before["followupsSent"])
-
-    def test_partial_unpause_keeps_numbered_in_progress_and_failed_priorities(self):
-        for member in "ABC":
-            self.pause(member)
-        self.member_event("unpaused", "A")
-        aid = self.ws.greet(final=None, kind="reply", company="成员B科技", recruiter="示例招聘者(HR)",
-                            decision=self.decision, step="reply1")
-        self.assertEqual(self.state()["state"], "in_progress")
-        self.ws.append(kind="reply", status="failed_no_send", attemptId=aid, company="成员B科技",
-                       recruiter="示例招聘者(HR)", decision=self.decision, step="reply1")
-        self.assertEqual(self.state()["state"], "failed")
-
-    def test_member_repaused_is_not_reported_unpaused_or_done(self):
-        self.pause("A")
-        self.member_event("manual", "A")
-        self.member_event("unpaused", "A")
-        self.assertEqual(self.state()["state"], "done")
-        self.pause("A")
-        self.assertEqual(self.state()["state"], "partial")
-        self.assertFalse(self.state()["members"][0]["unpaused"])
-
-    def test_missing_thread_message_points_to_adoption(self):
-        code, out = self.ws.run("check", "--platform", "boss", "--kind", "followup", "--company", "无记录")
-        self.assertEqual(code, 1)
-        self.assertEqual(out["reasons"][0]["type"], "no_thread")
-        self.assertIn("observe/adopted", out["reasons"][0]["detail"])
 
 
 if __name__ == "__main__":
