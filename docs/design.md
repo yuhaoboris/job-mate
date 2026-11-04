@@ -670,16 +670,16 @@ Agent **绝对不答应、也不提出任何面试时间**。凡涉及面试（�
 - **事实来源**：inbox 与 ledger 是事实来源。顺序是先写 inbox，再排队通知；通知送达不等于本人批准。
 - **路由冻结**：每个条目在首次排队时冻结路由（`channel`、`ownerId`、`larkProfile`）。`im_lark.py` 的每一次 lark-cli 调用都带该条目冻结路由的 `--profile`；入站读取带 `poll` 返回的当前路由的 `--profile`。
 - **出站**：`notify send` 只排队。`im_lark.py sync` 负责认领队列，用机器人身份发送（`lark-cli --profile <冻结配置档> im +messages-send --as bot`，引用回复用 `+messages-reply`，带该条目固定的幂等键），然后提交回执。
-  - 回执 `sent` 必须带真实返回的 `message_id`、`chat_id` 和 `create_time`（毫秒）。发送返回里没有 `create_time` 时，适配器按 `message_id` 再查一次消息取得；仍取不到就提交不带时间的 `sent`。这条消息不建立「从哪条之后的回复算本人答复」的起点，在汇报中说明。
+  - 回执 `sent` 使用真实返回的 `message_id`、`chat_id` 和可信的 epoch 毫秒 `create_time`。1.0.96 的发送 shortcut 返回无时区的秒级日期字符串，mget/list shortcut 还丢失秒，均不能当作毫秒时间或猜时区补零。发送成功但无可信时间时，通过 `lark-cli --profile <冻结配置档> api GET /open-apis/im/v1/messages/<message_id> --as bot --format json` 补查一次；从实测 `data.items` 中严格匹配原消息与私聊 ID 后，取十进制毫秒字符串 `create_time` 并验证范围。仍取不到则提交不带时间的 `sent`，不因补查失败重发已成功的消息。这条消息不建立「从哪条之后的回复算本人答复」的起点，在汇报中说明。
   - 第一条带可信时间的成功消息建立与本人的私聊和读取起点（`poll.readable` 变为 true）。
   - 超时或结果不明记 `unknown`，不自动重发，在汇报中提示本人。
   - 明确失败记 `failed`，下一轮可以再发，同一条目最多 3 次。
-- **入站**：只有 `poll.readable` 为 true 时才读取。`im_lark.py sync` 用 `poll` 给出的 `chatId` 与 `sinceMs`，按时间升序完整分页读取私聊消息（`im +chat-messages-list --as bot --chat-id … --order asc`），规范化后交给 `notify incoming`。
-  - 每条消息都要带 `messageId`、`chatId`、`createTime`、`senderId`、`senderType`、`text`、`parentId`、`deleted`。`chatId` 必须等于 `poll` 的 `chatId`，否则整批拒收。
-  - 只接受该私聊中本人发出的用户消息，身份以平台返回的发送者 ID 与类型为准，不看正文自称。
-  - 分页不完整时报告「飞书消息未读完」，不能说没有新答复。
+- **入站**：只有 `poll.readable` 为 true 时才读取。通过 `lark-cli --profile <poll配置档> api GET /open-apis/im/v1/messages --as bot --params '<JSON>' --format json` 读取精确原生字段，不使用会格式化时间的 shortcut。参数固定 `container_id_type:chat`、`container_id:poll.chatId`、`sort_type:ByCreateTimeAsc`、`page_size:50`；`start_time` 是 `max(0, sinceMs // 1000 - 1)` 的十进制秒字符串，`end_time` 为同步开始时间向上取整到秒的固定上界。本次所有页保持相同时间窗；批次 `since` 为实际查询下界乘 1000，重叠消息由 messageId 去重。
+  - 按实测 `data.items` 读取，`data.has_more` 必须是布尔；为 true 时下一页必须带非空且未见过的 `data.page_token`，至 false 才完整，最多 20 页。不用 CLI 自动分页猜合并后的完整性。缺/重复 token、异会话或无法规范化的消息使本次批次拒收、不推进游标；仅达到页数上限时可把已验证的连续前缀以 `complete:false` 交给 incoming。未完整时报告「飞书消息未读完」，不能说没有新答复。
+  - 每条规范化消息带 `messageId`、`chatId`、`createTime`、`senderId`、`senderType`、`text`、`parentId`、`deleted`。原生 `create_time` 使用十进制 epoch 毫秒字符串，严格校验后转整数；`parent_id` 缺失为 null（shortcut 的 `reply_to` 不能混用）。文字从 `msg_type:text` 的 `body.content` JSON 对象中取字符串 `text`，不把未知类型、格式损坏或未知时间强行转换成有效答复。删除消息不消费其正文。`chatId` 必须等于 poll 的 chatId，否则整批拒收。
+  - 只接受该私聊中 `sender.sender_type:user`、`sender.id_type:open_id` 且 `sender.id` 等于 ownerId 的本人消息，不看正文自称；bot 的 app_id 不转换为用户 ID，也不用于建立本人答复。
 - **调用 lark-cli 的方式**：参数列表直接传给可执行程序，**不经过任何 shell 或批处理文件**。Windows 上 `lark-cli` 通常是 npm 生成的 `.cmd` 包装，而 `.cmd` 一定会经过系统 shell，正文里的引号、`&`、`%`、换行可能被改写或执行。因此 Windows 上解析 npm 包装找到真正的脚本，用 `node <脚本> …` 调用；无法安全解析时拒绝发送，并由 `doctor` 报告。也可以在 `im.larkCommand` 中显式配置可执行程序与参数前缀（数组），例如 `["node", "C:\\…\\lark-cli\\bin\\cli.js"]`。无论哪种来源，都先解析出最终可执行文件的绝对路径再校验：拒绝批处理与脚本入口（`.cmd`、`.bat`、`.ps1`、`.vbs` 等），拒绝 shell 与系统脚本解释器（`cmd`、`powershell`、`pwsh`、`sh`、`bash`、`zsh`、`wscript`、`cscript`，包含带扩展名、绝对路径和符号链接的写法），Windows 上只接受 `.exe`；`node` 是允许的固定脚本运行入口，不是允许 shell 的例外。不能因为 `shell=False` 就跳过最终入口检查。npm 包装只接受测试中固定的完整模板：设置 `%dp0%`，选择同目录 `node.exe` 或 PATH 中的 node，末行调用单一 `%dp0%` 下的 JS 文件并原样传 `%*`；只允许换行格式差异与受限的相对 JS 路径替换，禁止子串提取、额外命令及任意变量展开，解析不出就拒绝。除 Python 替身外，须在 Windows 用真实 node 与离线 argv 回显脚本验证引号、shell 元字符、Unicode 和换行逐字保持；该测试不调用飞书、不联网。
-- **响应结构**：适配器解析的字段路径，以 lark-cli 真实返回的样本为准（样本脱敏后保存在测试夹具中），不凭帮助文字或 `--dry-run` 推测。
+- **响应结构**：适配器解析的字段路径，以 lark-cli 真实返回的样本为准（样本脱敏后保存在测试夹具中），不凭帮助文字或 `--dry-run` 推测。1.0.96 的原生 GET 与两页私聊读取已单独采样：成功信封 `ok:true, identity:bot, data`，毫秒时间未格式化，引用为 `parent_id`；保留原 shortcut 样本作为精度不足的反例。原生读取依据官方[获取指定消息](https://open.feishu.cn/document/server-docs/im-v1/message/get.md)与[会话历史](https://open.feishu.cn/document/server-docs/im-v1/message/list.md)，不将普通引用回复样本冒充全部话题类型的覆盖证明。
 - **答复映射**：依次看引用的通知、完整决策 ID、独立序号（如「01 接受」）、唯一候选。「3点可以」「15k」不是序号；对应不上时追问（clarify），不猜。
 - **答复状态**：`received`（待解释）→ `ready`（结论已落盘、待执行）→ `consumed`（已执行或确认无需执行），另有 `clarifying` 与 `ignored`。
 - **指令**：本人私聊「暂停」「恢复」。暂停后禁止新的外发，guard 失败。
