@@ -530,7 +530,7 @@ class TailTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         aid = out["event"]["attemptId"]
         # append 的完整身份冻结留给 T5.3；此处只检验 bridge 不信冲突记录。
-        code, out = self.append(kind="reply", status="sent", attemptId=aid, text="本人批准的 回复")
+        code, out = self.history(kind="reply", status="sent", attemptId=aid, text="本人批准的 回复")
         self.assertEqual(code, 0, out)
         result = self.ok_tail(self.bridge_body(aid), base=base["tailId"])
         self.assertFalse(result["settled"])

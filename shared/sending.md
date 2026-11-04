@@ -21,6 +21,10 @@ check 接收同一份完整 JSON 意图及 run，只读调用同一判定路径�
 
 status、runId、skill、at、各ID、派生键、authorizedBy、decisionVersion、dedupGrant、profileRev、styleRev、内部绑定均由脚本生成。prepare 不收这些字段；append 终态只带原 attemptId 与已见事实，冻结字段由原 pending 继承，不能自行覆盖。本人批准原文含空白、换行、全角字符时逐字输入，不 trim、不规范化。
 
+## 冻结身份与回填
+
+首次 pending 非空身份不可改，原 null 字段只可补全一次；省略已知字段由脚本继承，不等于可以显式清空。原始 platform/account/jobId 不做 NFKC 合并；人类页面身份分别规范化，键保持精确比较，非空键不可借补字段重新定向。原 jobKey 为 fallback 且已非空时，新增不同 ID 不能改绑原尝试，须本人核对。归并保留首个身份表示及合法补齐值，不用最后一次页面字段覆盖原目标。低层旧错绑历史仍保留 sent 事实与身份冲突供审计，不能当新准备授权；原始实际 sent 的目标也继续参与去重。
+
 ## 点击前复查
 
 guard 只复核原 pending：当前有效锁/账号、本轮限制、原授权来源及绑定、全局/会话暂停、接管、关闭、停止名单、其他未决、决定有效版本或 ack 的同目标邀约与去重。自身 pending 不算其他未决，额度包含自身但不二次扣减；已用等于上限仍可执行该 pending。原来源失效不另选 grant 或长期授权；被新版废止的 pending 保留待核对，不抹去。dedupGrant 也须仍存在、绑定匹配且恰已占用一次。拒绝返回相同的 reasons/code/message 结构、退出1；参数或损坏数据退出2。通过才续锁并立即操作，等待或工具异常后重读页面重新 guard。

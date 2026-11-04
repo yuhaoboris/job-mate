@@ -68,7 +68,7 @@ kind：
 
 ## 动作状态与防重
 
-新尝试只可 pending，或独立 skipped / already_contacted。pending → sent / uncertain / failed_no_send；uncertain → sent / failed_no_send、failed_no_send → sent 仅限本人核对（skill: user）。其他终态不再追加；已有 sent 始终视为已发出。同一尝试的 kind、platform、company 不可更改。
+新尝试只可 pending，或独立 skipped / already_contacted。pending → sent / uncertain / failed_no_send；uncertain → sent / failed_no_send、failed_no_send → sent 仅限本人核对（skill: user）。其他终态不再追加；已有 sent 始终视为已发出。同一尝试的原非 null 身份冻结；不可改 kind、platform、account、company、recruiter、title、jobId、jobKey、threadKey。平台、账号、原始职位ID与派生键精确比较，人类公司/职位/招聘者按规范化比较。原 null 只能补一次，派生键也仅能随合法 null 补齐；既有非空 fallback jobKey 不自动升级到另一 ID。终态省略的已知身份由脚本继承，显式 null 不能清除；冲突退出2，转本人核对。
 
 - 每次可能发送前先用 prepare 登记 pending，成功后才操作；每个可能外发的动作分别 guard。结果回填同一 attemptId。
 - sent 须有当前业务成功证据；进入会话、按钮变色、工具成功、空白页或「没看到消息」均不能代替证据。超时或未知记 uncertain，不重放。

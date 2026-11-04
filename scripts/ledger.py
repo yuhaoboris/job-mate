@@ -967,6 +967,28 @@ def attempt_key(event):
     return event["platform"], event["account"], event["attemptId"]
 
 
+FROZEN_IDENTITY = ("platform", "account", "kind", "company", "recruiter", "title", "jobId", "jobKey", "threadKey")
+
+
+def identity_equal(field, left, right):
+    if field in ("platform", "account", "kind", "jobId", "jobKey", "threadKey"):
+        return left == right
+    normalize = norm_company if field == "company" else norm_text
+    return normalize(left) == normalize(right)
+
+
+def frozen_identity(events):
+    identity, conflicts = {}, []
+    for event in events:
+        for field in FROZEN_IDENTITY:
+            value = event.get(field)
+            if identity.get(field) is None:
+                identity[field] = value
+            elif value is not None and not identity_equal(field, identity[field], value):
+                conflicts.append({"field": field, "from": identity[field], "to": value})
+    return identity, conflicts
+
+
 def attempts_of(events):
     """按 (platform, account, attemptId) 归并动作事件。"""
     out = {}
@@ -997,6 +1019,8 @@ def attempts_of(events):
             "firstAt": first["at"],
             "lastAt": evs[-1]["at"],
         })
+        identity, conflicts = frozen_identity(evs)
+        a.update(identity, identityConflicts=conflicts)
     return out
 
 
@@ -1019,9 +1043,14 @@ def check_transition(prior, ev):
     first = prior[0]
     if first["kind"] not in ACTION_KINDS:
         raise LedgerError(f"attemptId {ev['attemptId']} 已被观察事件使用")
-    for k in ("kind", "platform", "company"):
-        if norm_text(first[k]) != norm_text(ev[k]):
-            raise LedgerError(f"attempt {ev['attemptId']} 的 {k} 与首条记录不一致（{first[k]} → {ev[k]}）")
+    identity, conflicts = frozen_identity(prior)
+    if conflicts:
+        conflict = conflicts[0]
+        raise LedgerError(f"attempt {ev['attemptId']} 历史身份冲突 {conflict['field']}（{conflict['from']} → {conflict['to']}），须本人核对")
+    for field in FROZEN_IDENTITY:
+        known, value = identity.get(field), ev.get(field)
+        if known is not None and not identity_equal(field, known, value):
+            raise LedgerError(f"attempt {ev['attemptId']} 的 {field} 与冻结身份不一致（{known} → {value}）")
     current = resolve_status([e["status"] for e in prior])
     allowed = {
         "pending": {"sent", "uncertain", "failed_no_send"},
@@ -1334,6 +1363,9 @@ def first_contact_reasons(args, events, scope):
         raise LedgerError("jobId 与链接中可读取的 ID 不符")
     job_id = args.job_id or url_id
     contacts = [a for a in attempts_of(events).values() if attempt_blocks(a, args.run)]
+    # 历史错绑不能把实际 sent 的另一个目标从去重依据中抹掉；原尝试身份仍保持冻结。
+    contacts += [{**e, "lastAt": e["at"], "jobId": e.get("jobId")} for e in events
+                 if e["kind"] in ACTION_KINDS and e["status"] == "sent"]
     contacts += [{**ev, "lastAt": ev["at"], "jobId": ev.get("jobId"), "status": "adopted"}
                  for ev in events if ev["kind"] == "observe" and ev["observed"] == "adopted"]
     for a in contacts:
@@ -1480,8 +1512,8 @@ def decision_attempt(attempt, decision, owners, effective, invitations, position
     steps = {e["step"] for e in attempt["events"] if e.get("step")}
     owner = owners.get(attempt["step"])
     claims = [e["decisionVersion"] for e in attempt["events"] if e.get("decisionVersion") is not None]
-    invitation = next((e for e in invitations if thread_scope(e) == thread_scope(attempt)
-                       and positions[e["eventId"]] < positions[first["eventId"]]), None)
+    invitation = next((e for e in invitations if any(thread_scope(e) == thread_scope(history)
+                       for history in attempt["events"]) and positions[e["eventId"]] < positions[first["eventId"]]), None)
     ack = attempt["step"] == "ack" and invitation is not None
     issue, version = None, None
     if ids != {decision} or len(steps) != 1:
@@ -1661,6 +1693,8 @@ def cmd_guard(args, ws):
             resolve_account(ws, attempt["platform"], attempt["account"])
         except LedgerError:
             return emit(outbound.deny("lock_invalid", "原 pending 的平台账号不匹配当前配置"), 1)
+        if attempt["identityConflicts"]:
+            return emit(outbound.deny("unresolved", "原尝试存在身份冲突，须本人核对"), 1)
         first = next(e for e in attempt["events"] if e["status"] == "pending")
         if lock and first.get("runPolicyRev") not in (None, run_policy_rev(lock)):
             return emit(outbound.deny("lock_invalid", "原 pending 的本轮冻结策略已改变"), 1)
@@ -1738,6 +1772,9 @@ def cmd_append(args, ws):
         raise LedgerError("执行已决定事项的外发须带 step（如 reply1、resume1）")
 
     adopting = ev["kind"] == "observe" and ev["observed"] == "adopted"
+    provided = set(json.loads(raw))
+    if ev.get("jobUrl") and job_id_from_url(ev["platform"], ev["jobUrl"]) is not None:
+        provided.add("jobId")  # 页面URL读出的新值不能被继承逻辑覆盖，须进入冻结核对。
 
     def write():
         events, _ = read_events(ws)
@@ -1751,6 +1788,18 @@ def cmd_append(args, ws):
         if ev["kind"] in ACTION_KINDS:
             prior = [e for e in events if attempt_key(e) == attempt_key(ev)]
             if prior:
+                identity, _ = frozen_identity(prior)
+                for field in FROZEN_IDENTITY:
+                    if field not in provided and identity.get(field) is not None:
+                        ev[field] = identity[field]
+                computed_thread, computed_job = event_keys(ev)
+                if "threadKey" not in provided:
+                    ev["threadKey"] = computed_thread
+                if "jobKey" not in provided:
+                    ev["jobKey"] = computed_job
+                errors = validate_event(ev)
+                if errors:
+                    raise LedgerError("补齐冻结身份后事件无效：" + "；".join(errors))
                 for field in ("authorizedBy", "decisionVersion", "dedupGrant", "profileRev", "styleRev", "runPolicyRev"):
                     if field in prior[0]:
                         ev[field] = prior[0][field]
