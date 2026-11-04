@@ -24,7 +24,7 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 | `guard --run <runId> --attempt <attemptId>` | 每个可能外发的点击前复查 pending 与有效锁，并续期；通过后立即点击 |
 | `decision --id <ID> [--step <编号>]` | 查询有效版本、各版本步骤及真实 attempts |
 | `threads` | 会话阶段、职位信息、待处理尾部、决定及原有状态；可按 platform / company / recruiter 筛选，不是页面证据 |
-| `quota --platform <平台> [--run <runId>]` / `stats [--since YYYY-MM-DD] [--until YYYY-MM-DD]` | 额度、间隔 / 统计 |
+| `quota --platform <平台> [--run <runId>]` / `stats` / `export` | 配额、统计、[导出](export.md) |
 | `stoplist list` / `stoplist add --name <公司> [--alias <别名>]... --reason <原因> --source <来源>` / `stoplist remove --name <公司>` | 停止名单；remove 按 name 精确匹配 |
 
 派生见[说明](derived.md)，账号与按平台配置见[账号说明](accounts.md)。

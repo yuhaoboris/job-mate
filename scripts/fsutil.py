@@ -79,6 +79,23 @@ def write_text_atomic(path, text):
         Path(tmp).unlink(missing_ok=True)
 
 
+def publish_text_new(path, text):
+    """同目录临时文件写完 fsync 后原子发布；目标若出现则拒绝，不覆盖任何旧文件。
+
+    os.link 是跨系统标准库接口；文件系统不支持时失败关闭，不退回截断写入。
+    """
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(tmp, path)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
 def read_text(path):
     return Path(path).read_text(encoding="utf-8")
 

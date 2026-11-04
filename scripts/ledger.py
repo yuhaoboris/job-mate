@@ -7,6 +7,8 @@
 
 import argparse
 import contextlib
+import csv
+import io
 import hashlib
 from contextvars import ContextVar
 import json
@@ -2159,6 +2161,146 @@ def cmd_stats(args, ws):
     return emit({"since": args.since, "until": args.until, "actions": actions, "observed": observed})
 
 
+# ---------- 只读导出 ----------
+
+EXPORT_COLUMNS = {
+    "events": tuple(REQUIRED) + ("status", "observed", "jobId", "jobUrl", "text", "resume", "decision", "step",
+        "decisionVersion", "version", "steps", "tags", "jdFacts", "checks", "facts", "asks", "result", "reasons",
+        "salaryText", "profileRev", "styleRev", "hrAt", "readAt", "tailId", "baseTailId", "baseExplicit", "anchor",
+        "fingerprints", "complete", "anchorUnique", "settled", "reviewRequired", "bridge", "bridgeComplete",
+        "bridgeEvidence", "listMark", "acknowledged", "extra"),
+    "threads": ("platform", "account", "threadKey", "company", "recruiter", "title", "jobId", "currentJobKey", "stage",
+        "lastAt", "lastOutbound", "lastObserved", "lastReplyAt", "info", "interviewIntentStages", "pendingTail",
+        "lastHandled", "lastOpenedAt", "unresolved", "manual", "pausedBy", "closed", "closedBy", "followupsSent",
+        "followupsSinceReply", "lastFollowupAt", "readAt", "boundaryAt", "acknowledged", "outboundTexts",
+        "decisions", "canFollowup", "followupReason", "extra"),
+    "jobs": ("platform", "account", "jobKey", "company", "title", "jobId", "lastAt", "screenEventId", "screenAt",
+        "result", "reasons", "jdFacts", "checks", "salaryText", "hasContactAttempt", "contacted", "unresolved", "extra"),
+}
+
+
+def export_jobs(events):
+    jobs = {}
+    for ev in events:
+        if not ev.get("jobKey"):
+            continue
+        key = ev["platform"], ev["account"], ev["jobKey"]
+        job = jobs.setdefault(key, {"platform": key[0], "account": key[1], "jobKey": key[2],
+            "screenEventId": None, "screenAt": None, "result": None, "reasons": [], "jdFacts": {}, "checks": [],
+            "salaryText": None, "hasContactAttempt": False, "contacted": False, "unresolved": []})
+        for field in ("company", "title", "jobId"):
+            if ev.get(field) is not None:
+                job[field] = ev[field]
+        job["lastAt"] = ev["at"]
+        if ev["kind"] == "screen":
+            job.update(screenEventId=ev["eventId"], screenAt=ev["at"], result=ev["result"], reasons=ev["reasons"],
+                       jdFacts=ev.get("jdFacts", {}), checks=ev.get("checks", []), salaryText=ev.get("salaryText"))
+        if ev["kind"] == "observe" and ev["observed"] == "adopted":
+            job["contacted"] = True
+    for attempt in attempts_of(events).values():
+        first_job = next((e["jobKey"] for e in attempt["events"] if e.get("jobKey")), None)
+        original = jobs.get((attempt["platform"], attempt["account"], first_job))
+        if original is not None:
+            original["hasContactAttempt"] |= attempt["everPending"]
+            if attempt["status"] in ("pending", "uncertain"):
+                original["unresolved"].append({k: attempt[k] for k in ("platform", "account", "attemptId", "kind", "status")})
+        sent, actual_job, _ = sent_metadata(attempt)
+        if sent or attempt["status"] == "already_contacted":
+            target = jobs.get((attempt["platform"], attempt["account"], actual_job or first_job))
+            if target is not None:
+                target["contacted"] = True
+    return list(jobs.values())
+
+
+def export_content(rows, columns, format):
+    if format == "jsonl":
+        return "".join(json.dumps(row, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n" for row in rows)
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(columns)
+    for row in rows:
+        values = []
+        for field in columns:
+            value = ({key: value for key, value in row.items() if key not in columns or key == "extra"} if field == "extra" else row.get(field))
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+            if isinstance(value, str):
+                # 只检测规范化探针，保留原值；CSV 展示层防公式，JSONL 不改业务原文。
+                probe = unicodedata.normalize("NFKC", value)
+                first = next((ch for ch in probe if not (ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf"))), "")
+                if first in ("=", "+", "-", "@"):
+                    value = "'" + value
+            values.append(value)
+        writer.writerow(values)
+    return "\ufeff" + output.getvalue()
+
+
+def export_destination(ws, value):
+    requested = Path(value).expanduser().absolute()
+    if ":" in requested.name:
+        raise LedgerError("导出文件名不能含冒号或备用数据流")
+    if requested.exists() or requested.is_symlink():
+        raise LedgerError("导出只创建外部新文件，不覆盖既有目标或符号链接")
+    # 固定已存在父目录的真实路径，系统临时目录的别名也按实际位置判断。
+    parent = requested.parent.resolve(strict=True)
+    if not parent.is_dir():
+        raise LedgerError("导出父目录须已存在")
+    target = parent / requested.name
+    suite = Path(__file__).resolve().parent.parent
+    if target.is_relative_to(ws.resolve()) or target.is_relative_to(suite):
+        raise LedgerError("导出目标必须在工作区和套件目录之外")
+    for ancestor in (parent, *parent.parents):
+        marker = ancestor / MARKER
+        if marker.exists() or marker.is_symlink() or ((ancestor / "scripts/ledger.py").is_file()
+                and ((ancestor / "skills").is_dir() or (ancestor / "SKILL.md").is_file())):
+            raise LedgerError("导出目标位于其他求职工作区或套件目录内")
+    return target
+
+
+def cmd_export(args, ws):
+    profile = load_profile(ws)
+    if not isinstance(profile, dict):
+        raise LedgerError("profile 须为对象")
+    tz = tz_of(profile)
+    bounds = []
+    for value in (args.since, args.until):
+        parsed = date.fromisoformat(value) if value is not None else None
+        if parsed is not None and parsed.isoformat() != value:
+            raise LedgerError("日期须为 YYYY-MM-DD")
+        bounds.append(parsed)
+    since, until = bounds
+    if since and until and since > until:
+        raise LedgerError("since 不得晚于 until")
+    events, _ = read_events(ws)
+    account = account_filter(ws, args, events)
+    if args.table == "events":
+        rows = [public_entry(e) for e in events]
+    elif args.table == "threads":
+        rows = list(build_threads(events, profile=profile).values())
+        now = fsutil.now(tz)
+        for row in rows:
+            row["canFollowup"], row["followupReason"] = followup_eligibility(row, now, tz)
+    else:
+        rows = export_jobs(events)
+    selected = []
+    for row in rows:
+        if (args.platform and row["platform"] != args.platform) or (account is not None and row["account"] != account):
+            continue
+        at = parse_at(row["at"] if args.table == "events" else row["lastAt"]).astimezone(tz).date()
+        if (since is None or at >= since) and (until is None or at <= until):
+            selected.append(row)
+    columns = EXPORT_COLUMNS[args.table]
+    content = export_content(selected, columns, args.format)
+    result = {"table": args.table, "format": args.format, "columns": list(columns), "count": len(selected)}
+    if args.out is not None:
+        target = export_destination(ws, args.out)
+        fsutil.publish_text_new(target, content)
+        result["out"] = str(target)
+    else:
+        result["content"] = content
+    return emit(result)
+
+
 # ---------- 运行锁 ----------
 # lock.json 记录持锁者；所有读取、接管、续期、释放都在 .lock.mutex 的独占锁内完成。
 
@@ -2440,6 +2582,14 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("validate", help="校验事件记录与停止名单")
+    export = sub.add_parser("export", help="只读导出；文件仅写工作区外新路径")
+    export.add_argument("--table", choices=tuple(EXPORT_COLUMNS), required=True)
+    export.add_argument("--format", choices=("csv", "jsonl"), required=True)
+    export.add_argument("--since")
+    export.add_argument("--until")
+    export.add_argument("--out")
+    export.add_argument("--platform")
+    export.add_argument("--account")
     tail = sub.add_parser("tail", help="读取会话尾部并记录指纹，不保存原文")
     tail.add_argument("--run", required=True)
     tail.add_argument("--thread", required=True)
@@ -2516,7 +2666,7 @@ def build_parser():
 
 COMMANDS = {
     "validate": cmd_validate, "check": cmd_check, "decision": cmd_decision, "guard": cmd_guard,
-    "append": cmd_append, "tail": cmd_tail,
+    "append": cmd_append, "tail": cmd_tail, "export": cmd_export,
     "quota": cmd_quota, "threads": cmd_threads, "stats": cmd_stats, "lock": cmd_lock,
     "pause": cmd_pause, "stoplist": cmd_stoplist,
 }
