@@ -873,7 +873,7 @@ class WorkspaceIsolationTest(unittest.TestCase):
         # 仅拷贝数据脚本，验证脱离 desktop 模块仍能加载、体检和拒绝旧选项。
         scripts = Path(self.tmp.name) / "isolated"
         scripts.mkdir()
-        for name in ("workspace.py", "ledger.py", "notify.py"):
+        for name in ("workspace.py", "ledger.py", "notify.py", "fsutil.py"):
             shutil.copy2(source.parent / name, scripts / name)
         for tail, expected in ((["check"], 0), (["check", "--env"], 2)):
             result = subprocess.run([sys.executable, "-I", str(scripts / "workspace.py"),

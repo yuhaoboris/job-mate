@@ -17,6 +17,9 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fsutil  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 PREFIX = "job-mate-"
 LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)\s#]+)(#[^)\s]*)?\)")
@@ -342,9 +345,9 @@ def publish(built, targets):
             dest = record["dest"]
             if dest.exists():
                 managed(dest, record["name"])
-                dest.rename(record["backup"])
+                fsutil.replace_atomic(dest, record["backup"])
                 record["old_moved"] = True
-            record["new"].rename(dest)
+            fsutil.replace_atomic(record["new"], dest)
             record["new_moved"] = True
     except (BuildError, OSError, ValueError) as failure:
         rollback_errors = []
@@ -352,13 +355,13 @@ def publish(built, targets):
             try:
                 if record["new_moved"]:
                     managed(record["dest"], record["name"])
-                    record["dest"].rename(record["new"])
+                    fsutil.replace_atomic(record["dest"], record["new"])
                     record["new_moved"] = False
                 if record["old_moved"]:
                     managed(record["backup"], record["name"])
                     if record["dest"].exists() or record["dest"].is_symlink():
                         raise BuildError(f"恢复目标被占用：{record['dest']}")
-                    record["backup"].rename(record["dest"])
+                    fsutil.replace_atomic(record["backup"], record["dest"])
                     record["old_moved"] = False
             except (BuildError, OSError, ValueError) as e:
                 rollback_errors.append(f"恢复 {record['backup']} → {record['dest']}：{e}")
@@ -375,6 +378,7 @@ def publish(built, targets):
 
 
 def main(argv=None):
+    fsutil.utf8_stdio()
     p = argparse.ArgumentParser(prog="build.py", description=__doc__.splitlines()[0])
     p.add_argument("--out", default=str(ROOT / "dist"), help="产物目录，默认 dist/")
     p.add_argument("--install", metavar="DIR", help="构建后安装到该技能目录，例如 <项目>/.agents/skills")
@@ -393,7 +397,7 @@ def main(argv=None):
             raise BuildError("构建目录与安装目录重叠")
         commit, dirty = git_info()
         info = {"source": "job-mate", "commit": commit, "dirty": dirty,
-                "builtAt": datetime.now().astimezone().isoformat(timespec="seconds")}
+                "builtAt": fsutil.now().astimezone().isoformat(timespec="seconds")}
         # 所有参数、来源、已有目标先完整检查；所有技能构建成功才发布。
         with tempfile.TemporaryDirectory(prefix="job-mate-build-") as tmp:
             built = [build_skill(s, Path(tmp), info) for s in skills]

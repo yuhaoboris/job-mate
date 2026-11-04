@@ -8,13 +8,12 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
-from zoneinfo import ZoneInfo
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import ledger  # noqa: E402
 
-TZ = ZoneInfo("Asia/Shanghai")
+TZ = ledger.fsutil.tz_from_name("Asia/Shanghai")
 
 
 class Workspace:

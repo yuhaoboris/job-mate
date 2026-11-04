@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fsutil  # noqa: E402
 import ledger  # noqa: E402
 
 CHANNELS = {"lark", "none"}
@@ -55,7 +56,7 @@ def valid_ms(value):
 
 
 def now_ms():
-    return int(datetime.now().timestamp() * 1000)
+    return int(fsutil.now().timestamp() * 1000)
 
 
 def canonical(value):
@@ -481,7 +482,7 @@ def active_test(st, tz, route=None):
     if not tests:
         return None
     t = max(tests, key=lambda o: o.get("createTime") or int(ledger.parse_at(o["at"]).timestamp() * 1000))
-    age = (datetime.now(tz) - ledger.parse_at(t["at"])).total_seconds()
+    age = (fsutil.now(tz) - ledger.parse_at(t["at"])).total_seconds()
     answered = any(r["state"] == "test" and (r.get("testKey") == t["key"] if r.get("testKey") else r["at"] >= t["at"])
                    for r in st["in"].values())
     return t if age <= TEST_REPLY_WINDOW_SECONDS and not answered else None
@@ -773,6 +774,7 @@ HANDLERS = {"send": cmd_send, "poll": cmd_poll, "incoming": cmd_incoming, "outbo
 
 
 def main(argv=None):
+    fsutil.utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
         return HANDLERS[args.cmd](args, ledger.find_workspace(args.workspace))

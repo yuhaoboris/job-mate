@@ -6,8 +6,6 @@
 """
 
 import argparse
-import contextlib
-import fcntl
 import json
 import os
 import re
@@ -17,7 +15,9 @@ import unicodedata
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fsutil  # noqa: E402
 
 SUITE_VERSION = "1.0.0"
 SCHEMA_VERSION = 2
@@ -108,7 +108,7 @@ def limits_of(profile):
 
 def tz_of(profile):
     name = ((profile.get("schedule") or {}).get("timezone")) or DEFAULT_TZ
-    return ZoneInfo(name)
+    return fsutil.tz_from_name(name)
 
 
 def default_account(ws, platform):
@@ -124,7 +124,7 @@ def events_path(ws):
 
 
 def now_iso(tz):
-    return datetime.now(tz).isoformat(timespec="seconds")
+    return fsutil.now(tz).isoformat(timespec="seconds")
 
 
 def parse_at(value):
@@ -134,26 +134,8 @@ def parse_at(value):
     return dt
 
 
-@contextlib.contextmanager
-def file_mutex(path):
-    """独占文件锁。锁文件本身从不删除，因此不会出现「删掉别人的锁」的竞态。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
-
-
-def write_atomic(path, text):
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+file_mutex = fsutil.locked
+write_atomic = fsutil.write_text_atomic
 
 
 # ---------- 规范化 ----------
@@ -301,14 +283,12 @@ def append_line(ws, ev):
     path = events_path(ws)
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps({k: v for k, v in ev.items() if not k.startswith("_")}, ensure_ascii=False) + "\n"
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        os.write(fd, line.encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+    # 与运行锁、停止名单锁分离，允许持有它们时追加，不嵌套同一路径。
+    with file_mutex(path.with_name(".events.mutex")):
+        with path.open("a", encoding="utf-8", newline="") as f:
+            f.write(line)
+            f.flush()
+            os.fsync(f.fileno())
 
 
 # ---------- 停止名单 ----------
@@ -809,7 +789,7 @@ def cmd_check(args, ws):
         more, job_id = first_contact_reasons(args, events, scope)
         out.update({"jobId": job_id, "dedupScope": scope})
     else:
-        more, threads = conversation_reasons(args, events, datetime.now(tz), tz)
+        more, threads = conversation_reasons(args, events, fsutil.now(tz), tz)
         out["threads"] = len(threads)
     reasons += more
     out.update({"allowed": not reasons, "reasons": reasons})
@@ -977,7 +957,7 @@ def cmd_quota(args, ws):
     limits = limits_of(profile)
     tz = tz_of(profile)
     events, _ = read_events(ws)
-    today = datetime.now(tz).date()
+    today = fsutil.now(tz).date()
     # 额度按「是否写过 greet 的 pending」计：失败或结果不明也不退回
     greets = [a for a in attempts_of(events).values()
               if a["kind"] == "greet" and a["platform"] == args.platform and a["everPending"]]
@@ -988,7 +968,7 @@ def cmd_quota(args, ws):
                 if e["kind"] in ACTION_KINDS and e["platform"] == args.platform
                 and e["status"] in ("pending", "sent")]
     last = max(activity, default=None)
-    since = (datetime.now(tz) - last).total_seconds() if last else None
+    since = (fsutil.now(tz) - last).total_seconds() if last else None
     remaining_day = max(0, limits["greetsPerDay"] - len(today_greets))
     remaining_run = max(0, limits["greetsPerRun"] - len(run_greets)) if args.run else None
     can_greet = remaining_day > 0 and (remaining_run is None or remaining_run > 0)
@@ -1014,7 +994,7 @@ def cmd_quota(args, ws):
 def cmd_threads(args, ws):
     profile = load_profile(ws)
     tz = tz_of(profile)
-    now = datetime.now(tz)
+    now = fsutil.now(tz)
     events, _ = read_events(ws)
     threads = build_threads(events, args.platform)
     for t in threads.values():
@@ -1084,7 +1064,7 @@ def lock_expired(lock, now):
 
 def require_live_lock(ws, run_id, tz, renew=False):
     """调用方须已持有 lock_mutex。run_id 必须是当前未过期的持锁者，且本轮未禁发。"""
-    now = datetime.now(tz)
+    now = fsutil.now(tz)
     lock = read_lock(ws)
     if not lock or lock.get("runId") != run_id:
         holder = lock.get("runId") if lock else "无"
@@ -1117,7 +1097,7 @@ def acquire_lock(ws, tz, skill, run=None, ttl=DEFAULT_LOCK_TTL_MINUTES, no_send=
             mode = "new"
         if mode not in ("resetup", "partial"):
             return 1, {"acquired": False, "reason": "初始化未完成或 setup 草稿读不出，请先完成 setup"}
-    now = datetime.now(tz)
+    now = fsutil.now(tz)
     current = read_lock(ws)
     took_over, reconciled = None, []
     if current:
@@ -1169,7 +1149,7 @@ def cmd_lock(args, ws):
     profile = load_profile(ws)
     tz = tz_of(profile)
     with lock_mutex(ws):
-        now = datetime.now(tz)
+        now = fsutil.now(tz)
         current = read_lock(ws)
 
         if args.action == "status":
@@ -1200,7 +1180,7 @@ def cmd_lock(args, ws):
 def lock_active(ws, tz):
     """当前是否有未过期的运行锁（只读判断，不加互斥）。"""
     lock = read_lock(ws)
-    return bool(lock) and not lock_expired(lock, datetime.now(tz))
+    return bool(lock) and not lock_expired(lock, fsutil.now(tz))
 
 
 # ---------- 全局暂停 ----------
@@ -1297,7 +1277,7 @@ def cmd_stoplist(args, ws):
             "aliases": args.alias or [],
             "reason": args.reason,
             "source": args.source,
-            "added": datetime.now(tz_of(profile)).date().isoformat(),
+            "added": fsutil.now(tz_of(profile)).date().isoformat(),
         }
         new_text = stoplist_text_with(text, [entry])
         back = parse_stoplist(new_text)[-1]
@@ -1385,6 +1365,7 @@ COMMANDS = {
 
 
 def main(argv=None):
+    fsutil.utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
         if args.cmd == "lock":

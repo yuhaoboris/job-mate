@@ -404,12 +404,12 @@ class BuildSafetyTest(unittest.TestCase):
         before = {p.relative_to(self.base): p.read_bytes() for root in (self.out, target)
                   for p in root.rglob("*") if p.is_file()}
         (self.source / "shared/rules.md").write_text("new version")
-        rename = Path.rename
+        rename = build.fsutil.replace_atomic
         def fail_once(path, dest):
             if Path(dest) == target.resolve() / "job-mate-followup" and "new" in path.parts:
                 raise OSError("injected publish failure")
             return rename(path, dest)
-        with patch.object(Path, "rename", fail_once):
+        with patch.object(build.fsutil, "replace_atomic", fail_once):
             code, result = run_build("--out", str(self.out), "--install", str(target))
         self.assertEqual(code, 2, result)
         after = {p.relative_to(self.base): p.read_bytes() for root in (self.out, target)
@@ -452,12 +452,12 @@ class BuildSafetyTest(unittest.TestCase):
         dest = target / "job-mate-followup"
         old = {p.relative_to(dest): p.read_bytes() for p in dest.rglob("*") if p.is_file()}
         (self.source / "shared/rules.md").write_text("new version")
-        rename = Path.rename
+        rename = build.fsutil.replace_atomic
         def fail_publish_and_rollback(path, destination):
             if Path(destination) == dest.resolve() and ("new" in path.parts or "old" in path.parts):
                 raise OSError("injected rename failure")
             return rename(path, destination)
-        with patch.object(Path, "rename", fail_publish_and_rollback):
+        with patch.object(build.fsutil, "replace_atomic", fail_publish_and_rollback):
             code, result = run_build("--out", str(self.out), "--install", str(target))
         self.assertEqual(code, 2, result)
         self.assertIn("回滚未完成", result["error"])
@@ -496,14 +496,14 @@ class BuildSafetyTest(unittest.TestCase):
         code, result = run_build("--out", str(self.out), "--install", str(target))
         self.assertEqual(code, 0, result)
         (self.source / "shared/rules.md").write_text("new version")
-        rename = Path.rename
+        rename = build.fsutil.replace_atomic
         def add_unknown_backup_data(path, destination):
             moved = rename(path, destination)
             if Path(destination) == target.resolve() / "job-mate-setup" and path.parent.name == "new":
                 backup = path.parent.parent / "old/job-mate-followup"
                 (backup / "USER-CANARY").write_text("keep")
             return moved
-        with patch.object(Path, "rename", add_unknown_backup_data):
+        with patch.object(build.fsutil, "replace_atomic", add_unknown_backup_data):
             code, result = run_build("--out", str(self.out), "--install", str(target))
         self.assertEqual(code, 0, result)
         self.assertTrue(result.get("warnings"), result)

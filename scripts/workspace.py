@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fsutil  # noqa: E402
 import ledger  # noqa: E402
 import notify  # noqa: E402
 
@@ -81,7 +82,7 @@ def emit(obj, code=0):
 
 
 def now_stamp():
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    return fsutil.now().strftime("%Y%m%d-%H%M%S")
 
 
 # ---------- init ----------
@@ -103,7 +104,7 @@ def cmd_init(args):
         marker.write_text(json.dumps({
             "schemaVersion": 1,
             "suiteVersion": ledger.SUITE_VERSION,
-            "createdAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "createdAt": fsutil.now().astimezone().isoformat(timespec="seconds"),
             "accounts": accounts,
         }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         created.append(MARKER)
@@ -174,7 +175,7 @@ def check_profile(p, problems, warnings):
     tz = (p.get("schedule") or {}).get("timezone")
     if tz:
         try:
-            ledger.ZoneInfo(tz)
+            fsutil.tz_from_name(tz)
         except Exception:
             bad("schedule.timezone", f"无法识别：{tz}")
 
@@ -481,7 +482,7 @@ def next_unanswered(draft):
 
 
 def save_progress(ws, draft):
-    draft["updatedAt"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    draft["updatedAt"] = fsutil.now().astimezone().isoformat(timespec="seconds")
     ledger.write_atomic(ws / PROGRESS_FILE, json.dumps(draft, ensure_ascii=False, indent=2) + "\n")
 
 
@@ -519,7 +520,7 @@ def start_progress(args, ws):
         for step in list(selected):
             selected.update(STEP_BY_ID[step].get("depends", []))
         plan = [s["id"] for s in STEPS if s["id"] in selected]
-    at = datetime.now().astimezone().isoformat(timespec="seconds")
+    at = fsutil.now().astimezone().isoformat(timespec="seconds")
     draft = {"schemaVersion": 1, "mode": args.mode, "variant": args.variant,
              "baseBackup": args.base_backup, "startedAt": at, "updatedAt": at,
              "plan": plan, "current": None, "added": {}, "answers": {}}
@@ -586,7 +587,7 @@ def cmd_progress(args):
         except ValueError as e:
             raise WorkspaceError(f"--value 不是合法 JSON：{e}")
         draft["answers"][args.step] = {"status": args.status, "value": value, "source": args.source,
-                                      "at": datetime.now().astimezone().isoformat(timespec="seconds")}
+                                      "at": fsutil.now().astimezone().isoformat(timespec="seconds")}
         if args.status == "changed":
             for review in step.get("review", []):
                 if review not in draft["plan"]:
@@ -647,6 +648,7 @@ COMMANDS = {"init": cmd_init, "check": cmd_check, "backup": cmd_backup,
 
 
 def main(argv=None):
+    fsutil.utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
         if args.cmd == "init" and bool(args.boss_account) != bool(args.boss_name):
