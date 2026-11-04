@@ -271,7 +271,7 @@ job-mate/
 - `threadKey` = `<平台>|<账号>|<conversationKey 各字段的规范化值>`。BOSS 为 `boss|<accountKey>|<公司>|<招聘者>`，招聘者统一写成「姓名(职务)」。
 - 账号维度从 1.0 起就写进全部事件和标识。当前每个平台只配置一个账号（`job-mate.json` 的 `accounts.<平台>`）。
 - **不做跨平台去重**：去重、配额、会话都按「平台 + 账号」隔离。在 BOSS 联系过 A 公司，不影响在其他平台联系 A 公司。
-- 首次联系去重默认以公司为单位（`limits.dedupScope: company`），可改为 `job`。本人可在本轮指令里逐个放行。
+- 首次联系去重默认以公司为单位（`limits.dedupScope: company`），可改为 `job`。本人可通过第 14.1 节的 `dedup_once` 本轮例外逐个放行；普通发送授权和原话本身不豁免去重。
 
 ## 7. 事件与数据层
 
@@ -376,7 +376,7 @@ job-mate/
 |---|---|
 | 全部 | 有效锁且非禁发；通过本轮动作、目标及总次数限制；未全局暂停；停止名单（精确命中或疑似）；与同一平台账号上一次外发的最小间隔（`minSendIntervalSeconds`，所有外发类型共用）；本轮业务结果不明次数（第 8.3 节） |
 | 全部文字类 | 文字非空；禁用词（`style.bannedWords` 加系统禁用词）；字数上限（招呼语与跟进按 `style.length`，回复 150 字）。执行本人决定的步骤只检查非空，不检查禁用词与字数，因为本人批准的文字原样发送 |
-| `greet` | 首次联系去重（同平台同账号，按 `dedupScope`）；公司已有 `rejected` / `risk`；本轮与当日配额；在时段内（本轮例外 `hours` 可越过）；须带 `reason` 与 `targetRole` |
+| `greet` | 首次联系去重（同平台同账号，按 `dedupScope`；仅 `dedup_once` 可豁免指定目标的本地去重，见 14.1）；公司已有 `rejected` / `risk`；本轮与当日配额；在时段内（本轮例外 `hours` 可越过）；须带 `reason` 与 `targetRole` |
 | `intro` | 同一会话本轮已有平台自动发出的 `greet` 记 `sent`，且会话未被接管 |
 | `reply` / `resume` | 会话未关闭、未被接管、无未确认外发；暂停仅可由对应的有效本人决定步骤，或下行定义的同事项系统 ack 越过；存在其他事项或无事项 ID 的暂停时仍拒绝 |
 | 执行本人决定的步骤 | 步骤必须属于该事项的有效版本，旧版本的步骤拒绝（`decision_superseded`）；该事项任一版本还有 `pending` 或 `uncertain` 的外发时拒绝（`decision_unresolved`），先请本人核对；业务幂等：同一 `decision` + `step` 已有 `sent` 时拒绝；`kind` 与文字必须和登记的步骤**逐字一致**，Agent 不得改写 |
@@ -729,7 +729,7 @@ Agent **绝对不答应、也不提出任何面试时间**。凡涉及面试（�
   - 计数按同一 `runId`、`kind` 在 kinds 内的唯一 attempt 的首次 pending 计算，不按 `authorizedBy`、grant 编号或决定版本分桶；长期、例外和本人决定产生的 pending 全计入，失败/uncertain 也不退回。有限 max 时 prepare 要求 used < max，成功写 pending 即占用；guard 将当前 attempt 计入后要求 used ≤ max，不再扣一次。unlimited 只跳过数量上限检查。`lock status` 的 `restriction` 输出原字段加 `used`、`remaining`（有限时为 max(0, max-used)，unlimited 时为 null）；无限制时输出 null。
   - 它只收窄可执行范围，不提供授权。可与 grant 同时登记，结果是「先符合限制，再有授权」，grant 再宽也不能扩出限制；与 no-send 同时存在时仍全部禁发。续锁不重置用量，不得换轮次绕过本人仍有效的本轮指令。
 - **本轮例外**：本人本轮明确要求超出长期授权时，获取锁时用 `--grant '<JSON>'` 登记，可重复。每个例外包含：
-  - `item`：`apply_send`、`reply`、`nudge`、`hours`（越过时段）之一；
+  - `item`：`apply_send`、`reply`、`nudge`、`hours`（越过时段）、`dedup_once`（单职位本地去重豁免）之一；
   - `scope`：作用范围，必须显式给出，取 `{"all": true}`，或 `threads`（`threadKey` 列表）、`companies`（公司名列表）、`jobs`（`jobKey` 列表）之一；
   - `max`：次数上限，正整数，或显式写 `"unlimited"`。`hours` 不计次数，只作用于范围内的目标；
   - `quote`：本人原话，只用于留痕。
@@ -737,6 +737,7 @@ Agent **绝对不答应、也不提出任何面试时间**。凡涉及面试（�
   例：「这次只回复甲一条」先用 `--restrict '{"kinds":["reply"],"scope":{"companies":["甲公司"]},"max":1,"quote":"这次只回复甲一条"}'` 收窄本轮。已有 L2 时无需 grant；L1 下本人明确要求发送时，再加 `--grant '{"item":"reply","scope":{"companies":["甲公司"]},"max":1,"quote":"这次只回复甲一条"}'`。「这次按条件投 5 个」的数量上限同样登记 restriction；权限不足时才另登记 apply_send grant。本人没有说清例外范围或数量时先问清楚，不自行扩大。
 
   例外只在本次锁内有效，不写回 profile。与 `--no-send` 同时出现时拒绝。用量由 `prepare` 按已写入的 `pending` 统计，`lock status` 显示每个例外的剩余次数。
+- **逐个放行去重**：`--grant '{"item":"dedup_once","scope":{"jobs":["<jobKey>"]},"max":1,"quote":"本人明确允许该职位再次联系的原话"}'`。只能指定一个已唯一绑定的职位，`max` 只能为整数 1；每轮同一原始平台/账号/职位只能有一个此类例外，不能靠重复编号叠加。它不是发送授权，`greet` 仍需长期 `apply.send` 或 `apply_send` 例外，并符合 restriction。只豁免该目标的本地 `already_contacted` / `reposted_suspect`，不豁免未决外发、拒绝或风险记录、暂停/接管、停止名单、配额、间隔或时段，也不允许把平台的「继续沟通」当「立即沟通」。实际遇去重命中且放行时，脚本在 pending 冻结 `dedupGrant` 为该例外编号；按本轮带此字段的唯一 pending 计数，失败/结果不明也不退回。没有去重命中不消费；所有其他检查未通过时也不消费。`authorizedBy` 仍记录真正发送授权，`guard` 复查已占用的豁免仍存在且绑定匹配，不二次扣减。`check` 只预检，不消费。
 - **具体目标的授权绑定**：`restriction` 和所有 grant（含 `hours`）的 `threads` / `jobs` 作用域，在取锁的同一协调临界区内，从已校验事件中解析每个键，冻结唯一的原始目标及原始 `platform`、`account`。外部键不是无歧义的授权凭据：原始职位 ID 中的 `|` 与 `｜` 不得合并；会话按平台定义的各身份分量分别规范化后比较，不能先拼接再转义比较。有职位 ID 时保留原始 ID，否则使用分别规范化的公司、职位名。未登记、身份不足或对应多个目标/账号时拒绝取锁，提示先核对，不按当前默认账号、最后记录或首次发送请求猜测。`prepare` / `guard` 同时核对外部键与冻结身份；后来的记录或账号配置变化不能改绑、扩大范围，仍须通过当前账号检查。`lock status` 展示冻结绑定，调用方不能自行提交或覆盖它。`all` / `companies` 保持原有明确范围语义，不伪装成单一职位授权。
   - 新目标尚无记录时，可以先在禁发运行锁下记录页面身份（例如 `screen`），释放后再获取带具体目标范围的锁；这不是发送授权，也不能丢掉本人仍有效的限制或借此重置已发生的发送用量。未发送的身份采集不占发送次数。
 - **恢复锁**：`lock acquire --skill setup --recovery` 只允许恢复类写入（第 3 节），仍可只读；版本准入按「恢复」规则判断，不能用于其他写入。
