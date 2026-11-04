@@ -15,7 +15,7 @@ description: 巡检招聘平台（首批 BOSS 直聘）的 HR 会话：分类新
 - [../../shared/ledger.md](../../shared/ledger.md)：事件记录与 `ledger.py`
 - [../../shared/safety.md](../../shared/safety.md)：安全边界，尤其「必须上报本人、不得代为承诺」
 - [../../shared/notify.md](../../shared/notify.md)：inbox、同步 IM 全链路、身份与路由门禁、received / ready、指令和 runtime 唤起
-- [platforms/boss.md](platforms/boss.md)：BOSS 直聘消息页面细节
+- [../../platforms/boss/common.md](../../platforms/boss/common.md)、[../../platforms/boss/followup.md](../../platforms/boss/followup.md)：BOSS 直聘通用要点与消息页面细节
 - [../../shared/execution.md](../../shared/execution.md)：所有 runtime 的能力自检、完整读取、草稿保护、逐动作 guard 与全部尝试收尾；准备浏览器另读 [浏览器入口](../../shared/browser/README.md)
 
 下文的 `ledger`、`notify` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py` 和 `.../scripts/notify.py`，先解析成绝对路径再调用。
@@ -129,7 +129,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 1. 打开消息列表，先处理有未读标记的会话，再处理 `ledger threads --platform boss` 中 `canFollowup` 为 `true` 的会话（仅 L3）。
 2. 本轮处理的会话数以本人指令为准；未说明时处理全部未读和待跟进会话。列表懒加载时滚动加载，读到已处理过的旧会话为止。
 3. 对每个会话，读完整上下文：从我方第一条消息或最近 20 条消息起，包括 HR 的请求卡片（交换联系方式、简历请求、面试邀约）。不只看列表摘要。
-4. 用 `ledger threads --company <公司> --recruiter <姓名(职务)>` 查本地状态。招聘者写法见 boss.md。
+4. 用 `ledger threads --company <公司> --recruiter <姓名(职务)>` 查本地状态。招聘者写法见平台通用页面要点。
 5. 只有公司名精确匹配、招聘者也一致才认作同一会话；疑似匹配不点开，汇报「身份不确定」。
 6. **检查点**：每处理完一个会话，完整执行第 2.0 节同步链（poll → runtime 连续分页 → incoming → outbox 认领 / 投递 / receipt）；有新答复先按第 2.0、2.2 节处理，再继续下一个。未读完不说没有答复；超过 30 分钟按第 1 节续锁。
 
@@ -216,7 +216,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 1. 只依据 `candidate.md`、`qa.yaml` 和会话上下文；未知的只答已知部分，说明会确认后回复，不编造，也不把未知说成「没有」。
 2. 写法：第一人称、简短、一次一个重点，两三句以内。称呼对方公司用「贵公司」+ 岗位名，不点公司简称。不重复已答过的问题。同一条消息里最多带一个主动提问（如团队规模、自研还是项目交付、面试流程）。
 3. 过第 5.0 节的检查，`pending` 为 `kind: reply`，`text` 为拟发文字，`reason` 写对应的 `qa.yaml` 条目 id。
-4. 按 boss.md 和 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护) 写入，读回须与最终文字完全一致；不一致时不发送、不换输入方式，只清除能确认属于本次写入的草稿。无法安全清理保留现场并报告。发送前再次核对会话标题，再 guard 后立即点击。
+4. 按平台通用页面要点和 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护) 写入，读回须与最终文字完全一致；不一致时不发送、不换输入方式，只清除能确认属于本次写入的草稿。无法安全清理保留现场并报告。发送前再次核对会话标题，再 guard 后立即点击。
 5. 确认已发出（会话中出现这条新消息且显示送达或已读）后追加 `sent`；不能确认记 `uncertain`，**该会话停止**，按[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox（含 attemptId、沿用原决定及旧事项待对账）；其他会话继续。
 
 ### 5.2 发简历
@@ -224,7 +224,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 1. 按 `resumes/index.yaml` 的 `use` 和职位方向选版本；拿不准时用 `default`，在汇报中注明。
 2. 该版本 `uploaded.boss` 为空时不发送：写入 inbox，请本人上传附件并更新索引。Agent 不打开系统文件选择器。
 3. 过第 5.0 节的检查，`pending` 为 `kind: resume`，`resume` 写版本 id 和平台附件名。
-4. 所有 runtime 的按钮定位都限定在已核对的会话与具体卡片内，卡片后已有附件已发送等提示不再点。工具栏「发简历」、附件确认、卡片「同意」等每个可能外发的点击之前分别 `guard`，不套用文字消息的新气泡判据。`guard` 后按 boss.md 发送或同意对方的简历请求（选附件后的确认按钮前再 `guard` 一次），然后**每个结果都要给这次尝试记终态**：
+4. 所有 runtime 的按钮定位都限定在已核对的会话与具体卡片内，卡片后已有附件已发送等提示不再点。工具栏「发简历」、附件确认、卡片「同意」等每个可能外发的点击之前分别 `guard`，不套用文字消息的新气泡判据。`guard` 后按平台会话页面要点发送或同意对方的简历请求（选附件后的确认按钮前再 `guard` 一次），然后**每个结果都要给这次尝试记终态**：
 
 | 点击后看到 | 记录 |
 |---|---|

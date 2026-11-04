@@ -24,7 +24,7 @@ LINK = re.compile(r"\]\(([^\s)]+)\)")
 
 
 def core_documents():
-    return sorted(path for directory in ("skills", "shared")
+    return sorted(path for directory in ("skills", "shared", "platforms")
                   for path in (ROOT / directory).rglob("*.md"))
 
 
@@ -86,7 +86,7 @@ def package_escape(source, target):
         return False
     resolved = (source.parent / unquote(parsed.path)).resolve()
     return not any(resolved.is_relative_to(ROOT / directory)
-                   for directory in ("skills", "shared", "scripts"))
+                   for directory in ("skills", "shared", "scripts", "platforms"))
 
 
 class ExecutionRulesTest(unittest.TestCase):
@@ -161,7 +161,7 @@ class ExecutionRulesTest(unittest.TestCase):
             self.assertIsNotNone(TOOL_CALL.search(call))
 
     def test_core_does_not_link_out_of_package(self):
-        for directory in ("skills", "shared"):
+        for directory in ("skills", "shared", "platforms"):
             for source in (ROOT / directory).rglob("*.md"):
                 for target in LINK.findall(source.read_text(encoding="utf-8")):
                     with self.subTest(source=source, target=target):
@@ -178,7 +178,7 @@ class ExecutionRulesTest(unittest.TestCase):
 
     def test_core_scripts_have_no_external_execution_except_build_git(self):
         scripts = sorted((ROOT / "scripts").glob("*.py"))
-        self.assertEqual({p.name for p in scripts}, {"ledger.py", "workspace.py", "notify.py", "build.py", "fsutil.py"})
+        self.assertEqual({p.name for p in scripts}, {"ledger.py", "workspace.py", "notify.py", "build.py", "fsutil.py", "platforms.py"})
         for source in scripts:
             content = source.read_text(encoding="utf-8")
             with self.subTest(source=source):
@@ -264,17 +264,19 @@ class ExecutionRulesTest(unittest.TestCase):
                                  "普通业务答复仍 received", "能力不足就停"))
 
     def test_platform_facts_do_not_reintroduce_tool_instructions(self):
-        for name in ("apply", "followup"):
-            content = (ROOT / "skills" / name / "platforms/boss.md").read_text(encoding="utf-8")
-            self.assert_terms(content, ("chat-input", "enabled", "草稿", "残留"))
-            self.assertIsNone(TOOL_CALL.search(content))
-            self.assertNotIn("agent-desktop", content)
-        apply = (ROOT / "skills/apply/platforms/boss.md").read_text(encoding="utf-8")
-        self.assert_terms(apply, ("`jobUrl`、`jobId` 记 null", "不通过其他接口补取"))
+        for path in (ROOT / "platforms/boss").glob("*.md"):
+            content = path.read_text(encoding="utf-8")
+            self.assertIsNone(TOOL_CALL.search(content), path)
+            self.assertNotIn("agent-desktop", content, path)
+        common = (ROOT / "platforms/boss/common.md").read_text(encoding="utf-8")
+        self.assert_terms(common, ("chat-input", "enabled", "草稿", "残留",
+                                   "`jobUrl`、`jobId` 记 null", "不通过其他接口补取"))
+        followup = (ROOT / "platforms/boss/followup.md").read_text(encoding="utf-8")
+        self.assert_terms(followup, ("待本人实测确认", "messageId.available: false", "时间标签", "归组"))
 
     def test_all_repository_document_links_and_anchors_resolve(self):
         documents = sorted({*ROOT.glob("*.md"),
-                            *(p for directory in ("docs", "assets", "integrations", "shared", "skills")
+                            *(p for directory in ("docs", "assets", "integrations", "shared", "skills", "platforms")
                               for p in (ROOT / directory).rglob("*.md"))})
         cached_anchors = {}
         for source in documents:
@@ -307,7 +309,7 @@ class ExecutionRulesTest(unittest.TestCase):
 
     def test_document_examples_do_not_expose_account_ids_or_home_paths(self):
         documents = [*ROOT.glob("*.md"),
-                     *(p for directory in ("docs", "assets", "integrations", "shared", "skills")
+                     *(p for directory in ("docs", "assets", "integrations", "shared", "skills", "platforms")
                        for p in (ROOT / directory).rglob("*.md"))]
         for source in documents:
             with self.subTest(source=source.relative_to(ROOT)):

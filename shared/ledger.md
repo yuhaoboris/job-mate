@@ -47,7 +47,7 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 
 ## 事件字段
 
-`append` 自动补齐 `schemaVersion`、`at`、`account`（工作区只有一个该平台账号时）；新 `pending` 和独立的 `skipped` / `already_contacted` 不带 `attemptId` 时自动生成并在输出中返回。给了 `jobUrl` 时自动去掉查询参数并提取 `jobId`。
+`append` 自动补齐 `schemaVersion`、`at`、`account`（工作区只有一个该平台账号时）；新 `pending` 和独立的 `skipped` / `already_contacted` 不带 `attemptId` 时自动生成并在输出中返回。给了 `jobUrl` 时按 `platform.json` 的 `jobUrl` 规则规范化链接并提取 `jobId`。
 
 | 字段 | 说明 |
 |---|---|

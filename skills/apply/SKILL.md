@@ -14,7 +14,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 - [../../shared/workspace.md](../../shared/workspace.md)：工作区、`profile.json`、停止名单
 - [../../shared/ledger.md](../../shared/ledger.md)：事件记录与 `ledger.py`
 - [../../shared/safety.md](../../shared/safety.md)：安全边界
-- [platforms/boss.md](platforms/boss.md)：BOSS 直聘页面细节
+- [../../platforms/boss/common.md](../../platforms/boss/common.md)、[../../platforms/boss/apply.md](../../platforms/boss/apply.md)：BOSS 直聘通用要点与首次沟通页面细节
 - [../../shared/execution.md](../../shared/execution.md)：所有 runtime 的能力自检、完整读取、输入保护、逐动作 guard 与停止收尾；准备浏览器时另读 [浏览器入口](../../shared/browser/README.md)
 
 下文的 `ledger`、`notify` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py` 和 `.../scripts/notify.py`，先解析成绝对路径再调用。
@@ -72,7 +72,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 6. 条件分两类判断：
    - **正向条件须从 JD 证实**：职责符合 `targetRoles`、实际工作地点在 `locations` 内、薪资满足 `salary`、`hardRequirements`。任何一项无法确认（如「面议」、未标薪、地址不明）列为「待确认」，不自动联系。
    - **排除条件明确命中才排除**：`exclusions` 中的职位类型、用工形式、工作制度、关键词，以及停止名单。JD 未写明的（如没写单双休、没说是否外包）可以打招呼，在 `reason` 中记「待沟通核实：<哪几项>」；不能因为没看到「外包」就断言「非外包」。
-7. **招聘者活跃度是硬条件**：按 boss.md 把活跃标签换算成天数，超过 `recruiterActivity.maxAgeDays`（缺省 7）的剔除，原因写「招聘者<标签>」；看不到活跃标签的列为「待确认」。读详情前若列表已显示活跃标签，可先据此跳过，不占读详情预算。
+7. **招聘者活跃度是硬条件**：按平台描述把活跃标签换算成天数，超过 `recruiterActivity.maxAgeDays`（缺省 7）的剔除，原因写「招聘者<标签>」；看不到活跃标签的列为「待确认」。读详情前若列表已显示活跃标签，可先据此跳过，不占读详情预算。
 8. 用 `ledger check` 标出已联系、停止名单命中的职位（只筛选模式也标，方便本人判断）。
 9. 合格候选先按招聘者活跃度排序（越近越前），同一活跃档内再按 `targetRoles`、`locations` 的顺序和 `rules.md` 中的偏好排序，不用无法解释的匹配分数。不为凑数量放宽条件。
 
@@ -87,7 +87,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 1. 运行超过 30 分钟时先 `ledger lock renew --run <runId>`；失败说明已失去运行锁，立即停止。`ledger quota --platform boss --run <runId>`：`canGreet` 为 `false` 时结束本轮；`waitSeconds` 大于 0 时先等待这么久。这是固定的最小间隔，不另加随机延时。
 2. `ledger check --platform boss --company <公司> --title <职位> --job-url <链接> --run <runId>`：不允许时记 `skipped`（`reason` 写 check 返回的原因），处理下一个。
 3. 重新确认详情仍符合硬条件、职位开放，目标公司和招聘者正确。
-4. 按 boss.md 判断沟通按钮：显示已联系时追加 `already_contacted`，不点击。
+4. 按平台首次沟通页面要点判断沟通按钮：显示已联系时追加 `already_contacted`，不点击。
 
 ### 5.2 写招呼语
 
@@ -105,7 +105,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 所有 runtime 都按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护)、[尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 执行。完整读取才下否定结论，核对会话前不读写输入框，未知草稿不清；no-send / L1 只起草时不碰外发输入框。第 4 步放弃发送例外只在入口有明确正常成功结果、环境可用且连续观察到身份一致的目标空会话时适用；调用过后续可能外发动作的，还要求它们全部有结构化 `not_executed` 证据。身份丢失、失败响应、超时后即使读到空会话也不适用。可能外发前逐动作 guard，不将输入与发送合并；写后读回须与最终文字完全一致。
 
 1. `ledger append` 一条 `kind: greet, status: pending`，`text` 为拟发文字，`tags` 记 `greeting:<mode>`；记下返回的 `attemptId`。写入失败（包括已失去运行锁、本轮禁发）立即停止整轮，不点击。
-2. `ledger guard --run <runId> --attempt <attemptId>` 返回 `allowed: true` 后**立即**点击首次沟通入口，中间不做别的事；等待并观察结果，不连点。按 boss.md 判断出现的是哪种情况：
+2. `ledger guard --run <runId> --attempt <attemptId>` 返回 `allowed: true` 后**立即**点击首次沟通入口，中间不做别的事；等待并观察结果，不连点。按平台首次沟通页面要点判断出现的是哪种情况：
 
 | 点击后 | 处理 |
 |---|---|

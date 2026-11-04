@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fsutil  # noqa: E402
+from platforms import load_platform  # noqa: E402
 
 SUITE_VERSION = "1.0.0"
 SCHEMA_VERSION = 2
@@ -59,7 +60,6 @@ DEFAULT_LIMITS = {
 DEFAULT_TZ = "Asia/Shanghai"
 DEFAULT_LOCK_TTL_MINUTES = 60
 
-JOB_ID_RE = re.compile(r"/job_detail/([^/?#]+?)\.html")
 DECISION_RE = re.compile(r"^D-\d{8}-\d+$")
 STEP_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
@@ -275,18 +275,20 @@ def norm_text(s):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", s)).lower()
 
 
-def normalize_job_url(url):
-    """去掉查询参数和片段（lid、securityId 等随会话变化）。"""
-    if not url:
+def normalize_job_url(platform, url):
+    """按平台描述决定是否去掉随会话变化的查询参数与片段。"""
+    config = load_platform(platform)["jobUrl"]
+    if not url or not config["stripQuery"]:
         return url
     return re.split(r"[?#]", url, maxsplit=1)[0]
 
 
-def job_id_from_url(url):
+def job_id_from_url(platform, url):
+    pattern = load_platform(platform)["jobUrl"]["idPattern"]
     if not url:
         return None
-    m = JOB_ID_RE.search(url)
-    return m.group(1) if m else None
+    match = re.search(pattern, url)
+    return (match.group(1) or None) if match else None
 
 
 # ---------- 事件读写 ----------
@@ -837,7 +839,7 @@ def company_observation_reasons(events, platform, company):
 def first_contact_reasons(args, events, scope):
     """首次联系去重：所有动作建立的联系都算，不只 greet。"""
     reasons = []
-    job_id = args.job_id or job_id_from_url(args.job_url)
+    job_id = args.job_id or job_id_from_url(args.platform, args.job_url)
     contacts = [a for a in attempts_of(events).values() if attempt_blocks(a, args.run)]
     contacts += [{**ev, "lastAt": ev["at"], "jobId": ev.get("jobId"), "status": "adopted"}
                  for ev in events if ev["kind"] == "observe" and ev["observed"] == "adopted"]
@@ -900,6 +902,7 @@ def conversation_reasons(args, events, now, tz):
 
 
 def cmd_check(args, ws):
+    load_platform(args.platform)
     profile = load_profile(ws)
     tz = tz_of(profile)
     limits = limits_of(profile)
@@ -1030,13 +1033,17 @@ def cmd_append(args, ws):
     tz = tz_of(profile)
     ev.setdefault("schemaVersion", SCHEMA_VERSION)
     ev.setdefault("at", now_iso(tz))
+    if ev.get("platform"):
+        load_platform(ev["platform"])
     if not ev.get("account") and ev.get("platform"):
         ev["account"] = default_account(ws, ev["platform"])
     for k in ("title", "location", "recruiter", "evidence"):
         ev.setdefault(k, None)
-    if ev.get("jobUrl"):
-        ev["jobUrl"] = normalize_job_url(ev["jobUrl"])
-        ev.setdefault("jobId", job_id_from_url(ev["jobUrl"]))
+    if ev.get("jobUrl") is not None and not isinstance(ev["jobUrl"], str):
+        raise LedgerError("jobUrl 须为字符串或 null")
+    if ev.get("jobUrl") and ev.get("platform"):
+        ev["jobUrl"] = normalize_job_url(ev["platform"], ev["jobUrl"])
+        ev.setdefault("jobId", job_id_from_url(ev["platform"], ev["jobUrl"]))
     if not ev.get("attemptId"):
         if ev.get("kind") in ACTION_KINDS and ev.get("status") not in STANDALONE_STATUSES:
             raise LedgerError("终态事件须带上对应 pending 的 attemptId")

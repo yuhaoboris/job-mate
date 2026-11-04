@@ -73,7 +73,7 @@
   "suiteVersion": "1.0.0",
   "createdAt": "2026-10-28T10:00:00+08:00",
   "accounts": {
-    "boss": {"accountKey": "zhipin-main", "displayName": "张三"}
+    "boss": {"accountKey": "boss-main", "displayName": "张三"}
   }
 }
 ```

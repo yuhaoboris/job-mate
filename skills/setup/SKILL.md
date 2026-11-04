@@ -5,7 +5,7 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 
 # setup：建立、重新设置或修改求职工作区
 
-产出一个 `apply`、`followup` 可以直接使用的工作区。工作区结构和各文件格式见 [../../shared/workspace.md](../../shared/workspace.md)，先读它，同时读 [通用执行契约](../../shared/execution.md) 与 [通知契约](../../shared/notify.md)。本技能不在招聘平台外发；需要看平台页面时只读。任何写入加锁前先做能力自检：能读写工作区、运行核心脚本才继续；缺能力时不写记录、不用手工改台账替代，只汇报。纯配置操作不要求桌面能力；要只读平台时另核对可见浏览器和选定偏好，不支持不操作平台、不回退。
+产出一个 `apply`、`followup` 可以直接使用的工作区。工作区结构和各文件格式见 [../../shared/workspace.md](../../shared/workspace.md)，先读它，同时读 [通用执行契约](../../shared/execution.md) 与 [通知契约](../../shared/notify.md)。本技能不在招聘平台外发；需要看平台页面时只读；先读 [BOSS 通用页面要点](../../platforms/boss/common.md)。任何写入加锁前先做能力自检：能读写工作区、运行核心脚本才继续；缺能力时不写记录、不用手工改台账替代，只汇报。纯配置操作不要求桌面能力；要只读平台时另核对可见浏览器和选定偏好，不支持不操作平台、不回退。
 
 下文的 `ledger`、`workspace`、`notify` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py`、`.../scripts/workspace.py` 和 `.../scripts/notify.py`，先解析成绝对路径再调用。
 

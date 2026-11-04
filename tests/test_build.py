@@ -72,14 +72,32 @@ class BuildTest(unittest.TestCase):
             self.assertTrue((d / "scripts" / "workspace.py").exists())
             self.assertTrue((d / "scripts" / "notify.py").exists())
             self.assertFalse((d / "scripts" / "build.py").exists())
+            self.assertTrue((d / "scripts" / "platforms.py").is_file())
+            self.assertFalse((d / "ref").exists())
+            for filename in ("platform.json", "common.md", "apply.md", "followup.md"):
+                self.assertTrue((d / "platforms/boss" / filename).is_file())
+            self.assertEqual(json.loads((d / "platforms/boss/platform.json").read_text(encoding="utf-8"))["id"], "boss")
             self.assertTrue((d / "shared" / "ledger.md").exists())
             self.assertEqual(json.loads((d / "BUILD.json").read_text())["skill"], name)
             for md in d.rglob("*.md"):
                 text = md.read_text(encoding="utf-8")
-                self.assertNotIn("](../../", text, md)
                 for link in re.findall(r"\]\(([^)\s#]+)", text):
                     if not re.match(r"^[a-z]+:", link):
-                        self.assertTrue((md.parent / link).resolve().exists(), f"{md}: {link}")
+                        resolved = (md.parent / link).resolve()
+                        self.assertTrue(resolved.exists(), f"{md}: {link}")
+                        self.assertTrue(resolved.is_relative_to(d.resolve()), f"{md}: {link}")
+
+    def test_built_platform_loader_uses_each_package_without_repository(self):
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        for directory in map(Path, result["built"]):
+            program = ("import sys,json; sys.path.insert(0,sys.argv[1]); "
+                       "from platforms import load_platform; "
+                       "print(json.dumps(load_platform(\x27boss\x27)))")
+            process = subprocess.run([sys.executable, "-I", "-c", program, str(directory / "scripts")],
+                                     cwd=self.tmp.name, capture_output=True, text=True, encoding="utf-8", timeout=10)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(json.loads(process.stdout)["id"], "boss")
 
     def test_description_mentions_prefixed_skill_names(self):
         run_build("--out", str(self.out))
@@ -90,10 +108,14 @@ class BuildTest(unittest.TestCase):
         # 正文中的命令参数不能被改写
         self.assertIn("--skill apply", apply_md)
 
-    def test_cross_skill_reference_copied(self):
-        run_build("--out", str(self.out))
-        d = self.out / "job-mate-followup"
-        self.assertTrue((d / "ref" / "apply" / "platforms" / "boss.md").exists())
+    def test_all_three_packages_share_identical_platform_descriptors_without_ref(self):
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        for directory in (self.out / f"job-mate-{name}" for name in build.SKILL_NAMES):
+            self.assertFalse((directory / "ref").exists())
+            self.assertFalse((directory / "platforms/boss.md").exists())
+            self.assertEqual((directory / "platforms/boss/platform.json").read_bytes(),
+                             (ROOT / "platforms/boss/platform.json").read_bytes())
 
     def test_built_scripts_run(self):
         run_build("--out", str(self.out))
@@ -161,6 +183,10 @@ class BuildSafetyTest(unittest.TestCase):
         (self.source / "shared" / "rules.md").write_text("规则\n")
         (self.source / "scripts").mkdir()
         (self.source / "scripts" / "demo.py").write_text("print('demo')\n")
+        platform = self.source / "platforms/testplat"
+        platform.mkdir(parents=True)
+        (platform / "platform.json").write_bytes((ROOT / "tests/fixtures/platforms/testplat/platform.json").read_bytes())
+        (platform / "common.md").write_text("合成平台页面\n", encoding="utf-8")
         self.root_patch = patch.object(build, "ROOT", self.source)
         self.root_patch.start()
         self.out = self.base / "out"
@@ -181,6 +207,50 @@ class BuildSafetyTest(unittest.TestCase):
                 self.assertEqual(canary.read_text(), "keep")
                 self.assertFalse(self.out.exists())
 
+    def test_cross_skill_links_are_rejected_instead_of_creating_ref(self):
+        source = self.source / "skills/followup/SKILL.md"
+        source.write_text(source.read_text(encoding="utf-8") + "[跨技能](../apply/SKILL.md)\n", encoding="utf-8")
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 2, result)
+        self.assertIn("其他技能", result["error"])
+        self.assertFalse(self.out.exists())
+
+    def test_platform_data_is_copied_even_when_no_skill_links_to_it(self):
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        for directory in map(Path, result["built"]):
+            self.assertTrue((directory / "platforms/testplat/platform.json").is_file())
+            self.assertEqual((directory / "platforms/testplat/common.md").read_text(encoding="utf-8"), "合成平台页面\n")
+            info = json.loads((directory / "BUILD.json").read_text(encoding="utf-8"))
+            self.assertIn("platforms/testplat/platform.json", info["files"])
+            self.assertFalse((directory / "ref").exists())
+
+    def test_invalid_or_missing_platform_descriptor_prevents_publication(self):
+        descriptor = self.source / "platforms/testplat/platform.json"
+        descriptor.write_text("{}", encoding="utf-8")
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 2, result)
+        self.assertIn("缺少字段", result["error"])
+        self.assertFalse(self.out.exists())
+        descriptor.unlink()
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 2, result)
+        self.assertIn("缺少平台描述", result["error"])
+        self.assertFalse(self.out.exists())
+
+    def test_platform_descriptor_symlink_is_rejected_without_publication(self):
+        require_symlinks(self)
+        descriptor = self.source / "platforms/testplat/platform.json"
+        outside = self.base / "external-platform.json"
+        outside.write_bytes(descriptor.read_bytes())
+        descriptor.unlink()
+        descriptor.symlink_to(outside)
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 2, result)
+        self.assertIn("符号链接", result["error"])
+        self.assertFalse(self.out.exists())
+        self.assertTrue(outside.exists())
+
     def test_invalid_skill_keeps_existing_outputs_and_skips_git(self):
         code, result = run_build("--out", str(self.out))
         self.assertEqual(code, 0, result)
@@ -194,7 +264,7 @@ class BuildSafetyTest(unittest.TestCase):
     def test_source_and_output_overlap_rejected_without_changes(self):
         before = (self.source / "skills/apply/SKILL.md").read_bytes()
         for dest in (self.source, self.base, self.source / "skills", self.source / "shared/nested",
-                     self.source / "scripts", self.source / ".git/nested"):
+                     self.source / "scripts", self.source / "platforms", self.source / ".git/nested"):
             with self.subTest(dest=dest):
                 code, result = run_build("--out", str(dest))
                 self.assertEqual(code, 2, result)
@@ -633,7 +703,7 @@ class TakeoverRulesBuildTest(unittest.TestCase):
         # 方案 13.2(10)：这里只锁住技能规则，页面区间判读无脚本实现，
         # 不以静态检查冒充真实 Agent 行为抽查（仍属 13.3 待验）。
         skill = (ROOT / "skills/followup/SKILL.md").read_text()
-        boss = (ROOT / "skills/followup/platforms/boss.md").read_text()
+        boss = (ROOT / "platforms/boss/followup.md").read_text(encoding="utf-8")
         cases = {
             "分钟 [10:00,10:01) 跨过 10:00:30": ("[10:00, 10:01)", "跨分界", "暂停询问"),
             "日期全天跨分界": ("只显示日期为当天全天", "同一天日期标签"),

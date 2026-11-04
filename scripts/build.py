@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fsutil  # noqa: E402
+import platforms  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PREFIX = "job-mate-"
@@ -69,13 +70,13 @@ def overlaps(a, b):
 def source_path(path):
     path = checked_path(path)
     root = ROOT.resolve()
-    if not path.is_relative_to(root) or path == root or path.relative_to(root).parts[0] not in ("skills", "shared", "scripts"):
-        raise BuildError(f"源文件不在插件技能、共享规则或脚本目录内：{path}")
+    if not path.is_relative_to(root) or path == root or path.relative_to(root).parts[0] not in ("skills", "shared", "scripts", "platforms"):
+        raise BuildError(f"源文件不在技能、共享规则、平台或脚本目录内：{path}")
     return path
 
 
 def check_sources(skills):
-    for name in ("skills", "shared", "scripts"):
+    for name in ("skills", "shared", "scripts", "platforms"):
         directory = source_path(ROOT / name)
         if not directory.is_dir():
             raise BuildError(f"缺少源目录：{directory}")
@@ -83,6 +84,13 @@ def check_sources(skills):
             source_path(path)
             if not path.is_file() and not path.is_dir():
                 raise BuildError(f"源目录中包含特殊文件：{path}")
+    for directory in sorted((ROOT / "platforms").iterdir()):
+        if not directory.is_dir():
+            continue
+        descriptor = directory / "platform.json"
+        if not descriptor.is_file():
+            raise BuildError(f"缺少平台描述：{descriptor}")
+        platforms.validate_platform(json.loads(fsutil.read_text(descriptor)), directory.name)
     for skill in skills:
         if not (ROOT / "skills" / skill / "SKILL.md").is_file():
             raise BuildError(f"缺少 skills/{skill}/SKILL.md")
@@ -124,7 +132,7 @@ def managed(directory, name):
         frontmatter = skill_md.split("---", 2)
         if len(frontmatter) != 3 or frontmatter[0] or f"name: {name}" not in frontmatter[1].splitlines():
             raise ValueError("SKILL.md 身份不符")
-        if any(Path(f).parts[0] not in ("SKILL.md", "shared", "scripts", "platforms", "ref") for f in (*files, *dirs)):
+        if any(Path(f).parts[0] not in ("SKILL.md", "shared", "scripts", "platforms") for f in (*files, *dirs)):
             raise ValueError("存在非技能产物文件")
     except (OSError, ValueError, UnicodeError) as e:
         raise BuildError(f"{directory} 不是完整、未修改的受管产物，不覆盖：{e}。"
@@ -137,7 +145,7 @@ def target_plan(target, names):
     # 显式输出/安装根可经过 dotfiles 祖先别名；解析后再核对源码边界。
     target = checked_path(target, aliases=True)
     root = ROOT.resolve()
-    if target == root or target in root.parents or any(overlaps(target, root / part) for part in ("skills", "shared", "scripts", ".git")):
+    if target == root or target in root.parents or any(overlaps(target, root / part) for part in ("skills", "shared", "scripts", "platforms", ".git")):
         raise BuildError(f"目标与源码目录重叠，不覆盖：{target}")
     if target.exists() and not target.is_dir():
         raise BuildError(f"目标不是目录：{target}")
@@ -150,17 +158,14 @@ def target_plan(target, names):
 
 
 def dest_for(src, skill, skill_dir):
-    """把插件内的源文件路径映射到独立技能内的路径。"""
+    """把套件内的源文件路径映射到独立技能内；跨技能共用内容须在共享目录。"""
     rel = source_path(src).relative_to(ROOT.resolve())
     parts = rel.parts
-    if parts[0] in ("shared", "scripts"):
+    if parts[0] in ("shared", "scripts", "platforms"):
         return skill_dir / rel
     if parts[0] == "skills" and parts[1] == skill:
         return skill_dir.joinpath(*parts[2:])
-    if parts[0] == "skills":
-        # 引用其他技能的文件：复制到 ref/<技能>/ 下
-        return skill_dir.joinpath("ref", *parts[1:])
-    raise BuildError(f"技能引用了插件外或未知位置的文件：{rel}")
+    raise BuildError(f"技能引用了其他技能或未知位置的文件，请移入共享目录：{rel}")
 
 
 def rewrite_markdown(text, src, dest, skill, skill_dir, pending):
@@ -222,6 +227,10 @@ def build_skill(skill, out, info):
     # shared 全部带上（技能文档之间互相引用，整体复制更稳妥）
     for src in sorted((ROOT / "shared").rglob("*.md")):
         pending.append((src, dest_for(src, skill, skill_dir)))
+    # 平台描述与全部页面说明随每份技能分发，不依赖本轮是否有 Markdown 引用。
+    for src in sorted((ROOT / "platforms").rglob("*")):
+        if src.is_file():
+            pending.append((src, dest_for(src, skill, skill_dir)))
     while pending:
         src, dest = pending.pop()
         src = source_path(src)
@@ -229,6 +238,9 @@ def build_skill(skill, out, info):
             continue
         done.add(src)
         dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.suffix != ".md":
+            shutil.copy2(src, dest)
+            continue
         text = src.read_text(encoding="utf-8")
         if src == src_dir / "SKILL.md":
             text = rewrite_skill_md(text, skill)
