@@ -7,7 +7,7 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 
 产出一个 `apply`、`followup` 可以直接使用的工作区。工作区结构和各文件格式见 [../../shared/workspace.md](../../shared/workspace.md)，先读它，同时读 [通用执行契约](../../shared/execution.md) 与 [通知契约](../../shared/notify.md)。本技能不在招聘平台外发；需要看平台页面时只读；先读 [BOSS 通用页面要点](../../platforms/boss/common.md)。任何写入加锁前先做能力自检：能读写工作区、运行核心脚本才继续；缺能力时不写记录、不用手工改台账替代，只汇报。纯配置操作不要求桌面能力；要只读平台时另核对可见浏览器和选定偏好，不支持不操作平台、不回退。
 
-下文的 `ledger`、`workspace`、`notify` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py`、`.../scripts/workspace.py` 和 `.../scripts/notify.py`，先解析成绝对路径再调用。
+下文的 `ledger`、`workspace`、`notify`、`im_lark.py` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py`、`.../scripts/workspace.py`、`.../scripts/notify.py`、`.../scripts/im_lark.py`，先解析绝对路径；Windows 用 `py -3`。
 
 ## 1. 确定模式与目录
 
@@ -157,13 +157,13 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 
 ## 10. IM 通知
 
-机制与接口见 [通知与 IM](../../shared/notify.md)。不需要通知时设 `{"channel":"none"}`。需要飞书时，请本人确认 ownerId 与 larkProfile，waitMinutes 为 0–240 的整数，缺省 60；可选 larkCommand 为非空字符串数组。身份以可信通道元数据为准，不从正文自称取值。
+不需要通知时设 `{"channel":"none"}`。需要飞书时先读 [飞书适配器](../../shared/im/lark.md)，核验同一应用下的本人 ownerId、配置档 larkProfile；bot.openId 不能当本人。waitMinutes 为 0–240，缺省 60；自动定位失败才按 doctor 提示配置 larkCommand，不执行安装或 shell 回退。
 
-配置写入且本人同意后才测试：
+配置按事务写入后，运行 `im_lark.py doctor` 检查机器人，只读通过不代表实际收发成功。经本人同意才测试：
 
-1. `notify test` 只排队（queued），不是 sent。`notify outbox --claim` 后核对冻结 channel、ownerId、larkProfile、正文、replyTo、token、idempotencyKey，再实际投递并提交 `notify receipt`。真实 messageId、chatId 才回 sent，带有效 createTime 才建立读取起点；超时 unknown，不重发。
-2. 私聊与可读起点建立后，请本人**引用测试消息回复「收到」**。`notify poll` → 从 sinceMs 包含边界连续分页 → `notify incoming`；未读完报告。普通业务答复仍 received，不因测试吞掉。
-3. 确认回执也走同一 outbox / receipt 链。核对 test 状态和真实送达后再报告收发结果；queued、blocked、failed、unknown 分开说明，能力不足就停，不换通道。
+1. `notify test` 只排队（queued）；运行 `im_lark.py sync`。sent 但无可信时间不能建立读取起点；unknown 不重发。
+2. 私聊可读后，请本人**引用测试消息回复「收到」**，再次 `im_lark.py sync`。未读完明确报告；普通业务答复仍 received，不因测试吞掉。
+3. 用 `notify replies --state test` 核对测试回复，`notify status` 核对私聊、队列及冲突；结合实际送达汇报，queued、handoff、blocked、failed、unknown 分开说明，能力不足就停，不换通道。
 
 ## 11. 汇报
 

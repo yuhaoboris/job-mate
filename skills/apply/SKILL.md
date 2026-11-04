@@ -17,9 +17,9 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 - [../../platforms/boss/common.md](../../platforms/boss/common.md)、[../../platforms/boss/apply.md](../../platforms/boss/apply.md)：BOSS 直聘通用要点与首次沟通页面细节
 - [../../shared/execution.md](../../shared/execution.md)：所有 runtime 的能力自检、完整读取、输入保护、逐动作 guard 与停止收尾；准备浏览器时另读 [浏览器入口](../../shared/browser/README.md)
 
-下文的 `ledger`、`notify` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py` 和 `.../scripts/notify.py`，先解析成绝对路径再调用。
+下文的 `ledger`、`notify`、`im_lark.py` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py`、`.../scripts/notify.py`、`.../scripts/im_lark.py`，先解析绝对路径；Windows 用 `py -3`。
 
-**事项先写 inbox，再排队通知**（见 [../../shared/notify.md](../../shared/notify.md)）：「待决定」用 `notify send --kind decision --decision <ID>`，「待处理」用 `notify send --kind todo --decision <ID>`。send 只排队（queued），不是已发送；按通知契约由 runtime `outbox --claim` → 核对冻结路由、正文、token、原幂等键及适用截止 → 投递 → `receipt`，handoff 未收口不重投，unknown 不自动重发。没有 IM 能力不另找通道，保留 inbox 与队列并报告。`apply` 不等待答复，本人的答复由 `followup` 或 runtime 调度处理。
+**事项先写 inbox，再排队通知**（见 [../../shared/notify.md](../../shared/notify.md)）：「待决定」用 `notify send --kind decision --decision <ID>`，「待处理」用 `notify send --kind todo --decision <ID>`。send 只排队（queued）；入口对账后、每处理完一个会话、收尾时运行 `im_lark.py sync`，见 [飞书适配器](../../shared/im/lark.md)。handoff 未收口不重投，unknown 不自动重发；未读完不称没有新答复。没有 IM 能力不另找通道，保留 inbox 与队列并报告。`apply` 不等待答复，本人的答复由 `followup` 或 runtime 调度处理。
 
 ## 1. 定位工作区，读取条件
 

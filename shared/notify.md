@@ -2,7 +2,7 @@
 
 需要本人决定或处理的事项，**一律先写入 `inbox/decisions.md`**，再排队通知。inbox 与 ledger 是事实来源；排队、认领、送达都不等于本人批准。
 
-下文 `notify` 指 `python3 <job-mate 技能目录>/scripts/notify.py`，先解析绝对路径。退出码：0 已记录、1 被阻断、2 参数或数据错误。脚本只维护本地状态，不联网、不等待、不常驻。
+下文 `notify` 指 `python3 <job-mate 技能目录>/scripts/notify.py`，先解析绝对路径。退出码：0 已记录、1 被阻断、2 参数或数据错误。notify 只维护本地状态；飞书收发由随包 `scripts/im_lark.py sync` 完成，不等待、不常驻。配置、身份核验与工具边界见 [飞书适配器](im/lark.md)。Windows 上 `python3` 换为 `py -3`。
 
 排队、认领、回执、入站及回复状态修改均受[套件版本准入](workspace.md#套件版本准入)的写入门禁约束；`poll`、`status`、`replies`、不带 `--claim` 的 `outbox` 只读。
 
@@ -69,14 +69,14 @@ notify send --kind clarify --reply-to <消息ID> --text <追问>
 
 ### 出站交付与回执
 
-1. `notify outbox` 只读；`notify outbox --claim [--limit N]` 将 queued 或可重试 failed 变为 handoff，返回 key、attempt、token、固定 idempotencyKey、text、replyTo、ownerId、channel、larkProfile、route。执行方只投递这些冻结值。
-2. 实际投递后，按原 key 与 token 提交：
-   - `notify receipt --key K --token T --result sent --message-id M --chat-id C [--create-time <毫秒整数>]`。只记真实平台返回值；缺时间仍记 sent，但不建立私聊与读取起点。第一条带有效时间的非引用 sent 建立私聊与可读起点。
-   - 明确未投递用 `--result failed --error <证据>`，同条目同路由总共最多 3 次认领。
-   - 超时或结果不明用 `--result unknown [--error <原因>]`，**不重发**。
-3. 相同回执重复为 duplicate；未知或陈旧 token、冲突回执、已绑定其他出站键的 messageId 都拒绝。
+排队后运行 `python3 <技能目录>/scripts/im_lark.py --workspace <工作区> sync`；只想投递用 `sync --send-only`。适配器函数级调用 notify 的认领与回执状态机，不要求技能手工组装交付协议：
 
-handoff 不自动重投。超过 10 分钟仅在 `outbox --stale` 和 status 报 stale；核对后可用 `receipt --result unknown` 收口。sent 是终态。私聊冲突仍记真实发送事实，但 status 报告，读取仍用首次建立的私聊。
+- queued 或可重试 failed 才能认领为 handoff；只使用冻结 channel、ownerId、larkProfile、text、replyTo、原 idempotencyKey，不用当前配置重建目标。
+- 真实 messageId/chatId 才记 sent。发送 shortcut 的日期文字不是可信毫秒；适配器原生补查失败仍记不带时间的 sent，不改 unknown、不重发。第一条带可信时间的非引用 sent 才建立私聊与可读起点。
+- 只有实测未投递拒绝才 failed，最早下一轮重试，同条目同路由最多共 3 次；实际发送超时或结果不明为 unknown，**不重发**。
+- 回执绑定原 key/token；相同回执为 duplicate，陈旧 token、冲突回执或已绑定其他出站键的 messageId 拒绝。
+
+handoff 无回执不自动重投。超过 10 分钟只在只读 `notify outbox --stale` 与 status 报 stale，请本人核对后按原 key/token 收口，不换键补投。sent 是终态。私聊冲突仍记真实发送事实，status 报告，读取仍用首次建立的私聊。
 
 ### done 结果版本
 
@@ -86,15 +86,13 @@ handoff 不自动重投。超过 10 分钟仅在 `outbox --stale` 和 status 报
 
 ## 同步 IM
 
-每轮开始、每处理完一个会话、收尾时同步：
+每轮开始（入口对账后）、每处理完一个会话、收尾时运行 `im_lark.py sync`。只有读取需求用 `sync --fetch-only`；它不发送，确认仍 queued。`notify poll` 只是本地计划，不代表读过远端。
 
-1. `notify poll` 获取 channel、ownerId、larkProfile、chatId、sinceMs、readable、outboxPending、replies、paused、lastIncomplete。readable=false 不读历史，先通过出站建立私聊与时间起点。
-2. 从 sinceMs **包含边界**起按时间升序连续分页读取，完整读取后交 `notify incoming --json <批次>`；不传 json 则从标准输入读取：
-   `{"since":<请求起点>,"complete":<布尔>,"messages":[…]}`。
-3. 每条消息必须含 messageId、chatId、createTime、senderId、senderType、text、parentId、deleted。ID 非空，createTime 为有效毫秒整数，parentId 为非空 ID 或 null，deleted 为布尔。chatId 不同则整批拒收；只接受该私聊中本人的 user 消息，不看正文自称。
-4. 先整批验证结构与 since，再逐条核对。重复 ID 不再处理；编辑或批内版本冲突拒收相关 ID，不任选授权正文，独立的新暂停照常处理。非本人、已删除、早于起点、过于超前、我方消息拒收，不抬游标。incomingRejected 只报告原因与 ID。
-5. 入账、游标与完整性保存后执行指令，崩溃重放补齐未完成指令与回执。complete=false 或 lastIncomplete=true 时报告「IM 未读完」，不能说没有新答复；陈旧批次不能清除更新前缀的不完整标记。
-6. outbox 认领、实际投递、提交回执；所有确认和追问也走同一队列。没有 IM 能力就保留本地队列并报告，不另找通道。
+1. 适配器按当前 poll 路由读取；readable=false 不读历史，先通过出站建立可信私聊和时间起点。none 跳过工具；所有 sync 模式仍须通过 write 准入，恢复锁下不执行。
+2. 原生毫秒、固定秒级重叠窗口、升序连续分页由 [飞书适配器](im/lark.md#读取边界) 校验；消息规范化为 messageId、chatId、createTime、senderId、senderType、text、parentId、deleted，再一次性交给本地 incoming。跨 chat、坏时间/字段、缺或重复 token、页间乱序整批不提交，不推进游标；仅达 20 页上限可提交已验证连续前缀 complete:false。
+3. 本地状态机再次验证结构与 since，只接受该私聊本人的 user 消息。重复 ID 去重；编辑或版本冲突不任选正文，独立的新暂停照常处理。非本人、已删除、起点前、过于超前、我方消息拒收，不抬游标；incomingRejected 只报告原因与 ID。
+4. 入账、游标与完整性保存后执行指令，崩溃重放补齐未完成指令与确认。sync.incomplete 或 poll.lastIncomplete 为 true 时报告「IM 未读完」，不能说没有新答复；陈旧批次不能清除更新前缀的不完整标记。
+5. 通知、确认和追问统一由 sync 投递同一队列。没有 IM 能力时保留 inbox、队列与回复状态并报告，不另找通道。queued、handoff、failed、unknown、blocked 都不是 sent；退出码 0 也不是送达或读完证明。
 
 ## 读取本人的回复
 
@@ -109,7 +107,7 @@ handoff 不自动重投。超过 10 分钟仅在 `outbox --stale` 和 status 报
 ### 解释回复（技能）
 
 1. `notify replies --state received` 与 `--state ready`，按时间处理。
-2. 含义不清先排队 clarify，实际投递并收到 sent 后才 `reply-state --state clarifying`；queued、blocked、failed、unknown 均保留原状态，报告未确认追问送达。
+2. 含义不清先排队 clarify，运行 `im_lark.py sync`，收到 sent 后才 `reply-state --state clarifying`；queued、blocked、failed、unknown 均保留原状态，报告未确认追问送达。
 3. 明确结论写 inbox / ledger 后，`notify reply-state --message <消息ID> --state ready --decision <ID>`。
 4. 执行 followup 第 2.2 / 2.3 节。全局暂停或本轮禁发保留 ready，不执行、不消费。
 5. 完成后排队该结果版本 done，再 consumed。已 done 只补通知与消费，不重发 HR、不发 summary；无需动作只记录结论并消费，**不发 `done`、不发 `summary`**。
@@ -124,6 +122,6 @@ IM 只能决定已有事项，不能新增授权、修改条件或扩大范围�
 
 ## 等待答复与定时运行
 
-一轮处理完后最多等待 im.waitMinutes，默认 60 分钟；期间每 10 分钟同步并续锁，达到期限即收尾。数据脚本不等待或常驻。job-mate 不安装后台服务，由本人通过 Agent 或系统定时能力定期运行 followup。
+一轮处理完后最多等待 im.waitMinutes，默认 60 分钟；期间每 10 分钟运行 `im_lark.py sync` 并续锁，达到期限即收尾。数据脚本不等待或常驻。job-mate 不安装后台服务，由本人通过 Agent 或系统定时能力定期运行 followup。
 
 `notify status` 只读报告私聊、游标、完整性、outbox 状态、stale、路由冲突、待回复、ready 与 awaitingCheck。unconfirmedSends 只展示状态元数据，不把旧路由正文展示给新收件人。

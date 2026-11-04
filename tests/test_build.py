@@ -38,7 +38,7 @@ def run_build(*argv):
 
 
 # 已完整改写的文档进入体量预算；其余在对应任务重写时加入。
-TEXT_BUDGETS = {"shared/config-transaction.md": 16000, "shared/notify.md": 16000, "shared/ledger.md": 16000, "shared/derived.md": 16000, "shared/accounts.md": 16000, "shared/export.md": 16000, "shared/tails.md": 16000, "shared/sending.md": 16000, "shared/execution.md": 16000,
+TEXT_BUDGETS = {"shared/im/lark.md": 8000, "shared/config-transaction.md": 16000, "shared/notify.md": 16000, "shared/ledger.md": 16000, "shared/derived.md": 16000, "shared/accounts.md": 16000, "shared/export.md": 16000, "shared/tails.md": 16000, "shared/sending.md": 16000, "shared/execution.md": 16000,
                 "shared/workspace.md": 16000, "skills/setup/SKILL.md": 20000}
 
 
@@ -71,6 +71,12 @@ class BuildTest(unittest.TestCase):
             self.assertTrue((d / "scripts" / "ledger.py").exists())
             self.assertTrue((d / "scripts" / "workspace.py").exists())
             self.assertTrue((d / "scripts" / "notify.py").exists())
+            self.assertTrue((d / "scripts/im_lark.py").is_file())
+            lark = d / "shared/im/lark.md"
+            self.assertTrue(lark.is_file())
+            self.assertLessEqual(lark.stat().st_size, 8000)
+            self.assertIn("im_lark.py sync", (d / "shared/notify.md").read_text(encoding="utf-8"))
+            self.assertNotIn("integrations/lark", skill)
             self.assertFalse((d / "scripts" / "build.py").exists())
             self.assertTrue((d / "scripts" / "platforms.py").is_file())
             self.assertFalse((d / "ref").exists())

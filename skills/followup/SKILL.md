@@ -18,7 +18,7 @@ description: 巡检招聘平台（首批 BOSS 直聘）的 HR 会话：分类新
 - [../../platforms/boss/common.md](../../platforms/boss/common.md)、[../../platforms/boss/followup.md](../../platforms/boss/followup.md)：BOSS 直聘通用要点与消息页面细节
 - [../../shared/execution.md](../../shared/execution.md)：所有 runtime 的能力自检、完整读取、草稿保护、逐动作 guard 与全部尝试收尾；准备浏览器另读 [浏览器入口](../../shared/browser/README.md)
 
-下文的 `ledger`、`notify` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py` 和 `.../scripts/notify.py`，先解析成绝对路径再调用。事件格式为 v1，脚本生成 eventId、threadKey、jobKey；终态只复用 attemptId，不复制旧 eventId。未答尾部按[尾部读取与处理](../../shared/ledger.md#尾部读取与处理)先 `ledger tail`，处理后必须 `--base <本次处理的tailId>` 重读；仅最新且 settled 的快照可 handled，否则由本人带依据核对，不能换基准消除歧义。
+下文的 `ledger`、`notify`、`im_lark.py` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py`、`.../scripts/notify.py`、`.../scripts/im_lark.py`，先解析绝对路径；Windows 用 `py -3`。事件格式为 v1，脚本生成 eventId、threadKey、jobKey；终态只复用 attemptId，不复制旧 eventId。未答尾部按[尾部读取与处理](../../shared/ledger.md#尾部读取与处理)先 `ledger tail`，处理后必须 `--base <本次处理的tailId>` 重读；仅最新且 settled 的快照可 handled，否则由本人带依据核对，不能换基准消除歧义。
 
 ## 1. 准备
 
@@ -48,13 +48,13 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 ### 2.0 同步 IM 并读取答复（每轮都做）
 
-所有 IM 检查点都按 [同步 IM](../../shared/notify.md#同步-im) 执行，不把 poll 当作已经读取远端：
+所有 IM 检查点都运行 `im_lark.py sync`，见 [飞书适配器](../../shared/im/lark.md) 和 [同步 IM](../../shared/notify.md#同步-im)；不把只读 poll 当作已读取远端：
 
-1. `notify poll` 取得 ownerId、chatId、sinceMs、larkProfile、readable。runtime 从 sinceMs 包含边界起按时间升序连续分页，用 `notify incoming --json <批次>` 入账；readable 为 false 时不读历史，先通过出站建立私聊和时间边界。没有 IM 能力时保留本地状态与待投递队列并报告，不另找通道、不声称没有答复。
-2. incoming 的 complete 为 false 或 poll.lastIncomplete 为 true 时报告「IM 未读完」。`notify status` 的 incomingRejected 提示冲突 / 编辑等拒收时请本人重新发一条新消息，不按被拒正文执行；ledger 损坏时普通答复保留 received（ledger_unreadable），不猜唯一事项，暂停等合法指令仍按核心处理。
-3. 排队通知、确认与追问统一 `notify outbox --claim` → 实际投递 → `notify receipt --key <K> --token <T> --result <结果>`。核对冻结 channel、ownerId、larkProfile、正文、replyTo、token、原 idempotencyKey。真实 messageId、chatId 才回 sent，可信 createTime 建立读取起点；明确未投递 failed（最多共 3 次），超时 unknown 不重发。handoff 无 receipt（含 stale）不重投，核对后用 unknown 收口。
+1. 适配器按冻结 larkProfile、ownerId 与原 idempotencyKey 投递，再按当前路由连续分页并入账本人答复；readable 为 false 时不读历史。没有 IM 能力时保留 inbox、队列与回复状态并报告，不另找通道、不声称没有答复。
+2. sync.incomplete 或 poll.lastIncomplete 为 true 时报告「IM 未读完」。`notify status` 的 incomingRejected 提示冲突 / 编辑等拒收时请本人重新发一条新消息，不按被拒正文执行；ledger 损坏时普通答复保留 received（ledger_unreadable），不猜唯一事项，暂停等合法指令仍按核心处理。
+3. 通知、确认与追问全部由 sync 投递。真实 messageId/chatId 才 sent，可信毫秒建立读取起点；时间补查失败仍 sent、不重发。明确 failed 最早下一轮重试，最多共 3 次；unknown 不重发。handoff 无 receipt（含 stale）不重投，请本人核对后收口。
 4. `notify replies --state received` 逐条按事项与含义处理：明确结论写入 inbox / ledger，再 `notify reply-state --message <消息ID> --state ready --decision <事项ID>`。不带引用的「已发出 / 未发出」也只能对应核心给出的既有 uncertain 候选，多个候选先澄清，不能扩大授权。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
-5. 对应不上或含义不清先排队 clarify，走同一认领、投递、回执链；**clarify 已 sent 才标 clarifying**。queued、blocked、failed、unknown 均保留原回复状态并报告，不冒充已追问。
+5. 对应不上或含义不清先排队 clarify，再运行 `im_lark.py sync`；**clarify 已 sent 才标 clarifying**。queued、blocked、failed、unknown 均保留原回复状态并报告，不冒充已追问。
 
 本轮禁发或全局暂停仍可同步 IM 和落盘本人结论，只是不执行平台外发。send / test 只 queued，不等于 sent；channel 为 none 只保留 inbox 并汇报。
 
@@ -133,7 +133,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 3. 对每个会话，读完整上下文：从我方第一条消息或最近 20 条消息起，包括 HR 的请求卡片（交换联系方式、简历请求、面试邀约）。不只看列表摘要。
 4. 用 `ledger threads --company <公司> --recruiter <姓名(职务)>` 查本地状态。招聘者写法见平台通用页面要点。
 5. 只有公司名精确匹配、招聘者也一致才认作同一会话；疑似匹配不点开，汇报「身份不确定」。
-6. **检查点**：每处理完一个会话，完整执行第 2.0 节同步链（poll → runtime 连续分页 → incoming → outbox 认领 / 投递 / receipt）；有新答复先按第 2.0、2.2 节处理，再继续下一个。未读完不说没有答复；超过 30 分钟按第 1 节续锁。
+6. **检查点**：每处理完一个会话，运行 `im_lark.py sync` 并完整执行第 2.0 节；有新答复先按第 2.0、2.2 节处理，再继续下一个。未读完不说没有答复；超过 30 分钟按第 1 节续锁。
 
 ## 4. 分诊
 
@@ -259,7 +259,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 
 所有会话处理完，配置了 IM 且 runtime 有同步与等待能力、im.waitMinutes 大于 0、本轮不是 IM 唤起、仍有待答事项时，由 runtime 安排有界等待；核心脚本不等待、不常驻。能力不足就收尾并报告，下次运行先同步，不另找通道。
 
-1. runtime 在不超过 im.waitMinutes 的期限内定期执行第 2.0 节完整同步链；任何等待后重新核对状态，不以只读 poll 代替远端读取，分页不完整明确汇报。
+1. runtime 在不超过 im.waitMinutes 的期限内每 10 分钟运行 `im_lark.py sync`，执行第 2.0 节完整同步链；任何等待后重新核对状态，不以只读 poll 代替远端读取，分页不完整明确汇报。
 2. 每次同步前 `ledger lock renew --run <runId>`，失败立即停止并收尾；有答复按第 2.0、2.2 / 2.3 节处理。paused 非空结束等待，ready 保留；未知 / 环境受阻不再等待。
 3. 每 10 分钟检查平台未读列表（仅环境可用且未暂停时），有新未读按第 4 节处理；完整读取后才下否定结论。
 4. 事项已处理或达到期限即收尾，下次运行先处理已有答复。

@@ -43,11 +43,11 @@ python3 scripts/build.py --install <项目>/.agents/skills
 
 ## 运行环境
 
-核心定义 [通用执行契约](shared/execution.md) 与 [IM 本地状态接口](shared/notify.md)，不自带浏览器执行器、IM 适配器或后台服务。runtime 需提供可见浏览器 / UI、IM 收发（需要通知时）及调度能力；能力不足时停止并报告，不换工具或通道绕过安全门禁。
+核心定义 [通用执行契约](shared/execution.md) 与 [IM 本地状态接口](shared/notify.md)，不自带浏览器执行器或后台服务。[飞书适配器](shared/im/lark.md) 随整套技能分发，由 Agent 显式运行；runtime 需提供可见浏览器 / UI 与调度能力；能力不足时停止并报告，不换工具或通道绕过安全门禁。
 
 BOSS 只操作你日常已登录的可见浏览器，经辅助功能树或桌面 UI，不使用 CDP / Playwright 或内部接口。选定执行偏好不能满足时不操作平台、不回退；没有结果证据用禁发锁。锁 / guard 不是进程强单实例，自动唤起的互斥和后代清理由 runtime 保证。
 
-可选参考：[agent-desktop](integrations/agent-desktop/README.md)、[飞书私聊](integrations/lark/README.md)。这些文档不随核心分发，不是必须工具，也不表示当前版本在所有环境中兼容。
+可选参考：[agent-desktop](integrations/agent-desktop/README.md)，不随核心分发，不是必须工具。飞书通知按随包适配器配置；不表示真实账号或所有环境已验证。
 
 ## 开发
 

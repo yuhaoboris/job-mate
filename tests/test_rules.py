@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 CORE_RULES = (ROOT / "shared/execution.md", ROOT / "shared/browser/README.md")
 REFERENCES = tuple(ROOT / "integrations" / name / "README.md"
-                   for name in ("agent-desktop", "lark"))
+                   for name in ("agent-desktop",))
 TOOL_CALL = re.compile(
     r"lark-cli\b|agent-desktop\s+(?:--[\w-]+|[a-z][\w-]*\b)|desktop\.py|"
     r"launchctl\b|caffeinate\b|npm\s+install|subprocess|"
@@ -161,6 +161,8 @@ class ExecutionRulesTest(unittest.TestCase):
     def test_all_core_documents_have_no_tool_commands(self):
         for path in core_documents():
             with self.subTest(path=path):
+                if path == ROOT / "shared/im/lark.md":
+                    continue  # 唯一随包飞书命令说明；其余核心文档仍只用适配器入口。
                 self.assertIsNone(TOOL_CALL.search(path.read_text(encoding="utf-8")))
 
     def test_tool_call_detector_accepts_compatibility_literals_only(self):
@@ -244,10 +246,16 @@ class ExecutionRulesTest(unittest.TestCase):
         self.assert_terms(desktop, ("after_action", "INVALID_ARGS", "UTF-8", "8 MiB", "EPERM",
                                     "steps 缺失", "非空 steps", "data.complete", "subtree_truncated",
                                     "禁止后台 type", "后台写入尚未实测", "not_delivered 不作为动作成功前提"))
-        lark = REFERENCES[1].read_text(encoding="utf-8")
-        self.assert_terms(lark, ("message_id", "chat_id", "sender.sender_type", "create_time", "parent_id",
-                                 "连续前缀", "complete 为 false", "deliveryDeadlineMs", "幂等窗口按 0",
-                                 "字段须在接入时核对", "旧无身份历史默认不继承"))
+        lark = (ROOT / "shared/im/lark.md").read_text(encoding="utf-8")
+        self.assert_terms(lark, ("1.0.96", "doctor", "sync --fetch-only", "sync --send-only",
+                                "顶层数组", "顶层诊断对象", "identities.bot.available/verified",
+                                "bot.openId 不是 ownerId", "contact 响应未独立实测",
+                                "contact +get-user --as user", "contact +search-user --query",
+                                "message_id/chat_id", "parent_id", "连续前缀 complete:false",
+                                "99992351", "sent、不带时间", "unknown", "不重发",
+                                "整批拒收，游标不动", "固定模板", "shell=False", "30 秒"))
+        self.assertFalse((ROOT / "integrations/lark").exists())
+        self.assertTrue((ROOT / "integrations/agent-desktop/README.md").is_file())
 
     def test_all_skill_entries_check_capability_before_lock(self):
         for name in ("apply", "followup", "setup"):
@@ -266,8 +274,7 @@ class ExecutionRulesTest(unittest.TestCase):
     def test_followup_im_chain_and_fail_closed_states_are_explicit(self):
         skill = (ROOT / "skills/followup/SKILL.md").read_text(encoding="utf-8")
         sync = skill.split("### 2.0 同步 IM", 1)[1].split("### 2.1", 1)[0]
-        self.assert_terms(sync, ("notify poll", "包含边界", "连续分页", "notify incoming",
-                                "notify outbox --claim", "notify receipt", "原 idempotencyKey",
+        self.assert_terms(sync, ("im_lark.py sync", "连续分页", "当前路由", "readable", "原 idempotencyKey",
                                 "larkProfile", "handoff 无 receipt", "unknown 不重发", "IM 未读完",
                                 "没有 IM 能力", "不另找通道", "incomingRejected", "ledger_unreadable",
                                 "clarify 已 sent 才标 clarifying", "queued、blocked、failed、unknown"))
@@ -276,9 +283,19 @@ class ExecutionRulesTest(unittest.TestCase):
     def test_setup_uses_lark_configuration_and_explicit_im_test(self):
         skill = (ROOT / "skills/setup/SKILL.md").read_text(encoding="utf-8")
         self.assert_terms(skill, ("ownerId", "larkProfile", "waitMinutes", "larkCommand",
-                                 "notify test", "只排队（queued）", "notify outbox --claim",
-                                 "notify receipt", "notify incoming", "引用测试消息回复「收到」",
+                                 "notify test", "只排队（queued）", "im_lark.py doctor", "im_lark.py sync",
+                                 "notify status", "notify replies --state test", "引用测试消息回复「收到」",
                                  "普通业务答复仍 received", "能力不足就停"))
+
+    def test_skill_im_checkpoints_use_adapter_not_manual_transport(self):
+        for relative in ("skills/apply/SKILL.md", "skills/followup/SKILL.md", "skills/setup/SKILL.md", "shared/notify.md"):
+            with self.subTest(path=relative):
+                content = (ROOT / relative).read_text(encoding="utf-8")
+                self.assertIn("im_lark.py sync", content)
+                self.assertIn("shared/im/lark.md" if relative.startswith("skills/") else "im/lark.md", content)
+                self.assertNotRegex(content, r"notify (?:outbox --claim|receipt|incoming)\b")
+        followup = (ROOT / "skills/followup/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("每 10 分钟运行 `im_lark.py sync`", followup)
 
     def test_platform_facts_do_not_reintroduce_tool_instructions(self):
         for path in (ROOT / "platforms/boss").glob("*.md"):
