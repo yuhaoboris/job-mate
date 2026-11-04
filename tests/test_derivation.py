@@ -38,7 +38,7 @@ class DerivationTest(unittest.TestCase):
         fields = {"kind": "reply", "text": "合成问题", **fields}
         pending = self.event(status="pending", **fields)
         if final:
-            self.event(status=final, attemptId=pending["attemptId"], **fields)
+            self.event(**{**fields, "status": final, "attemptId": pending["attemptId"]})
         return pending["attemptId"]
 
     def decision(self, version=1, steps=None, decision="D-20261104-11", **fields):

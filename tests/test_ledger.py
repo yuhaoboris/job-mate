@@ -225,7 +225,7 @@ class LedgerTest(unittest.TestCase):
         code, out = self.ws.run("lock", "acquire", "--skill", "followup", "--run", "next")
         self.assertEqual(code, 0, out)
         attempts = ledger.attempts_of(ledger.read_events(self.ws.path)[0])
-        self.assertEqual(attempts[aid]["status"], "uncertain")
+        self.assertEqual(attempts[("boss", "zhipin-test", aid)]["status"], "uncertain")
         self.assertEqual(self.ws.run("guard", "--run", "next", "--attempt", aid)[0], 1)
 
     def test_release_keeps_terminal_states_and_rejects_other_owner(self):
@@ -267,7 +267,7 @@ class LedgerTest(unittest.TestCase):
             ledger.write_lock(self.ws.path, lock)
         code, out = self.ws.run("lock", "release", "--run", "current")
         self.assertEqual((code, out["reconciled"]), (0, []))
-        self.assertEqual(ledger.attempts_of(ledger.read_events(self.ws.path)[0])[aid]["status"], "pending")
+        self.assertEqual(ledger.attempts_of(ledger.read_events(self.ws.path)[0])[("boss", "zhipin-test", aid)]["status"], "pending")
 
     def fail_partial_release(self):
         ids = [self.ws.greet(final=None, company=c) for c in ("收尾甲", "收尾乙")]
@@ -299,8 +299,8 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual([a["attemptId"] for a in out["reconciled"]], ids)
         attempts = ledger.attempts_of(ledger.read_events(self.ws.path)[0])
         for aid in ids:
-            self.assertEqual(attempts[aid]["status"], "uncertain")
-            self.assertEqual(len(attempts[aid]["events"]), 2)
+            self.assertEqual(attempts[("boss", "zhipin-test", aid)]["status"], "uncertain")
+            self.assertEqual(len(attempts[("boss", "zhipin-test", aid)]["events"]), 2)
 
     def test_expired_takeover_recovers_partial_release(self):
         ids = self.fail_partial_release()
@@ -319,7 +319,7 @@ class LedgerTest(unittest.TestCase):
         code, out = self.ws.run("lock", "release", "--run", "run-1")
         self.assertEqual(code, 0, out)
         self.assertEqual([a["attemptId"] for a in out["reconciled"]], [ids[1]])
-        self.assertEqual(ledger.attempts_of(ledger.read_events(self.ws.path)[0])[ids[0]]["status"], "sent")
+        self.assertEqual(ledger.attempts_of(ledger.read_events(self.ws.path)[0])[("boss", "zhipin-test", ids[0])]["status"], "sent")
 
     def test_release_unlink_failure_keeps_recoverable_report(self):
         aid = self.ws.greet(final=None)
@@ -330,7 +330,7 @@ class LedgerTest(unittest.TestCase):
         code, out = self.ws.run("lock", "release", "--run", "run-1")
         self.assertEqual(code, 0, out)
         self.assertEqual([a["attemptId"] for a in out["reconciled"]], [aid])
-        self.assertEqual(len(ledger.attempts_of(ledger.read_events(self.ws.path)[0])[aid]["events"]), 2)
+        self.assertEqual(len(ledger.attempts_of(ledger.read_events(self.ws.path)[0])[("boss", "zhipin-test", aid)]["events"]), 2)
 
     def test_release_corrupt_ledger_keeps_lock(self):
         self.ws.greet(final=None)
@@ -350,7 +350,7 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(sum(r["released"] for r in results), 1, results)
         winner = next(r for r in results if r["released"])
         self.assertEqual([a["attemptId"] for a in winner["reconciled"]], [aid])
-        self.assertEqual(len(ledger.attempts_of(ledger.read_events(self.ws.path)[0])[aid]["events"]), 2)
+        self.assertEqual(len(ledger.attempts_of(ledger.read_events(self.ws.path)[0])[("boss", "zhipin-test", aid)]["events"]), 2)
 
     def test_release_and_acquire_race_never_leave_pending_or_delete_new_lock(self):
         aid = self.ws.greet(final=None)
@@ -362,7 +362,7 @@ class LedgerTest(unittest.TestCase):
         results = [json.loads(p.communicate(timeout=10)[0]) for p in procs]
         self.assertTrue(results[1]["acquired"], results)
         self.assertEqual(ledger.read_lock(self.ws.path)["runId"], "next")
-        attempt = ledger.attempts_of(ledger.read_events(self.ws.path)[0])[aid]
+        attempt = ledger.attempts_of(ledger.read_events(self.ws.path)[0])[("boss", "zhipin-test", aid)]
         self.assertEqual(attempt["status"], "uncertain")
         self.assertEqual(len(attempt["events"]), 2)
 

@@ -25,7 +25,7 @@ class TailTest(unittest.TestCase):
         self.env = patch.dict(os.environ, {"JOB_MATE_TESTING": "1", "JOB_MATE_NOW": "2026-11-04T12:00:00+08:00",
                                           "JOB_MATE_TEST_PLATFORM_ROOT": str(ROOT / "tests/fixtures/platforms")})
         self.env.start()
-        workspace.init_workspace(self.ws, "boss-main", "合成账号")
+        workspace.init_workspace(self.ws, {"boss": {"accountKey": "boss-main", "displayName": "合成账号"}})
         meta = ledger.read_json(self.ws / ledger.MARKER)
         meta["accounts"]["testplat"] = {"accountKey": "test-main", "displayName": "测试账号"}
         ledger.write_atomic(self.ws / ledger.MARKER, json.dumps(meta))

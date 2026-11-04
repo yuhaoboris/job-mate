@@ -48,8 +48,8 @@ class ReleaseStaticContractTest(unittest.TestCase):
     def test_shared_contract_covers_identity_dedup_notification_and_fail_closed(self):
         contract = (ROOT / "shared/ledger.md").read_text(encoding="utf-8").split(
             "### 释放与对账契约", 1)[1]
-        for phrase in ("不带平台 / 公司 / 招聘者筛选", "招聘者为 `null`", "以 attemptId 为准",
-                       "按 attemptId 查找 / 沿用已有事项", "先暂停、再写 inbox",
+        for phrase in ("不带平台 / 账号 / 公司 / 招聘者筛选", "招聘者为 `null`", "以平台、账号、attemptId 为准",
+                       "按平台、账号、attemptId 查找 / 沿用已有事项", "先暂停、再写 inbox",
                        "notify send --kind decision --decision <ID>", "已经确认的终态保持不变",
                        "不再持原锁重发", "不能宣称完全收尾", "锁未确认释放", "对账未完成"):
             self.assertIn(phrase, contract)
@@ -132,7 +132,7 @@ class ReleaseRecoveryDataTest(unittest.TestCase):
         self.assertIsNone(thread["recruiter"])
         self.assertIsNone(thread["title"])
         self.assertEqual(thread["company"], "合成公司")
-        self.assertEqual(thread["unresolved"], [{"attemptId": ev["attemptId"], "kind": "greet", "status": "uncertain"}])
+        self.assertEqual(thread["unresolved"], [{"platform": ev["platform"], "account": ev["account"], "attemptId": ev["attemptId"], "kind": "greet", "status": "uncertain"}])
         self.assertEqual(self.inbox.read_bytes(), before)
 
     def test_unfiltered_threads_include_unknown_and_named_recruiter_attempts(self):
@@ -154,7 +154,7 @@ class ReleaseRecoveryDataTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertTrue(all(not t["unresolved"] for t in out["threads"]))
         attempts = ledger.attempts_of(ledger.read_events(self.ws)[0])
-        self.assertEqual(attempts[ev["attemptId"]]["status"], "sent")
+        self.assertEqual(attempts[ledger.attempt_key(ev)]["status"], "sent")
 
     def test_missing_company_is_reported_as_corruption_not_silently_omitted(self):
         ev = self.append()

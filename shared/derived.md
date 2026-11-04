@@ -8,7 +8,7 @@
 
 | 字段 | 含义 |
 |---|---|
-| threadKey、account | 平台描述派生的会话标识与当前账号；当前每平台只配置一个账号 |
+| threadKey、account | 平台描述派生的会话标识与账号；当前配置与历史身份见[账号说明](accounts.md) |
 | currentJobKey | 该会话最近一条非空 jobKey；HR 换职位后据此重算信息 |
 | stage | greeted → replied → info → resume → interview_invited，只升不降；没有达到阶段时为 null |
 | info | 当前职位的 known、pending、askedUnanswered、gaveUp |
@@ -22,7 +22,7 @@
 
 ### 信息
 
-按 jobKey 汇总 JD 与结构化回答；不同职位不共用事实或问询次数。screen 尚未看到招聘者时记录的 JD 仍归属于该职位。
+按平台、账号、jobKey 汇总 JD 与回答；不同命名空间不共用事实或问询次数。screen 尚未看到招聘者时记录的 JD 仍归属于该职位。
 
 - known：jdFacts 与 observe/info.facts 的并集；沟通事实覆盖 JD，同类记录取后写值。不从自由文本猜子项。
 - pending：checks 子项优先，其余按 inquiry.priority 的大类与组内顺序；移除 known 和 gaveUp。缺省大类为 salary、hours、location、leave；显式空数组仅保留 checks。JD 写了 hours.schedule 不代表 hours.time 已知。

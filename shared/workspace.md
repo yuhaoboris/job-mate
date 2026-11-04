@@ -78,7 +78,7 @@
 }
 ```
 
-`accountKey` 是本地别名，不是手机号或凭据。操作平台前，核对页面上可见的账号名与 `displayName` 一致；不一致时停止，请本人确认。
+init 用 `--account platform:accountKey:displayName`，不同平台可重复，同平台不可重复；详见[账号说明](accounts.md)。`accountKey` 是本地别名，不是手机号或凭据。操作平台前，核对页面上可见的账号名与 `displayName` 一致；不一致时停止，请本人确认。
 
 ## profile.json
 

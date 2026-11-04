@@ -58,7 +58,7 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 
 ### 3.1 开始与接续
 
-- 新建：目录经本人确认 → `workspace init <目录>`（账号可在 `account` 步补齐）→ 请本人选典型或自定义 → `workspace progress start --mode new --variant typical|custom`。`init` 建立骨架，不覆盖已有文件。
+- 新建：目录经本人确认 → `workspace init <目录> [--account 平台:本地别名:显示名]`（账号可在 `account` 步补齐；不同平台可重复，同平台不重复）→ 请本人选典型或自定义 → `workspace progress start --mode new --variant typical|custom`。`init` 建立骨架，不覆盖已有文件。
 - 重新设置：`workspace backup --label resetup` → 告诉本人备份名与恢复方法 → `workspace progress start --mode resetup --base-backup <备份名>`。
 - 部分重新设置：`workspace backup --label partial` → 告诉本人备份名与恢复方法 → 展示阶段/步骤菜单，请本人选择 → `workspace progress start --mode partial --select <阶段或步骤id,…> --base-backup <备份名>`。
 - 有草稿：先询问本人。继续则用 `progress show` 的当前步骤与已有回答接续；从头开始则经本人确认后 `progress clear`，重新进入原模式：新建重新 `workspace init`、选择典型或自定义、`progress start`；重置重新备份，部分重置重新选步骤。放弃则确认后 `progress clear`，按 `markerRemoved` 汇报是否撤销工作区标记；有事件时标记保留，说明原因，不宣称该目录已停用。草稿损坏时报告问题，请本人决定是否放弃，不自行覆盖。

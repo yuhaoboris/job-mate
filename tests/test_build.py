@@ -38,7 +38,7 @@ def run_build(*argv):
 
 
 # 已完整改写的文档进入体量预算；其余在对应任务重写时加入。
-TEXT_BUDGETS = {"shared/notify.md": 16000, "shared/ledger.md": 16000, "shared/derived.md": 16000,
+TEXT_BUDGETS = {"shared/notify.md": 16000, "shared/ledger.md": 16000, "shared/derived.md": 16000, "shared/accounts.md": 16000,
                 "shared/workspace.md": 16000, "skills/setup/SKILL.md": 20000}
 
 
@@ -123,7 +123,7 @@ class BuildTest(unittest.TestCase):
         ws = Path(self.tmp.name) / "ws"
         script = self.out / "job-mate-setup" / "scripts" / "workspace.py"
         p = subprocess.run([sys.executable, "-I", str(script), "init", str(ws),
-                            "--boss-account", "zp", "--boss-name", "演示"], capture_output=True, text=True)
+                            "--account", "boss:zp:演示"], capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         ledger = self.out / "job-mate-apply" / "scripts" / "ledger.py"
         p = subprocess.run([sys.executable, "-I", str(ledger), "--workspace", str(ws), "validate"],

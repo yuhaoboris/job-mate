@@ -212,7 +212,7 @@ def open_items(ws):
 def awaiting_check(ws):
     try:
         events, _ = ledger.read_events(ws)
-        return [{"decision": a["decision"], "attemptId": a["attemptId"]}
+        return [{"decision": a["decision"], "attemptId": a["attemptId"], "platform": a["platform"], "account": a["account"]}
                 for a in ledger.attempts_of(events).values() if a["status"] == "uncertain" and a.get("decision")], None
     except (ledger.LedgerError, OSError, UnicodeError, ValueError, TypeError, KeyError) as e:
         return [], f"ledger_unreadable: {e}"

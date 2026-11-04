@@ -27,7 +27,7 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 | `quota --platform <平台> [--run <runId>]` / `stats [--since YYYY-MM-DD] [--until YYYY-MM-DD]` | 额度、间隔 / 统计 |
 | `stoplist list` / `stoplist add --name <公司> [--alias <别名>]... --reason <原因> --source <来源>` / `stoplist remove --name <公司>` | 停止名单；remove 按 name 精确匹配 |
 
-threads / decision 的字段与使用分支见[派生说明](derived.md)。
+派生见[说明](derived.md)，账号与按平台配置见[账号说明](accounts.md)。
 
 ## 运行锁
 
@@ -109,7 +109,7 @@ observed 可取：tail、handled、replied、decision、info、resume_requested�
 
 ## 去重
 
-首次联系检查停止名单（精确或疑似）、同平台历史联系、公司 rejected / risk。company 范围按公司，job 范围按 ID，缺 ID 比公司 + 职位；同公司同职位而 ID 不同报疑似重新发布。通过 check 后仍以当前页面为准：已联系记 already_contacted，不发送。本人逐个放行可越过历史联系，但不能越过停止名单或 pending / uncertain。
+首次联系检查停止名单、同平台账号历史联系与 rejected / risk。company 范围按公司，job 范围按 ID，缺 ID 比公司 + 职位；同公司同职位而 ID 不同报疑似重新发布。通过 check 后仍以当前页面为准：已联系记 already_contacted，不发送。本人逐个放行可越过历史联系，但不能越过停止名单或 pending / uncertain。
 
 ## 中断恢复
 
@@ -117,8 +117,8 @@ observed 可取：tail、handled、replied、decision、info、resume_requested�
 
 `apply`、`followup`、`setup` 的正常结束、异常结束、经本人确认释放上一轮锁，以及 `workspace restore` 返回的收尾结果，都执行同一契约；这里只做本地对账与通知，不为恢复状态而重放平台动作。
 
-1. **入口对账**：获取锁后、任何外发前，用不带平台 / 公司 / 招聘者筛选的 `ledger threads`，逐一对照全部 `unresolved` 与 `inbox/decisions.md`，并处理 acquire 的 `reconciled`。即使 acquire 返回空列表也不能跳过：释放成功后锁已删除，再次 release 只返回「没有锁」，不能重放上次输出；释放后、inbox 落盘前中断留下的 `uncertain` 只能靠本次对账补齐。招聘者为 `null`、尚未关联完整会话的尝试也检查，以 attemptId 为准，不按公司或招聘者猜合并。
-2. **事项与通知**：按 attemptId 查找 / 沿用已有事项，统一按 [notify.md 的结果不明事项](notify.md#结果不明事项) 写入「尝试：<attemptId>」并选择通知类型；执行已决定事项产生 uncertain 时沿用原决定，不另开或重复暂停。确认没有对应事项且无历史关联疑点时，才先暂停、再写 inbox、再 `notify send --kind decision --decision <ID>`；未配置 IM 或通知失败时保留 inbox 并汇报。历史结果不明事项缺少 attemptId 时，不按公司 / 招聘者猜合并、不自动新开，列待对账报告；本人核对或明确证据唯一对应、在原事项补 ID 后才继续按原 ID 通知 / 执行，期间状态保持阻断（详见 [结果不明事项](notify.md#结果不明事项)）。只写已知的平台 / 公司 / 岗位 / 招聘者，缺失项注明未知，不编造、不打开平台补查。遗留 `pending` 仍阻断外发，报告待对账，不擅自核销其他轮次或重放尝试。
+1. **入口对账**：获取锁后、任何外发前，用不带平台 / 账号 / 公司 / 招聘者筛选的 `ledger threads`，逐一对照全部 `unresolved` 与 `inbox/decisions.md`，并处理 acquire 的 `reconciled`。即使 acquire 返回空列表也不能跳过：释放成功后锁已删除，再次 release 只返回「没有锁」，不能重放上次输出；释放后、inbox 落盘前中断留下的 `uncertain` 只能靠本次对账补齐。招聘者为 `null` 也检查，以平台、账号、attemptId 为准，不按姓名猜合并。
+2. **事项与通知**：按平台、账号、attemptId 查找 / 沿用已有事项，统一按 [notify.md 的结果不明事项](notify.md#结果不明事项) 写入「尝试：<attemptId>」并选择通知类型；执行已决定事项产生 uncertain 时沿用原决定，不另开或重复暂停。确认没有对应事项且无历史关联疑点时，才先暂停、再写 inbox、再 `notify send --kind decision --decision <ID>`；未配置 IM 或通知失败时保留 inbox 并汇报。历史结果不明事项缺少 attemptId 时，不按公司 / 招聘者猜合并、不自动新开，列待对账报告；本人核对或明确证据唯一对应、在原事项补 ID 后才继续按原 ID 通知 / 执行，期间状态保持阻断（详见 [结果不明事项](notify.md#结果不明事项)）。只写已知的平台 / 公司 / 岗位 / 招聘者，缺失项注明未知，不编造、不打开平台补查。遗留 `pending` 仍阻断外发，报告待对账，不擅自核销其他轮次或重放尝试。
 3. **释放收尾**：结束时执行 `lock release --run <runId>`，核对退出码与 `released`，按上一步处理返回的 `reconciled`，不能忽略输出。写核对事项前再对照最新 `threads.unresolved`；已经确认的终态保持不变，不因旧输出重开核对事项。释放后只做本地收尾与通知，不再持原锁重发。
 4. **失败阻断**：释放失败或未确认 `released: true` 时立即停止整轮，保留锁与未完成草稿，按 `lock status` 显式报告持锁者；状态读不出就报告锁未确认释放。不能宣称完全收尾，不能继续外发、续期或沿用原锁绕过收尾。收尾中的锁按「运行锁」一节重试 release 或等过期接管；主体错误与释放错误分别报告。`threads` / `validate` 报损坏或无法读取时，报告对账未完成及损坏行，停止外发，不跳过、不删除、不用空文件覆盖。
 

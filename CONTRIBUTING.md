@@ -24,7 +24,7 @@ job-mate 面向不同 Agent runtime，定义求职流程、授权、安全边界
   python3 -m unittest discover -s tests
   python3 scripts/build.py --out "$tmp/dist"
   python3 scripts/workspace.py init "$tmp/workspace" \
-    --boss-account synthetic --boss-name 合成测试用户
+    --account boss:synthetic:合成测试用户
   python3 scripts/ledger.py --workspace "$tmp/workspace" validate
 )
 ```

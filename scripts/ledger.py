@@ -65,7 +65,10 @@ DEFAULT_LIMITS = {
     "detailsPerRun": 50,
     "minSendIntervalSeconds": 5,
     "dedupScope": "company",
+    "inboundScanDays": 14, "inboundScanPerRun": 30, "inboundRecheckHours": 24,
 }
+DEFAULT_NUDGE = {"afterReadHours": 24, "afterUnreadHours": 24, "intervalHours": 48,
+                 "maxPerSilence": 3, "maxPerThread": 6, "perDay": 20}
 DEFAULT_TZ = "Asia/Shanghai"
 DEFAULT_LOCK_TTL_MINUTES = 60
 
@@ -224,10 +227,39 @@ def load_profile(ws):
     return read_json(ws / "profile.json", {}) or {}
 
 
-def limits_of(profile):
-    merged = dict(DEFAULT_LIMITS)
-    merged.update((profile.get("limits") or {}))
-    return merged
+def platform_settings(profile, field, platform, defaults):
+    if not isinstance(profile, dict):
+        raise LedgerError("profile 须为对象")
+    base = profile.get(field, {})
+    if not isinstance(base, dict) or not isinstance(base.get("platforms", {}), dict):
+        raise LedgerError(f"{field} 及其 platforms 须为对象")
+    override = base.get("platforms", {}).get(platform, {})
+    if not isinstance(override, dict):
+        raise LedgerError(f"{field}.platforms.{platform} 须为对象")
+    return {**defaults, **{k: v for k, v in base.items() if k != "platforms"}, **override}
+
+
+def effective_limits(profile, platform_id):
+    defaults = dict(DEFAULT_LIMITS, **load_platform(platform_id)["defaultLimits"])
+    result = platform_settings(profile, "limits", platform_id, defaults)
+    for key, value in result.items():
+        if key not in DEFAULT_LIMITS or (key == "dedupScope" and value not in ("company", "job")) or (
+                key != "dedupScope" and (type(value) is not int or value < 0)):
+            raise LedgerError(f"limits.{key} 无效")
+    return result
+
+
+def effective_nudge(profile, platform_id):
+    load_platform(platform_id)
+    result = platform_settings(profile, "nudge", platform_id, DEFAULT_NUDGE)
+    for key, value in result.items():
+        if key not in DEFAULT_NUDGE or isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value < float("inf"):
+            raise LedgerError(f"nudge.{key} 无效")
+    if (type(result["maxPerSilence"]) is not int or not 1 <= result["maxPerSilence"] <= 3
+            or type(result["maxPerThread"]) is not int or not result["maxPerSilence"] <= result["maxPerThread"] <= 9
+            or type(result["perDay"]) is not int):
+        raise LedgerError("nudge 次数范围无效")
+    return result
 
 
 def recovery_tz(ws):
@@ -243,11 +275,42 @@ def tz_of(profile):
 
 
 def default_account(ws, platform):
+    load_platform(platform)
     meta = read_json(ws / MARKER, {}) or {}
-    acc = (meta.get("accounts") or {}).get(platform)
-    if isinstance(acc, dict):
-        return acc.get("accountKey")
-    return acc
+    accounts = meta.get("accounts", {})
+    if not isinstance(accounts, dict):
+        raise LedgerError("accounts 须为每平台单账号对象")
+    account = accounts.get(platform)
+    if not isinstance(account, dict) or not isinstance(account.get("accountKey"), str) or not account["accountKey"].strip():
+        raise LedgerError(f"{platform} 未配置有效账号，请先 setup")
+    return account["accountKey"]
+
+
+def resolve_account(ws, platform, account=None, history=()):
+    if account is not None and (not isinstance(account, str) or not account.strip()):
+        raise LedgerError("account 须为非空字符串")
+    if account is not None and any(e["platform"] == platform and e["account"] == account for e in history):
+        return account
+    current = default_account(ws, platform)
+    if account is not None and account != current:
+        raise LedgerError("account 不匹配当前平台配置；不得用未知别名绕过配额")
+    return current
+
+
+def account_filter(ws, args, events):
+    if args.platform is not None:
+        load_platform(args.platform)
+    account = args.account
+    if account is None:
+        return None
+    if not isinstance(account, str) or not account.strip():
+        raise LedgerError("account 须为非空字符串")
+    if any(e["account"] == account and (args.platform is None or e["platform"] == args.platform) for e in events):
+        return account
+    platforms = [args.platform] if args.platform else list((read_json(ws / MARKER).get("accounts") or {}))
+    if not any(default_account(ws, p) == account for p in platforms):
+        raise LedgerError("未知 account；既无历史也不在当前配置")
+    return account
 
 
 def events_path(ws):
@@ -891,20 +954,24 @@ def resolve_status(statuses):
     return "sent" if "sent" in statuses else statuses[-1]
 
 
+def attempt_key(event):
+    return event["platform"], event["account"], event["attemptId"]
+
+
 def attempts_of(events):
-    """按 attemptId 归并动作事件，返回 {attemptId: {...}}。"""
+    """按 (platform, account, attemptId) 归并动作事件。"""
     out = {}
     for ev in events:
         if ev["kind"] not in ACTION_KINDS:
             continue
-        a = out.setdefault(ev["attemptId"], {"events": []})
+        a = out.setdefault(attempt_key(ev), {"events": []})
         a["events"].append(ev)
     for aid, a in out.items():
         evs = a["events"]
         first = evs[0]
         statuses = [e["status"] for e in evs]
         a.update({
-            "attemptId": aid,
+            "attemptId": first["attemptId"],
             "kind": first["kind"],
             "platform": first["platform"],
             "account": first["account"],
@@ -959,7 +1026,7 @@ def check_transition(prior, ev):
 
 
 # ---------- 会话 ----------
-# 会话维度来自平台 conversationKey；完整账号隔离由后续任务统一加入。
+# 会话按平台、账号及 conversationKey 隔离。
 # 同一 attempt 补齐的页面身份用于归并，事件原值不改写。
 
 FOLLOWUP_MAX_TOTAL = 3
@@ -970,13 +1037,13 @@ FOLLOWUP_COOLDOWN_DAYS = 7
 def thread_key(ev):
     values = [(norm_company if field == "company" else norm_text)(ev.get(field))
               for field in load_platform(ev["platform"])["conversationKey"]]
-    return (ev["platform"], *values)
+    return (ev["platform"], ev["account"], *values)
 
 
 def thread_identity(ev, attempts):
     identity = dict(ev)
     if ev["kind"] in ACTION_KINDS:
-        attempt = attempts[ev["attemptId"]]
+        attempt = attempts[attempt_key(ev)]
         identity["recruiter"] = attempt["recruiter"]
         for field in load_platform(ev["platform"])["conversationKey"]:
             if identity.get(field) is None:
@@ -995,7 +1062,7 @@ def _base_threads(events, platform=None):
         rec = identity.get("recruiter")
         key = thread_key(identity)
         t = threads.setdefault(key, {
-            "platform": ev["platform"], "company": ev["company"], "recruiter": rec,
+            "platform": ev["platform"], "account": ev["account"], "company": ev["company"], "recruiter": rec,
             "title": None, "jobId": None, "lastAt": None,
             "lastOutbound": None, "lastObserved": None, "lastReplyAt": None,
             "followupsSent": 0, "followupsSinceReply": 0, "lastFollowupAt": None,
@@ -1051,7 +1118,7 @@ def _base_threads(events, platform=None):
         if a["status"] in ("pending", "uncertain"):
             t = threads.get(thread_key(thread_identity(a["events"][0], atts)))
             if t is not None:
-                t["unresolved"].append({"attemptId": a["attemptId"], "kind": a["kind"], "status": a["status"]})
+                t["unresolved"].append({k: a[k] for k in ("platform", "account", "attemptId", "kind", "status")})
     return threads
 
 
@@ -1072,10 +1139,11 @@ def sent_metadata(attempt):
     return sent, job, metadata
 
 
-def build_threads(events, platform=None, profile=None):
+def build_threads(events, platform=None, profile=None, account=None):
     """在既有接管/暂停投影上补只读派生；尾部安全只消费已校验事件。"""
     all_threads = _base_threads(events)
-    threads = {key: t for key, t in all_threads.items() if platform is None or t["platform"] == platform}
+    threads = {key: t for key, t in all_threads.items() if (platform is None or t["platform"] == platform)
+               and (account is None or t["account"] == account)}
     atts = attempts_of(events)
     sent = {aid: sent_metadata(a) for aid, a in atts.items()}
     inquiry = (profile or {}).get("inquiry", {})
@@ -1092,7 +1160,7 @@ def build_threads(events, platform=None, profile=None):
     for ev in events:
         job = ev.get("jobKey")
         if job:
-            data = jobs.setdefault(job, {"jd": {}, "facts": {}, "checks": []})
+            data = jobs.setdefault((ev["platform"], ev["account"], job), {"jd": {}, "facts": {}, "checks": []})
             data["jd"].update(ev.get("jdFacts") or {})
             if ev["kind"] == "observe" and ev["observed"] == "info":
                 data["facts"].update(ev["facts"])
@@ -1111,7 +1179,7 @@ def build_threads(events, platform=None, profile=None):
         if job:
             thread["currentJobKey"] = job
         if ev["kind"] in ACTION_KINDS:
-            contexts.setdefault(ev["attemptId"], thread["currentJobKey"])
+            contexts.setdefault(attempt_key(ev), thread["currentJobKey"])
         if ev.get("decision"):
             related[key].add(ev["decision"])
         milestone = None
@@ -1135,21 +1203,21 @@ def build_threads(events, platform=None, profile=None):
                         total[item] = total.get(item, 0) + 1
                 if waiting:
                     rounds[pair] = waiting
-        elif ev["kind"] in ACTION_KINDS and sent[ev["attemptId"]][0] is ev:
-            _, actual_job, metadata = sent[ev["attemptId"]]
+        elif ev["kind"] in ACTION_KINDS and sent[attempt_key(ev)][0] is ev:
+            _, actual_job, metadata = sent[attempt_key(ev)]
             # 省略职位的允许输入承接首次尝试时上下文；晚确认不能挪到新职位。
-            actual_job = actual_job or contexts[ev["attemptId"]]
+            actual_job = actual_job or contexts[attempt_key(ev)]
             milestone = "resume" if ev["kind"] == "resume" else "greeted"
             if actual_job and metadata.get("asks"):
                 rounds.setdefault((key, actual_job), []).append({"asks": metadata["asks"], "sentAt": parse_at(ev["at"])})
         if milestone and (thread["stage"] is None or THREAD_STAGES.index(milestone) > THREAD_STAGES.index(thread["stage"])):
             thread["stage"] = milestone
-        if ev["kind"] in ACTION_KINDS and sent[ev["attemptId"]][0] is ev:
-            if "intent:interview" in sent[ev["attemptId"]][2].get("tags", []) and thread["stage"] not in thread["interviewIntentStages"]:
+        if ev["kind"] in ACTION_KINDS and sent[attempt_key(ev)][0] is ev:
+            if "intent:interview" in sent[attempt_key(ev)][2].get("tags", []) and thread["stage"] not in thread["interviewIntentStages"]:
                 thread["interviewIntentStages"].append(thread["stage"])
     decisions = decisions_of(events, all_threads)
     for key, thread in threads.items():
-        data = jobs.get(thread["currentJobKey"], {"jd": {}, "facts": {}, "checks": []})
+        data = jobs.get((thread["platform"], thread["account"], thread["currentJobKey"]), {"jd": {}, "facts": {}, "checks": []})
         known = dict(data["jd"], **data["facts"])
         unanswered = {item: count for item, count in counts.get((key, thread["currentJobKey"]), {}).items() if item not in known}
         gave_up = [item for item in INFO_KEYS if unanswered.get(item, 0) >= 2]
@@ -1237,10 +1305,10 @@ def stoplist_reasons(ws, company):
     return []
 
 
-def company_observation_reasons(events, platform, company):
+def company_observation_reasons(events, platform, account, company):
     out = []
     for ev in events:
-        if ev["kind"] == "observe" and ev["platform"] == platform \
+        if ev["kind"] == "observe" and ev["platform"] == platform and ev["account"] == account \
                 and ev["observed"] in COMPANY_BLOCKING_OBSERVATIONS \
                 and match_company(company, [ev["company"]])[0] == "exact":
             out.append({"type": ev["observed"],
@@ -1259,7 +1327,7 @@ def first_contact_reasons(args, events, scope):
     contacts += [{**ev, "lastAt": ev["at"], "jobId": ev.get("jobId"), "status": "adopted"}
                  for ev in events if ev["kind"] == "observe" and ev["observed"] == "adopted"]
     for a in contacts:
-        if a["platform"] != args.platform:
+        if a["platform"] != args.platform or a["account"] != args.account:
             continue
         same_job = bool(job_id and a["jobId"] == job_id)
         same_company, _ = match_company(args.company, [a["company"]])
@@ -1291,7 +1359,7 @@ def first_contact_reasons(args, events, scope):
 def conversation_reasons(args, events, now, tz):
     """会话内外发（回复、跟进、发简历、补发招呼语）的统一检查。"""
     reasons = []
-    threads = find_threads(build_threads(events, args.platform), args.company, args.recruiter)
+    threads = find_threads(build_threads(events, args.platform, account=args.account), args.company, args.recruiter)
     for t in threads:
         who = f"{t['company']} / {t['recruiter'] or '招聘者未知'}"
         if t["closed"]:
@@ -1320,11 +1388,12 @@ def cmd_check(args, ws):
     load_platform(args.platform)
     profile = load_profile(ws)
     tz = tz_of(profile)
-    limits = limits_of(profile)
+    args.account = resolve_account(ws, args.platform, args.account)
+    limits = effective_limits(profile, args.platform)
     scope = args.scope or limits["dedupScope"]
     events, _ = read_events(ws)
-    reasons = stoplist_reasons(ws, args.company) + company_observation_reasons(events, args.platform, args.company)
-    out = {"kind": args.kind, "company": args.company}
+    reasons = stoplist_reasons(ws, args.company) + company_observation_reasons(events, args.platform, args.account, args.company)
+    out = {"kind": args.kind, "company": args.company, "platform": args.platform, "account": args.account}
     if args.kind == "greet":
         more, job_id = first_contact_reasons(args, events, scope)
         out.update({"jobId": job_id, "dedupScope": scope})
@@ -1389,7 +1458,7 @@ def decision_attempt(attempt, decision, owners, effective, invitations, position
             issue = "step_content_conflict"
         else:
             version = number
-    out = {k: attempt[k] for k in ("attemptId", "kind", "step", "status", "company", "recruiter", "lastAt")}
+    out = {k: attempt[k] for k in ("platform", "account", "attemptId", "kind", "step", "status", "company", "recruiter", "lastAt")}
     out.update(decisionVersion=version, versionInvalidated=version is not None and version != effective,
                mappingIssue=issue)
     return out, ack
@@ -1432,7 +1501,7 @@ def decisions_of(events, threads=None, only=None):
         attempts, system, unmapped = [], [], []
         for attempt in linked:
             projected, ack = decision_attempt(attempt, decision, owners, effective, invitations, positions)
-            identity = thread_identity(attempt["events"][0], {attempt["attemptId"]: attempt})
+            identity = thread_identity(attempt["events"][0], {attempt_key(attempt): attempt})
             review = reviews.get((attempt["platform"], attempt["account"], thread_key(identity)))
             # 本人已核对的终态不因后来登记新版而再次变成未知；保留原记录和依据。
             projected["reviewResolvedBy"] = (review["eventId"] if review and projected["mappingIssue"]
@@ -1499,8 +1568,8 @@ def decision_completed(events, decision):
 def unstepped_decision_attempts(events, decision):
     """只解除同目标本人已核对终态的既有缺 step 阻断，不隐藏未决。"""
     summary = decisions_of(events, only=decision)[decision]
-    blocked = {a["attemptId"] for a in summary["unmappedAttempts"] if not a["step"] and not a["reviewResolvedBy"]}
-    return [a for a in attempts_of(events).values() if a["attemptId"] in blocked]
+    blocked = {attempt_key(a) for a in summary["unmappedAttempts"] if not a["step"] and not a["reviewResolvedBy"]}
+    return [a for a in attempts_of(events).values() if attempt_key(a) in blocked]
 
 
 def cmd_decision(args, ws):
@@ -1522,15 +1591,24 @@ def cmd_guard(args, ws):
     with lock_mutex(ws):
         require_live_lock(ws, args.run, tz, renew=True)
         events, _ = read_events(ws)
-        a = attempts_of(events).get(args.attempt)
-        if not a:
+        candidates = [a for a in attempts_of(events).values() if a["attemptId"] == args.attempt
+                      and (args.platform is None or a["platform"] == args.platform)
+                      and (args.account is None or a["account"] == args.account)]
+        if args.platform and args.account is None:
+            account = resolve_account(ws, args.platform)
+            candidates = [a for a in candidates if a["account"] == account]
+        if not candidates:
             raise LedgerError(f"找不到 attempt {args.attempt}")
+        if len(candidates) != 1:
+            raise LedgerError("attemptId 存在多个命名空间，请明确 --platform 和 --account")
+        a = candidates[0]
+        resolve_account(ws, a["platform"], a["account"])
         if a["runId"] != args.run:
             return emit({"allowed": False, "reason": f"attempt 属于 {a['runId']}，不是本轮"}, 1)
         if a["status"] != "pending":
             return emit({"allowed": False,
                          "reason": f"attempt 当前为 {a['status']}，不能再操作；重新核对页面，不新建尝试"}, 1)
-    return emit({"allowed": True, "attempt": args.attempt})
+    return emit({"allowed": True, "attempt": args.attempt, "platform": a["platform"], "account": a["account"]})
 
 
 # ---------- 命令：append ----------
@@ -1571,7 +1649,9 @@ def cmd_append(args, ws):
         raise LedgerError("at 须为带时区的 ISO 时间") from error
     if ev.get("platform"):
         load_platform(ev["platform"])
-    if not ev.get("account") and ev.get("platform"):
+    if "account" in ev and (not isinstance(ev["account"], str) or not ev["account"].strip()):
+        raise LedgerError("显式 account 须为非空字符串")
+    if "account" not in ev and ev.get("platform"):
         ev["account"] = default_account(ws, ev["platform"])
     for k in ("title", "location", "recruiter", "evidence"):
         ev.setdefault(k, None)
@@ -1599,16 +1679,18 @@ def cmd_append(args, ws):
 
     def write():
         events, _ = read_events(ws)
+        history = events if not (ev["kind"] in ACTION_KINDS and ev["status"] in STANDALONE_STATUSES) else ()
+        resolve_account(ws, ev["platform"], ev["account"], history)
         validate_history_event(events, ev)
         if adopting:
             result = adoption_result(events, ev)
             if result is not None:
                 return result
         if ev["kind"] in ACTION_KINDS:
-            check_transition([e for e in events if e["attemptId"] == ev["attemptId"]], ev)
+            check_transition([e for e in events if attempt_key(e) == attempt_key(ev)], ev)
             if ev["status"] == "pending" and ev.get("decision") and unstepped_decision_attempts(events, ev["decision"]):
                 raise LedgerError(f"决定 {ev['decision']} 有不带步骤编号的外发记录，须本人核对后再执行")
-        elif any(e["attemptId"] == ev["attemptId"] for e in events):
+        elif any(attempt_key(e) == attempt_key(ev) for e in events):
             raise LedgerError(f"attemptId {ev['attemptId']} 已被使用")
         append_line(ws, ev)
         return {"ok": True, "event": ev}, 0
@@ -1845,7 +1927,7 @@ def bridge_verified(atts, base, anchor, messages, bridge, proof, complete, run, 
     for i in us:
         message = proof[i]
         attempt_id = message.get("attemptId")
-        attempt = atts.get(attempt_id)
+        attempt = atts.get((platform, base["account"], attempt_id))
         if not attempt or attempt_id in used or attempt["runId"] != run or attempt["status"] != "sent":
             return False, True, "bridge_unconfirmed_send"
         used.add(attempt_id)
@@ -1972,7 +2054,8 @@ def cmd_tail(args, ws):
         if "bridge" in body:
             ev.update(bridge=bridge, bridgeComplete=body.get("bridgeComplete", False),
                       bridgeEvidence=bridge_evidence(raw_bridge, base, read_at, tz, platform,
-                          {e["attemptId"] for e in events if e["kind"] in ACTION_KINDS}))
+                          {e["attemptId"] for e in events if e["kind"] in ACTION_KINDS
+                           and e["platform"] == platform and e["account"] == source["account"]}))
         ev = prepare_event(ev)
         ev.update(tail_outcome(events, ev, state))
         errors = validate_event(ev)
@@ -1987,18 +2070,19 @@ def cmd_tail(args, ws):
 
 def cmd_quota(args, ws):
     profile = load_profile(ws)
-    limits = limits_of(profile)
+    args.account = resolve_account(ws, args.platform, args.account)
+    limits = effective_limits(profile, args.platform)
     tz = tz_of(profile)
     events, _ = read_events(ws)
     today = fsutil.now(tz).date()
     # 额度按「是否写过 greet 的 pending」计：失败或结果不明也不退回
     greets = [a for a in attempts_of(events).values()
-              if a["kind"] == "greet" and a["platform"] == args.platform and a["everPending"]]
+              if a["kind"] == "greet" and a["platform"] == args.platform and a["account"] == args.account and a["everPending"]]
     today_greets = [a for a in greets if parse_at(a["firstAt"]).astimezone(tz).date() == today]
     run_greets = [a for a in greets if args.run and a["runId"] == args.run]
     # 间隔按最近一次外发活动（写 pending 或确认 sent）算，取较晚者，保守
     activity = [parse_at(e["at"]) for e in events
-                if e["kind"] in ACTION_KINDS and e["platform"] == args.platform
+                if e["kind"] in ACTION_KINDS and e["platform"] == args.platform and e["account"] == args.account
                 and e["status"] in ("pending", "sent")]
     last = max(activity, default=None)
     since = (fsutil.now(tz) - last).total_seconds() if last else None
@@ -2009,7 +2093,7 @@ def cmd_quota(args, ws):
     if since is not None and since < limits["minSendIntervalSeconds"]:
         wait = round(limits["minSendIntervalSeconds"] - since, 1)
     return emit({
-        "canGreet": can_greet,
+        "canGreet": can_greet, "platform": args.platform, "account": args.account,
         "date": today.isoformat(),
         "greetsToday": len(today_greets),
         "remainingToday": remaining_day,
@@ -2029,7 +2113,8 @@ def cmd_threads(args, ws):
     tz = tz_of(profile)
     now = fsutil.now(tz)
     events, _ = read_events(ws)
-    threads = build_threads(events, args.platform, profile)
+    account = account_filter(ws, args, events)
+    threads = build_threads(events, args.platform, profile, account)
     for t in threads.values():
         t["canFollowup"], t["followupReason"] = followup_eligibility(t, now, tz)
     items = sorted(threads.values(), key=lambda t: t["lastAt"] or "", reverse=True)
@@ -2047,6 +2132,8 @@ def cmd_stats(args, ws):
     tz = tz_of(profile)
     events, _ = read_events(ws)
 
+    account = account_filter(ws, args, events)
+
     def in_range(at):
         d = parse_at(at).astimezone(tz).date()
         if args.since and d < datetime.fromisoformat(args.since).date():
@@ -2057,17 +2144,17 @@ def cmd_stats(args, ws):
 
     actions, observed = {}, {}
     for a in attempts_of(events).values():
-        if not in_range(a["firstAt"]) or (args.platform and a["platform"] != args.platform):
+        if not in_range(a["firstAt"]) or (args.platform and a["platform"] != args.platform) or (account is not None and a["account"] != account):
             continue
-        key = f"{a['platform']}/{a['kind']}"
+        key = f"{a['platform']}/{a['account']}/{a['kind']}"
         actions.setdefault(key, {}).setdefault(a["status"], 0)
         actions[key][a["status"]] += 1
     for ev in events:
         if ev["kind"] != "observe" or not in_range(ev["at"]):
             continue
-        if args.platform and ev["platform"] != args.platform:
+        if (args.platform and ev["platform"] != args.platform) or (account is not None and ev["account"] != account):
             continue
-        key = f"{ev['platform']}/{ev['observed']}"
+        key = f"{ev['platform']}/{ev['account']}/{ev['observed']}"
         observed[key] = observed.get(key, 0) + 1
     return emit({"since": args.since, "until": args.until, "actions": actions, "observed": observed})
 
@@ -2177,10 +2264,10 @@ def release_lock(ws, run, tz=None):
     tz = tz or recovery_tz(ws)
     events, _ = read_events(ws)
     # 收尾中断时保留候选 ID：重试 / 过期接管仍能报告已追加的 uncertain。
-    ids = list(current.get("releaseAttempts") or [])
+    ids = release_keys(current)
     for a in attempts_of(events).values():
-        if a["runId"] == run and a["status"] == "pending" and a["attemptId"] not in ids:
-            ids.append(a["attemptId"])
+        if a["runId"] == run and a["status"] == "pending" and attempt_key(a) not in ids:
+            ids.append(attempt_key(a))
     current.update(releasing=True, releaseAttempts=ids)
     try:
         write_lock(ws, current)
@@ -2272,11 +2359,19 @@ def cmd_pause(args, ws):
     return emit({"pause": rec, "previous": previous})
 
 
+def release_keys(lock):
+    values = lock.get("releaseAttempts", [])
+    if not isinstance(values, list) or any(not isinstance(x, (list, tuple)) or len(x) != 3
+            or any(not isinstance(part, str) or not part for part in x) for x in values):
+        raise LedgerError("releaseAttempts 命名空间标识损坏")
+    return [tuple(x) for x in values]
+
+
 def reconcile_run(ws, old_lock, tz):
     """释放 / 过期接管：该轮没有终态的 pending 追加 uncertain。调用方须已持有 lock_mutex。"""
     events, _ = read_events(ws)
     out = []
-    release_ids = set(old_lock.get("releaseAttempts") or [])
+    release_ids = set(release_keys(old_lock))
     cause = "正在释放" if old_lock.get("releasing") else "已过期"
     for a in attempts_of(events).values():
         if a["runId"] != old_lock.get("runId"):
@@ -2294,9 +2389,9 @@ def reconcile_run(ws, old_lock, tz):
             validate_history_event(events, ev)
             append_line(ws, ev)
             events.append(ev)
-        elif a["status"] != "uncertain" or a["attemptId"] not in release_ids:
+        elif a["status"] != "uncertain" or attempt_key(a) not in release_ids:
             continue
-        out.append({"attemptId": a["attemptId"], "company": a["company"], "title": a["title"], "kind": a["kind"]})
+        out.append({k: a[k] for k in ("platform", "account", "attemptId", "company", "title", "kind")})
     return out
 
 
@@ -2355,6 +2450,7 @@ def build_parser():
     c = sub.add_parser("check", help="外发前检查")
     c.add_argument("--platform", required=True)
     c.add_argument("--company", required=True)
+    c.add_argument("--account")
     c.add_argument("--kind", choices=sorted(ACTION_KINDS), default="greet",
                    help="greet：首次联系去重；其余：会话内外发检查")
     c.add_argument("--recruiter", help="会话内外发时的招聘者「姓名(职务)」")
@@ -2372,21 +2468,26 @@ def build_parser():
     g = sub.add_parser("guard", help="可能外发的 UI 操作前：确认仍持锁、尝试仍待定，并续期")
     g.add_argument("--run", required=True)
     g.add_argument("--attempt", required=True)
+    g.add_argument("--platform")
+    g.add_argument("--account")
 
     a = sub.add_parser("append", help="原子追加一条事件（JSON 从 --json 或 stdin 读入）")
     a.add_argument("--json")
 
     q = sub.add_parser("quota", help="剩余招呼额度")
     q.add_argument("--platform", required=True)
+    q.add_argument("--account")
     q.add_argument("--run")
 
     t = sub.add_parser("threads", help="按会话汇总最新状态")
     t.add_argument("--platform")
+    t.add_argument("--account")
     t.add_argument("--company")
     t.add_argument("--recruiter")
 
     s = sub.add_parser("stats", help="统计")
     s.add_argument("--platform")
+    s.add_argument("--account")
     s.add_argument("--since", help="YYYY-MM-DD")
     s.add_argument("--until", help="YYYY-MM-DD")
 

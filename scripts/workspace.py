@@ -96,21 +96,39 @@ def init_path(path):
     return ws
 
 
-def init_workspace(path, boss_account=None, boss_name=None):
+def parse_accounts(values):
+    accounts = {}
+    for value in values:
+        parts = value.split(":", 2)
+        if len(parts) != 3 or any(not part.strip() for part in parts):
+            raise WorkspaceError("--account 须为 platform:accountKey:displayName，分量不能为空")
+        platform, key, name = parts
+        ledger.load_platform(platform)
+        if platform in accounts:
+            raise WorkspaceError("当前每个平台只能配置一个账号，不能重复 --account 平台")
+        accounts[platform] = {"accountKey": key, "displayName": name}
+    return accounts
+
+
+def init_workspace(path, accounts=None):
+    accounts = {} if accounts is None else accounts
+    if not isinstance(accounts, dict):
+        raise WorkspaceError("accounts 须为每平台单账号对象")
+    for platform, account in accounts.items():
+        ledger.load_platform(platform)
+        if not isinstance(account, dict) or not isinstance(account.get("accountKey"), str) or not account["accountKey"].strip():
+            raise WorkspaceError("账号配置无效")
     ws = init_path(path)
     with ledger.gated(ws, "write", allow_create=True):
-        return create_skeleton(ws, boss_account, boss_name)
+        return create_skeleton(ws, accounts)
 
 
-def create_skeleton(ws, boss_account, boss_name):
+def create_skeleton(ws, accounts):
     """调用方已持有创建准入临界区。"""
     ws.mkdir(parents=True, exist_ok=True)
     created = []
     marker = ws / MARKER
     if not marker.exists():
-        accounts = {}
-        if boss_account:
-            accounts["boss"] = {"accountKey": boss_account, "displayName": boss_name}
         marker.write_text(json.dumps({
             "schemaVersion": 1,
             "suiteVersion": ledger.SUITE_VERSION,
@@ -130,7 +148,7 @@ def create_skeleton(ws, boss_account, boss_name):
 
 
 def cmd_init(args):
-    return emit(init_workspace(args.path, args.boss_account, args.boss_name))
+    return emit(init_workspace(args.path, parse_accounts(args.account)))
 
 
 # ---------- check ----------
@@ -435,8 +453,8 @@ def cmd_restore(args):
                 # 保留阻断锁，不让收尾异常遮蔽主体结果或假称恢复没有发生。
                 release_error = str(e)
                 release = {"attempted": True, "released": False, "code": 2, "error": release_error}
-    reconciled = {a["attemptId"]: a for a in out.get("reconciled", [])}
-    reconciled.update({a["attemptId"]: a for a in release.get("reconciled", [])})
+    reconciled = {ledger.attempt_key(a): a for a in out.get("reconciled", [])}
+    reconciled.update({ledger.attempt_key(a): a for a in release.get("reconciled", [])})
     result = {"restored": restored, "from": args.name, "previousSavedAs": safety,
               "stoplistKeptSinceBackup": kept, "reconciled": list(reconciled.values()),
               "runId": run_id, "restoreSucceeded": restore_error is None,
@@ -637,8 +655,7 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
     i = sub.add_parser("init", help="建立工作区骨架（不覆盖已有文件）")
     i.add_argument("path")
-    i.add_argument("--boss-account", help="BOSS 账号本地别名")
-    i.add_argument("--boss-name", help="BOSS 页面上显示的账号名")
+    i.add_argument("--account", action="append", default=[], help="platform:accountKey:displayName；可重复，不同平台各一项")
     sub.add_parser("check", help="体检：文件齐全、格式正确、记录无损坏")
     b = sub.add_parser("backup", help="备份配置文件到 backups/<时间>")
     b.add_argument("--label")
@@ -685,8 +702,8 @@ def main(argv=None):
     fsutil.utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
-        if args.cmd == "init" and bool(args.boss_account) != bool(args.boss_name):
-            raise WorkspaceError("--boss-account 与 --boss-name 需同时提供")
+        if args.cmd == "init":
+            parse_accounts(args.account)
         new_progress = args.cmd == "progress" and args.action == "start" and args.mode == "new"
         creating = args.cmd == "init" or new_progress
         path = args.path if args.cmd == "init" else args.workspace

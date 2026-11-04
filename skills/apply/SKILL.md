@@ -144,7 +144,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 | `ledger` 返回退出码 2 | 立即停止发送；如果此前可能已发送，报告该目标待人工核对 |
 | 本人喊停、额度或预算用完、候选耗尽 | 保存进度并汇报，不自动开始下一批 |
 
-任何 runtime 无论如何结束，都先按 [尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 给本轮所有未终结尝试收尾：已有终态不覆盖、明确成功证据优先记 sent；读取出错也不能遗漏 pending。unknown 或环境受阻后结束整轮，不再新建尝试，不靠同一 runId 重取锁降级（原锁 noSend 不会改变）。然后执行 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 核对 `released`、`reconciled` 与释放失败，按 attemptId 对照最新 unresolved 和 inbox、保留原决定 ID，释放后不再外发。
+任何 runtime 无论如何结束，都先按 [尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 给本轮所有未终结尝试收尾：已有终态不覆盖、明确成功证据优先记 sent；读取出错也不能遗漏 pending。unknown 或环境受阻后结束整轮，不再新建尝试，不靠同一 runId 重取锁降级（原锁 noSend 不会改变）。然后执行 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 核对 `released`、`reconciled` 与释放失败，按平台、账号、attemptId 对照最新 unresolved 和 inbox、保留原决定 ID，释放后不再外发。
 
 **结果不明（`uncertain`）的招呼**统一按[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox，记录 attemptId、沿用事项并处理旧事项关联，核对选项为「已发出 / 未发出」。本人确认后，由 Agent 代为追加同一 `attemptId` 的 `sent` 或 `failed_no_send`，`skill` 记 `user`，`reason` 引用本人原话。
 

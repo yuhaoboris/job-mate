@@ -22,15 +22,20 @@ MODULES = {"ledger": ledger, "notify": notify, "workspace": workspace}
 ENTRY_CASES = [
     ("ledger", "validate", "read"),
     ("ledger", "check --platform boss --company 示例", "read"),
+    ("ledger", "check --platform boss --account main --company 示例", "read"),
     ("ledger", "decision --id D-20260101-01", "read"),
     ("ledger", "guard --run setup-run --attempt att-example", "write"),
+    ("ledger", "guard --run setup-run --attempt att-example --platform boss --account main", "write"),
     ("ledger", "append --json {}", "write"),
     ("ledger", "append", "write"),  # stdin 不能绕过
     ("ledger", "tail --run setup-run --thread boss|main|company|recruiter --read-at 2026-01-01T12:00:00+08:00 --json {}", "write"),
     ("ledger", "tail --run setup-run --thread boss|main|company|recruiter --read-at 2026-01-01T12:00:00+08:00", "write"),
     ("ledger", "quota --platform boss --run setup-run", "read"),
+    ("ledger", "quota --platform boss --account main --run setup-run", "read"),
     ("ledger", "threads", "read"),
+    ("ledger", "threads --platform boss --account main", "read"),
     ("ledger", "stats", "read"),
+    ("ledger", "stats --platform boss --account main", "read"),
     ("ledger", "lock status", "read"),
     ("ledger", "lock acquire --skill setup", "write"),
     ("ledger", "lock acquire --skill apply --no-send", "write"),
@@ -46,6 +51,7 @@ ENTRY_CASES = [
     ("ledger", "stoplist add --name 示例 --reason 示例 --source user", "write"),
     ("ledger", "stoplist remove --name 示例", "write"),
     ("workspace", "init {ws}", "write"),
+    ("workspace", "init {ws} --account boss:main:合成", "write"),
     ("workspace", "check", "read"),
     ("workspace", "backup", "write"),
     ("workspace", "backups", "read"),
@@ -123,7 +129,7 @@ class VersionGateTest(unittest.TestCase):
         self.count += 1
         ws = self.base / f"合成 工作区 {self.count}"
         ws.mkdir()
-        workspace.init_workspace(ws)
+        workspace.init_workspace(ws, {"boss": {"accountKey": "main", "displayName": "合成"}})
         meta = ledger.read_json(ws / ledger.MARKER)
         meta["suiteVersion"] = version
         ledger.write_atomic(ws / ledger.MARKER, json.dumps(meta))

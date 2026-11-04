@@ -269,7 +269,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 
 所有 runtime 的任何停止分支（含读取失败）都先按 [尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 给本轮所有 pending 收尾；已有终态不覆盖，已见成功证据优先记 sent。unknown 或环境受阻时结束整轮，不再新建尝试，不靠同一 runId 重取锁降级（noSend 不会改变），不进入第 8 节等待。安全信号优先全局暂停；纯环境受阻不全局暂停，按共享通知规则分流 ready、分别排队环境提醒与按[结果不明事项](../../shared/notify.md#结果不明事项)记录的 uncertain 通知，不承诺自动续发。
 
-本轮**实际处理过会话或执行过已决定事项**（含本地动作）时，`notify send --kind summary --run <runId>`：处理了多少会话、执行了哪些决定、还有哪些事项等本人答复。**只做第 2.3 节收尾的轮次不发 `summary`**——消费 `ready`、补发已 `done` 决定的结果通知、结论为「无需动作 / 先不回」时没有新的处理结果可汇报，发摘要只会制造噪声。收尾同步第 2.0 节（不重试未知投递、不因此新建平台尝试），然后执行 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 核对 `released`、`reconciled` 与释放失败，按 attemptId 对照最新 unresolved / inbox、保留原决定 ID。释放后仅本地对账和通知，不再外发；IM 不可用不妨碍 pending 收尾或释放。
+本轮**实际处理过会话或执行过已决定事项**（含本地动作）时，`notify send --kind summary --run <runId>`：处理了多少会话、执行了哪些决定、还有哪些事项等本人答复。**只做第 2.3 节收尾的轮次不发 `summary`**——消费 `ready`、补发已 `done` 决定的结果通知、结论为「无需动作 / 先不回」时没有新的处理结果可汇报，发摘要只会制造噪声。收尾同步第 2.0 节（不重试未知投递、不因此新建平台尝试），然后执行 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 核对 `released`、`reconciled` 与释放失败，按平台、账号、attemptId 对照最新 unresolved / inbox、保留原决定 ID。释放后仅本地对账和通知，不再外发；IM 不可用不妨碍 pending 收尾或释放。
 
 汇报：
 

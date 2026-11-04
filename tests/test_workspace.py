@@ -57,7 +57,7 @@ class WorkspaceTest(unittest.TestCase):
             "default: a\nversions:\n  - id: a\n    file: a.pdf\n    use: 默认\n    uploaded: {boss: a}\n")
 
     def init(self):
-        return run("init", str(self.ws), "--boss-account", "zp-1", "--boss-name", "张三")
+        return run("init", str(self.ws), "--account", "boss:zp-1:张三")
 
     def test_init_creates_skeleton_without_overwriting(self):
         code, out = self.init()
@@ -787,7 +787,7 @@ class WorkspaceIsolationTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.ws = Path(self.tmp.name) / "jobs"
-        invoke_data(workspace.main, "init", str(self.ws), "--boss-account", "demo", "--boss-name", "示例账号")
+        invoke_data(workspace.main, "init", str(self.ws), "--account", "boss:demo:示例账号")
         self.profile = copy.deepcopy(PROFILE)
         self.save_profile()
         (self.ws / "candidate.md").write_text("# 个人事实\n" + "示例经历，仅供合成测试。" * 10)

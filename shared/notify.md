@@ -29,15 +29,16 @@
 
 ### 结果不明事项
 
-运行中 uncertain、释放或接管的 reconciled、入口 threads.unresolved 都按 attemptId 核对，每个尝试追加：
+uncertain、reconciled、threads.unresolved 均按平台、账号、attemptId 三元组核对，每个尝试追加：
 
 ```markdown
 - 尝试：<attemptId>
+- 平台 / 账号：<platform> / <account>
 - 结果：该次外发结果未确认，停止此尝试，需本人核对
 - 选项：已发出 / 未发出
 ```
 
-先按 attemptId 找已有事项。执行已决定事项产生 uncertain 时沿用原决定 ID，保留原结论与标题，追加结果，用该版本 `notify send --kind done --decision <原ID>` 回报，不另开新 ID、不重复暂停或原通知。确认没有对应事项后才先 paused、写新事项、排队 decision。已有事项缺少尝试标识时请本人核对，不凭公司或招聘者猜合并、不重放；状态保持阻断。
+先按完整三元组找已有事项；缺账号先补证，不按当前账号猜历史。执行已决定事项产生 uncertain 时沿用原决定 ID，保留原结论与标题，追加结果，用该版本 `notify send --kind done --decision <原ID>` 回报，不另开新 ID、不重复暂停或原通知。确认没有对应事项后才先 paused、写新事项、排队 decision。已有事项缺少尝试标识时请本人核对，不凭公司或招聘者猜合并、不重放；状态保持阻断。
 
 ## IM 通道
 
