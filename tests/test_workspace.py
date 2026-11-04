@@ -704,7 +704,7 @@ class WorkspaceTest(unittest.TestCase):
             # 故障注入：正常入口已禁止恢复锁下新增 pending；低层模拟意外遗留。
             event = dict(ledger.read_events(ws)[0][0], attemptId="att-injected",
                          runId=ledger.read_lock(ws)["runId"], company="合成本轮", status="pending")
-            ledger.append_line(ws, event)
+            ledger.append_line(ws, ledger.prepare_event(event))
             added.append(event["attemptId"])
             return original(ws, label)
 

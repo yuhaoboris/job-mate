@@ -576,7 +576,7 @@ class LedgerTest(unittest.TestCase):
         chk = lambda kind: self.ws.run("check", "--platform", "boss", "--kind", kind,
                                        "--company", "入站样例", "--recruiter", "王女士(HR)")
         self.ws.append(kind="observe", observed="declined", reason="薪资不符", **common)
-        for kind in ("reply", "resume", "followup"):
+        for kind in ("reply", "resume", "nudge"):
             code, out = chk(kind)
             self.assertEqual(code, 1, kind)
             self.assertEqual(out["reasons"][0]["type"], "closed")
@@ -645,16 +645,16 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(st()["state"], "done")
 
     def unstepped_attempt(self, statuses, **fields):
-        """模拟旧版写下的、没有 step 的决定外发记录（绕过 append 直接写文件）。"""
-        base = {"schemaVersion": 2, "platform": "boss", "account": "zhipin-test", "runId": "old-run",
+        """故障注入：当前格式中缺失 step 的决定外发，不放松恢复安全断言。"""
+        base = {"schemaVersion": 1, "platform": "boss", "account": "zhipin-test", "runId": "old-run",
                 "attemptId": "att-unstepped-" + statuses[-1], "skill": "followup", "kind": "reply",
                 "title": None, "location": None, "reason": "旧版执行决定", "evidence": None}
         base.update(fields)
         for st in statuses:
-            ledger.append_line(self.ws.path, dict(base, status=st, at=datetime.now(TZ).isoformat(timespec="seconds")))
+            ledger.append_line(self.ws.path, ledger.prepare_event(dict(base, status=st, at=datetime.now(TZ).isoformat(timespec="seconds"))))
 
     def test_unstepped_sent_needs_review(self):
-        """H01：旧版无 step 的已发送决定，在完成标记前恢复，不得被当成新步骤再次发送。"""
+        """H01：缺 step 的已发送决定在完成标记前恢复，不得被当成新步骤再次发送。"""
         d = "D-20261029-07"
         c = dict(company="旧步骤样例", recruiter="林女士(HR)")
         self.ws.append(kind="observe", observed="paused", decision=d, skill="followup", **c)
@@ -780,10 +780,10 @@ class LedgerTest(unittest.TestCase):
         common = dict(company="甲", recruiter="张先生")
         days_ago = lambda n: (datetime.now(TZ) - timedelta(days=n)).isoformat(timespec="seconds")
         self.ws.greet(at=days_ago(10), **common)
-        self.ws.greet(kind="followup", skill="followup", at=days_ago(3), **common)
+        self.ws.greet(kind="nudge", skill="followup", at=days_ago(3), **common)
         _, out = self.ws.run("threads")
         self.assertTrue(out["threads"][0]["canFollowup"])
-        self.ws.greet(kind="followup", skill="followup", at=days_ago(2), **common)
+        self.ws.greet(kind="nudge", skill="followup", at=days_ago(2), **common)
         _, out = self.ws.run("threads")
         t = out["threads"][0]
         self.assertEqual(t["followupsSinceReply"], 2)
@@ -792,7 +792,7 @@ class LedgerTest(unittest.TestCase):
         self.ws.append(kind="observe", observed="replied", skill="followup", **common)
         _, out = self.ws.run("threads")
         self.assertTrue(out["threads"][0]["canFollowup"])
-        self.ws.greet(kind="followup", skill="followup", **common)
+        self.ws.greet(kind="nudge", skill="followup", **common)
         _, out = self.ws.run("threads")
         t = out["threads"][0]
         self.assertFalse(t["canFollowup"])
@@ -801,7 +801,7 @@ class LedgerTest(unittest.TestCase):
     def test_followup_once_per_day(self):
         common = dict(company="乙", recruiter="李女士")
         self.ws.greet(**common)
-        self.ws.greet(kind="followup", skill="followup", **common)
+        self.ws.greet(kind="nudge", skill="followup", **common)
         _, out = self.ws.run("threads", "--company", "乙")
         self.assertIn("今天", out["threads"][0]["followupReason"])
 
@@ -858,7 +858,8 @@ class CurrentTakeoverTest(unittest.TestCase):
         self.adopt()
         item = {"shown": "今天", "precision": "day", "kind": "text", "count": 1}
         self.observe("manual")
-        self.observe("released", acknowledged=[item])
+        _, released = self.observe("released", acknowledged=[item])
+        item = released["event"]["acknowledged"][0]
         self.assertFalse(self.thread()["manual"])
         self.assertEqual(self.thread()["acknowledged"], [item])
         # 页面第2条同标签活动超出已确认条数，技能须另行暂停，而非扩大确认范围。
@@ -904,7 +905,7 @@ class CurrentTakeoverTest(unittest.TestCase):
 
     def test_release_clears_manual_without_resetting_counts(self):
         self.adopt()
-        self.ws.greet(kind="followup", recruiter="示例招聘者(HR)")
+        self.ws.greet(kind="nudge", recruiter="示例招聘者(HR)")
         before = self.thread()
         self.observe("manual")
         self.observe("released", skill="user")

@@ -1,127 +1,112 @@
 # 事件记录
 
-`ledger/events.jsonl` 是跨平台、跨技能共享的追加式记录。**只通过 `scripts/ledger.py` 读写**，不要用文件工具直接编辑、整体改写或删除行。
-
-调用方式（`<job-mate 技能目录>` 为本文件上两级目录，先解析成绝对路径）：
+`ledger/events.jsonl` 是唯一的追加式事实来源。**只通过 `scripts/ledger.py` 读写**；不整体改写、不删行。脚本路径先解析为绝对路径：
 
 ```sh
 python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命令> ...
 ```
 
-所有命令输出一个 JSON 对象。退出码：`0` 成功或允许；`1` 不允许（检查不通过、额度用尽、锁被占用）；`2` 错误（参数、文件损坏、工作区缺失、未持有运行锁、本轮禁发）。退出码为 `2` 时停止一切外发并报告。
+`<job-mate 技能目录>` 为本文件上两级目录。输出 JSON。退出码：0 成功，1 不允许或锁占用，2 参数、数据、版本或锁错误。遇 2 停止外发并报告。
 
 ## 命令
 
 | 命令 | 用途 |
 |---|---|
-| `validate` | 校验记录与停止名单；有损坏行时报告行号 |
-| `lock acquire --skill <apply\|followup\|setup> [--no-send]` | 开始一轮前获取运行锁，返回 `runId`。`--no-send` 表示本轮禁发；新建 setup 未完成或草稿模式读不出时，`apply` / `followup` 被拒绝，先完成 setup |
-| `lock renew --run <runId>` | 续期；失败说明已失去运行锁，立即停止 |
-| `lock release --run <runId>` | 一轮结束时把本轮未终结 `pending` 追加为 `uncertain` 后释放，返回 `reconciled` |
-| `lock status` | 查看当前持锁者 |
-| `pause on --reason <原因> [--by <谁>]` / `pause off [--by <谁>]` / `pause status` | 全局暂停：暂停期间任何一轮都不能写入新的 `pending`，`guard` 失败。`lock acquire` 的输出带 `paused`，不为空时本轮只能做不外发的事 |
-| `check --platform boss --company <公司> [--title <职位>] [--job-url <链接>] --run <runId>` | 首次招呼前：停止名单、拒绝与风险记录、首次联系去重 |
-| `check --platform boss --kind <reply\|resume\|followup\|intro> --company <公司> --recruiter <姓名(职务)> --run <runId> [--decision <ID>]` | 会话内每次发送前：停止名单、会话结束、本人接管、等待决定的暂停、未确认的外发；`followup` 另查跟进条件 |
-| `quota --platform boss --run <runId>` | 剩余招呼额度、距上次外发的秒数、需等待的秒数 |
-| `append --json '<事件>'` | 追加一条事件；也可从 stdin 读入 |
-| `decision --id <决策 ID> [--step <编号>]` | 状态：`not_started` / `partial` / `in_progress` / `failed` / `needs_review` / `done`。`needs_review`：无步骤编号的外发须本人核对，期间不能新建该决定的外发。返回 `steps` / `stepState`、本地动作字符串列表 `localActions`、暂停原因与会话 `pausedRecords`、仍暂停的会话 `stillPausing`。**带该 ID 的 unpaused 且无会话仍被暂停才算完成**；部分解除不能覆盖其他阻断 |
-| `guard --run <runId> --attempt <attemptId>` | 每次可能把消息发出去的点击之前：确认本轮仍持有有效锁、该尝试仍是本轮的 `pending`，并续期。失败时立即停止，不点击 |
-| `threads [--platform boss] [--company <公司>] [--recruiter <姓名(职务)>]` | 按会话汇总：最近外发与文字、HR 回复时间、跟进次数、是否本人接管、等待哪些决定、是否已结束、能否主动跟进及原因 |
-| `stats [--since YYYY-MM-DD] [--until YYYY-MM-DD]` | 统计 |
-| `stoplist list` / `stoplist add --name <公司> [--alias <别名>]... --reason <原因> --source <来源>` / `stoplist remove --name <公司>` | 停止名单；`remove` 按 `name` 精确匹配 |
+| `validate` | 校验事件与停止名单，错误包含行号 |
+| `lock acquire --skill <apply\|followup\|setup> [--no-send]` | 获取本轮运行锁与 runId；输出 paused、接管的 reconciled |
+| `lock renew --run <runId>` | 长时间读取时续锁；失败立即停止 |
+| `lock release --run <runId>` / `lock status` | 释放并对账 / 只读持锁者 |
+| `pause on --reason <原因> [--by <谁>]` / `pause off` / `pause status` | 设置 / 解除 / 查询全局暂停 |
+| `check --platform <平台> --company <公司>` | 首次联系预检；可带 title、job-url、run、scope 参数，不写业务记录 |
+| `check --platform <平台> --kind <reply\|resume\|nudge\|intro> --company <公司> --recruiter <招聘者> [--decision <ID>] [--run <runId>]` | 会话预检；nudge 另检查跟进条件 |
+| `append --json '<事件>'` | 校验、追加；不传 --json 时从 stdin 读 |
+| `tail --run <runId> --thread '<threadKey>' --read-at <ISO> [--base <tailId>] [--json '<输入>']` | 记录尾部指纹，不保存原文；输入也可走 stdin |
+| `guard --run <runId> --attempt <attemptId>` | 每个可能外发的点击前复查 pending 与有效锁，并续期；通过后立即点击 |
+| `decision --id <ID> [--step <编号>]` | 查询外发步骤、localActions、pausedRecords、stillPausing 与 attempts |
+| `threads` | 会话状态、未决尝试、接管与暂停；可按 platform / company / recruiter 筛选，不是页面证据 |
+| `quota --platform <平台> [--run <runId>]` / `stats [--since YYYY-MM-DD] [--until YYYY-MM-DD]` | 额度、间隔 / 统计 |
+| `stoplist list` / `stoplist add --name <公司> [--alias <别名>]... --reason <原因> --source <来源>` / `stoplist remove --name <公司>` | 停止名单；remove 按 name 精确匹配 |
 
 ## 运行锁
 
-版本拒绝与恢复锁见[套件版本准入](workspace.md#套件版本准入)。`lock acquire --skill setup --recovery` 仅用于恢复，不可写普通业务或续期；恢复完成后 `lock release`。
+同一工作区只运行一个技能；锁默认 60 分钟。版本与恢复锁见[套件版本准入](workspace.md#套件版本准入)。`lock acquire --skill setup --recovery` 只做恢复与释放，不能用于普通写入、tail、进度、通知或续期。
 
-同一工作区同时只运行一个技能。锁有过期时间（默认 60 分钟），过期后可被下一轮接管。正常释放或过期接管都在协调锁内，把对应 `runId` 没有终态的 `pending` 追加为 `uncertain`，在输出的 `reconciled` 中列出（attemptId、company、title、kind）；已有终态保持不变，不核销其他轮次的尝试。调用者必须据此写入 `inbox/decisions.md` 请本人核对，脚本不会代写 inbox。
+- 新建 setup 未完成或草稿模式读不出时，apply / followup 取锁（包括沿用 runId）返回 1；重新设置、部分重新设置草稿不阻断当前配置。
+- 新外发 pending 与 guard 必须是当前有效、未 releasing、未禁发的持锁者，全局暂停时拒绝；pending / guard 自动续期。等待、超时或页面变化后先重读，再 guard，不新建尝试绕过失锁。
+- screen 和 tail 也须有效的普通运行锁；禁发或暂停时仍可记本地观察，不因此获得外发授权。adopted 另要求本人授权，禁发 / 暂停时拒绝。
+- 终态与事实观察不要求运行锁；恢复锁下仍受写入门禁限制。
+- 释放 / 接管只核销该轮 pending，返回 reconciled；不改其他轮次或已有终态。按[释放与对账契约](#释放与对账契约)写 inbox，脚本不代写。
+- 释放先写 releasing / releaseAttempts，核销完才删锁。中断保留锁并禁止外发、续期、沿用；重试同一 release 或等过期接管。损坏记录先人工处理。
+- 上一轮崩溃默认等过期；只有本人确认上一轮已停止，才可显式释放上一轮 runId。
 
-释放先在锁中保存 `releasing` 与待核销的 `releaseAttempts`，全部核销成功后才删除锁。收尾意图落盘后中途失败时立即停止外发：保留锁、拒绝新的 `pending` / `guard`、续期与同 runId 沿用；重试同一 `lock release` 完成收尾，或等过期接管。重试 / 接管的 `reconciled` 包含本次收尾已追加但尚未被本人核对的 `uncertain`，不重复追加终态。事件损坏时保留锁并报错，先人工处理损坏记录。
+## 事件格式 v1
 
-- `setup-progress.json` 为新建或模式读不出时，`apply` / `followup` 获取锁返回不允许（退出码 1），即使是沿用已有 `runId` 也拒绝；`setup` 不受影响。重新设置、部分重新设置草稿不阻断当前配置。
-- **新的可能外发必须由有效持锁者写入**：`append` 一条动作 `pending` 时，`ledger` 核对 `runId` 是当前未过期的持锁者，且本轮未禁发，同时自动续期。不满足就返回错误（退出码 2），此时立即停止，不操作浏览器。
-- **每次点击前再确认一次**：写入 `pending` 之后、真正点击之前可能停顿（进程暂停、工具超时），期间锁可能过期被接管，该尝试被改记 `uncertain`。所以每次可能发出消息的点击前都要 `guard`，通过后立即点击；失败就停止，不点击，也不新建尝试。
-- 长时间只读（读详情、巡检）时，定期 `lock renew`。
-- `observe/adopted` 仅本人点名交出会话时使用，skill 必须为 user，带不晚于事件时间的有效 readAt；须在有效运行锁内，禁发 / 全局暂停拒绝。持锁读取、去重、校验并追加。其他观察、终态和人工核对记录已发生事实，不要求运行锁。
-- 上一轮崩溃没有释放锁时，默认等它过期；本人确认上一轮已经停止，才可以 `lock release --run <上一轮 runId>`。
+`schemaVersion` 固定为 1，不识别旧事件格式。`append` 补 at、该平台唯一 account、空的页面字段，并生成每条唯一的 `eventId: evt-<12位十六进制>`；调用方自带 eventId 报错。不要把脚本输出的完整事件直接作为下一条输入：终态复用 attemptId，不复用 eventId。
 
-## 事件字段
-
-`append` 自动补齐 `schemaVersion`、`at`、`account`（工作区只有一个该平台账号时）；新 `pending` 和独立的 `skipped` / `already_contacted` 不带 `attemptId` 时自动生成并在输出中返回。给了 `jobUrl` 时按 `platform.json` 的 `jobUrl` 规则规范化链接并提取 `jobId`。
-
-| 字段 | 说明 |
+| 字段 | 规则 |
 |---|---|
-| `platform`、`runId`、`skill` | 必填；`skill` 为 `apply`、`followup`、`setup`，本人核对记 `user` |
-| `kind` | 动作：`greet`（首次沟通）、`intro`（平台自动打招呼后的补发）、`reply`、`followup`、`resume`；观察：`observe` |
-| `status` | 动作事件必填，见下 |
-| `observed` | 观察事件必填，见下 |
-| `company` | 必填，按页面显示原文 |
-| `title`、`location`、`recruiter` | 必须给出；不可见时为 `null`。`recruiter` 只写「姓名(职务)」，如 `张先生(人事行政专员)` |
-| `reason` | 必填：为什么做，例如逐项匹配依据、跳过原因 |
-| `evidence` | 必须给出：凭什么认定结果，例如「会话中出现本次新消息，显示已送达」；没有时为 `null` |
-| `decision` | 可选：执行或暂停所对应的决策 ID，形如 `D-20261028-01` |
-| `step` | 须与 `decision` 同用：同一事项中外发动作的步骤编号，如 `reply1`、`resume1`。执行决定的外发**必须**带 `step` |
-| `jobUrl`、`jobId`、`salaryText`、`text`、`resume`、`tags` | 可选；`text` 为实际发送的文字（可见时）；`tags` 是非空字符串数组 |
-| `acknowledged` | 只用于 released：本人确认过的模糊活动数组，每项仅 shown（非空页面时间标签）、precision（day / minute）、kind（text / resume / contact / interview）、count（正整数），不记原文 |
+| platform、account、runId、skill | 非空；skill 为 apply / followup / setup / user，本人核对记 user |
+| company、title、location、recruiter | 页面原文，不可见为 null；招聘者格式按平台描述 |
+| threadKey、jobKey | 脚本按平台描述派生，不能派生则 null；自带值须与派生结果完全一致 |
+| targetRole | 匹配的目标方向；未知为 null |
+| reason、evidence | 非空理由 / 结果依据，依据未知为 null；不把 HR 聊天全文写入 |
+| attemptId、status | 动作按同一 attemptId 追加状态；新独立尝试自动生成 attemptId |
+| decision、step | 事项 ID 如 D-20261104-01；外发步骤如 reply1、resume1，step 须与 decision 同用 |
+| text、resume、tags | 我方文字 / 简历版本与附件 / 字符串标签数组；本人批准的文字保留全部空白与 Unicode，不改写 |
+| profileRev、styleRev | 配置规范 JSON 的 SHA-256 前 12 位；由发送门禁填写 |
 
-不记录密码、Cookie、令牌、手机号、完整简历或聊天全文。
+有 jobUrl 时按平台的 idPattern / stripQuery 规范化、提取 jobId。jobKey 有 ID 为 `平台|jobId`，否则为 `平台|规范化公司|规范化职位名`；threadKey 为 `平台|账号|平台 conversationKey 各规范化字段`，分量内的竖线转为全角「｜」。不猜职位 ID，不记录凭据、证件或完整简历。
 
-## 动作状态
+kind：
+- `screen`：必填 result（qualified / pending / excluded）、reasons（字符串数组）；可选 jdFacts、checks、salaryText。有效普通锁内记录，不是外发。
+- `greet`、`intro`、`reply`、`nudge`、`resume`：动作，必填 status，可带 asks；jdFacts / checks 仅 greet 可带。
+- `observe`：必填 observed，见下节。
 
-| 状态 | 含义 | 是否阻止再次联系 |
-|---|---|---|
-| `pending` | 已落盘，即将执行可能发送的动作；也可能中断在动作之后 | 是，直到有终态 |
-| `sent` | 有明确证据证明本次已发出 | 是 |
-| `already_contacted` | 页面证明之前已联系（如显示「继续沟通」） | 是 |
-| `uncertain` | 动作可能已发送，但结果无法证实 | 是，直到本人核对 |
-| `failed_no_send` | 有明确证据证明没有发出 | 仅本轮不重试 |
-| `skipped` | 没有执行可能发送的动作 | 否 |
+信息子项：salary.range、salary.months、hours.schedule、hours.time、location.address、leave.annual、employment.type。jdFacts / facts 为子项到字符串的对象；checks / asks 为不重复的子项数组。大类如 salary 不能代替子项。
 
-同一 `attemptId` 只允许以下转换，`ledger` 会拒绝其他写法：
+## 动作状态与防重
 
-| 当前 | 可以追加 | 谁可以写 |
-|---|---|---|
-| （新尝试） | `pending`；或不经 `pending` 的独立 `skipped` / `already_contacted` | 技能；`pending` 须持锁 |
-| `pending` | `sent`、`uncertain`、`failed_no_send` | 技能 |
-| `uncertain` | `sent`、`failed_no_send` | 仅本人核对（`skill: user`） |
-| `failed_no_send` | `sent` | 仅本人核对（`skill: user`） |
-| `sent`、`skipped`、`already_contacted` | 不能再追加 | — |
+新尝试只可 pending，或独立 skipped / already_contacted。pending → sent / uncertain / failed_no_send；uncertain → sent / failed_no_send、failed_no_send → sent 仅限本人核对（skill: user）。其他终态不再追加；已有 sent 始终视为已发出。同一尝试的 kind、platform、company 不可更改。
 
-同一尝试的 `kind`、`platform`、`company` 不能改变。
+- 每次可能发送前先登记 pending，成功后才操作；每个可能外发的动作分别 guard。结果回填同一 attemptId。
+- sent 须有当前业务成功证据；进入会话、按钮变色、工具成功、空白页或「没看到消息」均不能代替证据。超时或未知记 uncertain，不重放。
+- 本人核对 uncertain 后，Agent 代为回填 sent 或 failed_no_send，skill 记 user、reason 引用本人结论；Agent 自己看页面不能冒充本人。
+- pending / uncertain / sent / already_contacted 阻止重复首次联系。failed_no_send 仅本轮不重试，skipped 不阻断。招呼额度按写过 pending 的 greet 尝试计数，失败与不明不退款；间隔按最近 pending / sent 计。
+- decision 的完成状态为 not_started / partial / in_progress / failed / needs_review / done；无步骤外发须本人核对，期间不新建该决定的外发。只有带同 ID 的 unpaused 且没有会话仍被它暂停才算完成，部分解除不覆盖阻断。
 
-- 每次可能发送前，先 `append` 一条 `pending` 并确认成功；观察结果后，用同一个 `attemptId` 追加终态。
-- 超时、空白页、弹窗消失、「没看到消息」都不能证明 `failed_no_send`，记 `uncertain`。
-- 打开聊天页、按钮变色、工具返回「点击成功」都不等于 `sent`。
-- 一个尝试中只要出现过 `sent`，就始终按已发送处理。
-- 本人核对 `uncertain` 后（在 inbox 或对话中说明「已发出」或「未发出」），由 Agent 代为追加同一 `attemptId` 的 `sent` 或 `failed_no_send`，`skill` 记 `user`，`reason` 引用本人原话。Agent 自己看页面判断的不能记为 `user`。
-- 招呼额度按「写过 `pending` 的 `greet` 尝试」计，失败或结果不明也不退回；发送间隔按最近一次 `pending` 或 `sent` 的时间算。
+## 观察与决定
 
-## 观察结果
+observed 可取：tail、handled、replied、decision、info、resume_requested、resume_delivered、resume_viewed、interview_invited、interview_decided、silent、declined、reopened、rejected、job_closed、paused、unpaused、manual、released、adopted、risk、limit_hit。
 
-`replied`、`resume_delivered`（附件已送达）、`resume_viewed`（对方已查看）、`interview_invited`、`rejected`、`job_closed`、`declined`（我方判定职位不符，会话关闭）、`reopened`（HR 推来的新职位评估符合，只解除 `declined`；会话另有 `job_closed`、`rejected`、`risk` 时仍保持关闭）、`manual`（本人接管；须明确交还才能恢复发送，已决定事项也不能越过）、`released`（本人交还已登记会话，解除 `manual`，计数不变）、`paused`（等待本人决定，整个会话暂停，带 `decision`）、`unpaused`（解除暂停；带 `decision` 时只解除该决定，并作为该事项的完成标记，须在全部动作做完后最后写入；不带时解除全部）、`risk`（风险信号）、`limit_hit`（平台限额提示，`reason` 中注明当日已招呼数）。
+- info 必须 facts 与可派生的 jobKey；信息归属职位，不能套用另一职位结论。
+- decision 必须事项 ID、连续正整数 version（现有最大值加一）、steps 数组。每步 `{step,kind,text}` 或 `{step,kind:resume,resume}`，内容非空，二者恰一；步骤名在本版本及历史版本中均不重复，批准原文原样保存。
+- interview_invited 必须 decision 与完整 threadKey，后续 paused / ack 共用事项 ID；它不是本人决定。
+- paused 等待该事项，unpaused 仅解除同 ID；不带 ID 则解除全部。manual 只由本人交还 released 解除，交还不重置跟进计数。declined 可由 reopened 解除；rejected / risk / job_closed 不随重新评估解除。结束原因叠加在 closedBy，closed 优先显示 declined 以外的原因。
+- adopted 仅本人点名交出会话，skill: user，带不晚于事件时间的 readAt，在有效锁内写入；已有登记返回 duplicate，有未决、关闭、暂停时拒绝。
+- boundaryAt 取 sent、adopted.readAt、released 时间的最大值，不允许调用方指定或推到未来。outboundTexts 保留全部本地 sent 文字和 resume 类型 / 时间，包括分界那条，供页面区间前后 2 分钟核对。
+- released 可带 acknowledged：每项仅 shown、precision（day / minute）、kind（text / resume / contact / interview）、正整数 count。shown 按平台词表和 readAt（缺省 at）换算为绝对 `YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM`；孤立时分不猜日期，不记原文。相同绝对时间同类型从早到晚前 count 条可豁免，超出仍核对，明确晚于分界的新活动不豁免。
 
-`adopted` 仅登记本人明确点名交出的会话，skill 必须为 user，携带开始读取页面时的 readAt，在有效运行锁内追加。已有登记返回 duplicate，不重复追加；有未确认外发、关闭或暂停时拒绝。登记不带旧消息基线或额外跟进额度。
+## 尾部读取与处理
 
+先通过 screen 或观察登记完整会话身份，使用返回的 threadKey；不从规范化 key 猜原始公司、招聘者。tail 须有效普通锁、read-at 不晚于当前时间且不早于该会话最新读取时间。
 
-boundaryAt 取本地 sent 时间、adopted.readAt、released 事件时间最晚者，不能通过事件指定或推到未来；acknowledged 输出最近一次 released 的数组，未带则为空。outboundTexts 保留全部本地 sent 文字与 resume 的类型 / 时间（resume 可无 text），包括分界那条，用于页面时间区间前后 2 分钟的匹配。其他跨界活动按 followup 暂停询问，同标签同类型只认可已确认的前 count 条，不豁免后来的活动。
-
-记 `rejected` 或 `risk` 后，`check` 会阻止再次联系该公司。
-
-会话的结束原因叠加记录在 `threads` 的 `closedBy` 中，`closed` 显示其中最主要的一个（`declined` 以外的优先）。
-
-会话以「平台 + 公司 + 招聘者」为键；同一 attempt 中 `pending` 时还看不到招聘者也没关系，按该 attempt 最后看到的招聘者归并。
+输入：
+```json
+{"anchor":{"speaker":"us","type":"text","text":"我方最后一条","label":"今天 10:00"},"messages":[{"type":"text","text":"HR尾部","label":"今天 10:32"}],"complete":true,"anchorUnique":true}
+```
+- anchor 为我方最后一条消息或已读到会话开头时的 `"start"`；messages 是锚点后的全部 HR 消息，按页面顺序。complete / anchorUnique 缺失按 false，不能默认读全；本地已有 sent 却声称无我方消息的 start 转核对。
+- type 为 text / card，卡片 text 含卡片类型和按钮文字；稳定平台 ID 已开启时可带 id，否则按发言方、类型、NFKC 去首尾空白并折叠空白后的内容摘要、绝对日期和分钟构成指纹。无日期上下文 HH:MM 不猜今天，时间缺失不是通配符。
+- 日期按平台 timeLabels：今天 / 昨天 / 前天，星期取读取日前最近一次，月日取不晚于读取日的最近年份；明确年月日原样换算。这里只保存 SHA-256 前 16 位与时间，不保存原文。
+- 输出 tailId、baseTailId、result、newCount、reason、settled；每次读取唯一 tailId，不以内容摘要作为读取身份。默认比较最近 handled；处理后显式 --base 指向本次实际处理的快照。相同内容的新读取仍待独立处理，不由旧 handled 覆盖。
+- same / extended 只有明确身份的逐项相同 / 严格前缀才成立；new_anchor 表示无基准或锚点改变，整段尾部待分诊；mismatch 区分条数减少、顺序/内容冲突、读取不全及时间/锚点歧义。数量无法确认时 newCount 为 null。
+- 自己发送改变锚点时提交 bridge（从基准锚点到当前末尾、每项带 speaker）与 bridgeComplete:true。基准锚点须唯一，HR 必须恰为已处理序列；每条新增我方活动带 attemptId，须对应同目标、本轮 sent、相同内容与类型、时间落在页面区间前后 2 分钟且在基准读取至本次读取之间。编号本身不够；resume 卡片须与该次 sent 的简历版本文字一致，否则转本人核对。
+- 显式基准 same，或完整 bridge 证明无遗漏的 new_anchor，才可能 settled:true。缺桥、陌生我方活动、pending / uncertain、发送前新 HR 等都不能自动 handled。新 HR 在新锚点之前会留下未决核对状态，后续仅换 base 得到 same 不能清除，只能本人核对收口。
+- append 不能直接写 observe/tail。observe/handled 必须 tailId、baseTailId，且只引用该会话最新完整、唯一定位的快照；须有 settled:true，或 skill:user 加非空 evidence。脚本复制指纹，不重存正文。可选 listMark 为 `{label,digest,unread}`，分别是列表时间标签、16 位摘要、非负未读数，不保存摘要原文。
+- 中断后先核对待处理快照和历史外发，再指定 base 复核；不能从新锚点重开遗漏旧片段，更不能重复外发。
 
 ## 去重
 
-首次招呼的 `check` 综合以下来源，任何一项命中即不允许：
-
-1. 停止名单：公司名或别名精确命中；名称互相包含算疑似。
-2. 历史联系：所有动作（招呼、回复、跟进、发简历）建立的联系都算。`dedupScope` 为 `company`（默认）时，同一平台同一公司有阻止状态的尝试即命中；为 `job` 时比较 `jobId`，缺少 ID 时比较公司 + 职位名。同公司同职位名但 ID 不同，报告疑似重新发布。
-3. 该公司的 `rejected`、`risk` 观察。
-
-`check` 通过后，平台页面状态仍是最终依据：页面显示已联系，记 `already_contacted`，不发送。
-
-本人在本轮指令中明确放行某家公司时，可以越过第 2 项，但不能越过停止名单、`pending` 或 `uncertain`。
+首次联系检查停止名单（精确或疑似）、同平台历史联系、公司 rejected / risk。company 范围按公司，job 范围按 ID，缺 ID 比公司 + 职位；同公司同职位而 ID 不同报疑似重新发布。通过 check 后仍以当前页面为准：已联系记 already_contacted，不发送。本人逐个放行可越过历史联系，但不能越过停止名单或 pending / uncertain。
 
 ## 中断恢复
 

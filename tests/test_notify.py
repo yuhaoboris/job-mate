@@ -537,8 +537,7 @@ class NotifyTest(unittest.TestCase):
               "runId": "run", "attemptId": attempt, "skill": skill, "kind": "reply", "status": status,
               "company": "示例", "title": "岗位", "location": None, "recruiter": "HR", "decision": decision,
               "reason": "synthetic", "evidence": "synthetic"}
-        with (self.ws / "ledger" / "events.jsonl").open("a") as f:
-            f.write(json.dumps(ev) + "\n")
+        ledger.append_line(self.ws, ledger.prepare_event(ev))
 
     def test_uncertain_decided_candidates_plain_sequence_multiple_and_resolved(self):
         self.inbox((D1, "已决定"), (D2, "已决定"))

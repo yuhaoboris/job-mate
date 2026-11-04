@@ -7,6 +7,7 @@
 
 import argparse
 import contextlib
+import hashlib
 from contextvars import ContextVar
 import json
 import os
@@ -16,7 +17,7 @@ import sys
 import threading
 import unicodedata
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,10 +25,14 @@ import fsutil  # noqa: E402
 from platforms import load_platform  # noqa: E402
 
 SUITE_VERSION = "1.0.0"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 1
 MARKER = "job-mate.json"
 
-ACTION_KINDS = {"greet", "intro", "reply", "followup", "resume"}
+ACTION_KINDS = {"greet", "intro", "reply", "nudge", "resume"}
+INFO_GROUPS = {"salary": ("salary.range", "salary.months"),
+               "hours": ("hours.schedule", "hours.time"), "location": ("location.address",),
+               "leave": ("leave.annual",), "employment": ("employment.type",)}
+INFO_KEYS = frozenset(key for values in INFO_GROUPS.values() for key in values)
 CONVERSATION_KINDS = ACTION_KINDS - {"greet"}
 ACTION_STATUSES = {"pending", "sent", "uncertain", "failed_no_send", "skipped", "already_contacted"}
 STANDALONE_STATUSES = {"pending", "skipped", "already_contacted"}
@@ -35,11 +40,13 @@ OBSERVATIONS = {
     "replied", "resume_delivered", "resume_viewed", "interview_invited",
     "rejected", "job_closed", "declined", "reopened",
     "manual", "released", "adopted", "paused", "unpaused", "risk", "limit_hit",
+    "tail", "handled", "info", "decision", "resume_requested", "interview_decided", "silent",
 }
 SKILLS = {"setup", "apply", "followup", "user"}
 REQUIRED = [
     "schemaVersion", "at", "platform", "account", "runId", "attemptId", "skill", "kind",
     "company", "title", "location", "recruiter", "reason", "evidence",
+    "eventId", "threadKey", "jobKey", "targetRole",
 ]
 # 这些观察结果表示该公司不再联系
 COMPANY_BLOCKING_OBSERVATIONS = {"rejected", "risk"}
@@ -250,6 +257,8 @@ def now_iso(tz):
 
 
 def parse_at(value):
+    if isinstance(value, str) and value.endswith("Z"):
+        value = value[:-1] + "+00:00"
     dt = datetime.fromisoformat(value)
     if dt.tzinfo is None:
         raise ValueError("时间缺少时区")
@@ -291,6 +300,128 @@ def job_id_from_url(platform, url):
     return (match.group(1) or None) if match else None
 
 
+# ---------- v1 公共字段与时间 ----------
+
+def config_rev(value):
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def content_digest(text):
+    value = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).strip()
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def key_part(value, normalize=None):
+    return (normalize(value) if normalize else value).replace("|", "｜")
+
+
+def event_keys(ev):
+    platform = ev.get("platform")
+    config = load_platform(platform)
+    company, title = ev.get("company"), ev.get("title")
+    job = ev.get("jobId")
+    job_key = None
+    if job:
+        job_key = "|".join((platform, key_part(job)))
+    elif company and title and norm_company(company) and norm_text(title):
+        job_key = "|".join((platform, key_part(company, norm_company), key_part(title, norm_text)))
+    fields = config["conversationKey"]
+    thread = None
+    if ev.get("account") and all(ev.get(field) for field in fields):
+        components = [key_part(ev[field], norm_company if field == "company" else norm_text) for field in fields]
+        if all(components):
+            thread = "|".join([platform, key_part(ev["account"]), *components])
+    return thread, job_key
+
+
+def prepare_event(ev, tz=None):
+    """内部生成事件身份；调用方的批准原文不规范化或改写。"""
+    ev = dict(ev)
+    for field in ("company", "title", "location", "recruiter", "evidence", "targetRole"):
+        ev.setdefault(field, None)
+    for field in ("platform", "account", "company", "title", "location", "recruiter", "jobId", "targetRole"):
+        if ev.get(field) is not None and not isinstance(ev[field], str):
+            raise LedgerError(f"{field} 须为字符串或 null")
+    thread, job = event_keys(ev)
+    for field, computed in (("threadKey", thread), ("jobKey", job)):
+        if field in ev and ev[field] != computed:
+            raise LedgerError(f"{field} 与页面字段派生结果不符")
+        ev[field] = computed
+    ev["eventId"] = "evt-" + uuid.uuid4().hex[:12]
+    if ev.get("kind") == "observe" and ev.get("observed") == "released" and isinstance(ev.get("acknowledged"), list):
+        reading = ev.get("readAt", ev["at"])
+        try:
+            if parse_at(reading) > parse_at(ev["at"]):
+                raise ValueError("晚于事件时间")
+        except (TypeError, ValueError) as error:
+            raise LedgerError("released.readAt 须有效且不晚于事件时间") from error
+        normalized = []
+        for item in ev["acknowledged"]:
+            item = dict(item) if isinstance(item, dict) else item
+            if isinstance(item, dict) and isinstance(item.get("shown"), str):
+                absolute = resolve_time_label(item["shown"], reading, tz or parse_at(reading).tzinfo, ev["platform"])
+                if absolute["date"] and absolute["precision"] == item.get("precision"):
+                    item["shown"] = absolute["date"] + (" " + absolute["minute"] if absolute["minute"] else "")
+            normalized.append(item)
+        ev["acknowledged"] = normalized
+    return ev
+
+
+def resolve_time_label(label, read_at, tz, platform):
+    """只换算平台描述中的明确日期；孤立时分不借用读取日。"""
+    labels = load_platform(platform)["timeLabels"]
+    read_at = parse_at(read_at) if isinstance(read_at, str) else read_at
+    if read_at.tzinfo is None:
+        raise ValueError("读取时间须带时区")
+    today = read_at.astimezone(tz).date()
+    empty = {"date": None, "minute": None, "precision": "none"}
+    if not isinstance(label, str):
+        return empty
+    label = unicodedata.normalize("NFKC", label).strip()
+    minute = None
+    clock = re.search(r"(?:^|\s)(\d{2}):(\d{2})$", label)
+    if clock and labels["timeFormat"] == "HH:MM":
+        if int(clock[1]) > 23 or int(clock[2]) > 59:
+            return empty
+        minute = clock[1] + ":" + clock[2]
+        label = label[:clock.start()].strip()
+    resolved = None
+    try:
+        if label in labels["relativeDays"]:
+            resolved = today - timedelta(days=labels["relativeDays"][label])
+        elif label in labels["weekdays"]:
+            delta = (today.isoweekday() - labels["weekdays"][label]) % 7 or 7
+            resolved = today - timedelta(days=delta)
+        else:
+            formats = {"YYYY-MM-DD": r"(\d{4})-(\d{2})-(\d{2})",
+                       "YYYY年M月D日": r"(\d{4})年(\d{1,2})月(\d{1,2})日",
+                       "M月D日": r"(\d{1,2})月(\d{1,2})日"}
+            for fmt in labels["dateFormats"]:
+                pattern = formats.get(fmt)
+                match = re.fullmatch(pattern, label) if pattern else None
+                if not match:
+                    continue
+                parts = tuple(map(int, match.groups()))
+                if len(parts) == 3:
+                    resolved = date(*parts)
+                else:
+                    # 闰日取不晚于读取日的最近一次，不猜未来年份。
+                    for year in range(today.year, max(0, today.year - 9), -1):
+                        try:
+                            candidate = date(year, *parts)
+                        except ValueError:
+                            continue
+                        if candidate <= today:
+                            resolved = candidate
+                            break
+                break
+    except (ValueError, OverflowError):
+        return empty
+    return {"date": resolved.isoformat() if resolved else None, "minute": minute,
+            "precision": ("minute" if minute else "day") if resolved else "none"}
+
+
 # ---------- 事件读写 ----------
 
 def validate_acknowledged(items):
@@ -302,9 +433,16 @@ def validate_acknowledged(items):
             errs.append("acknowledged 每项须包含 shown、precision、kind、count，且不含原文等其他字段")
             continue
         if not isinstance(item["shown"], str) or not item["shown"].strip():
-            errs.append("acknowledged.shown 须为非空页面时间标签")
+            errs.append("acknowledged.shown 须为非空绝对时间标签")
         if item["precision"] not in ("day", "minute"):
             errs.append("acknowledged.precision 须为 day 或 minute")
+        try:
+            parsed = datetime.strptime(item["shown"], "%Y-%m-%d %H:%M") if item["precision"] == "minute" else date.fromisoformat(item["shown"])
+            canonical = parsed.strftime("%Y-%m-%d %H:%M") if item["precision"] == "minute" else parsed.isoformat()
+            if canonical != item["shown"]:
+                raise ValueError("非规范时间")
+        except (TypeError, ValueError):
+            errs.append("acknowledged.shown 须为 YYYY-MM-DD 或 YYYY-MM-DD HH:MM")
         if item["kind"] not in ("text", "resume", "contact", "interview"):
             errs.append("acknowledged.kind 须为 text、resume、contact 或 interview")
         if type(item["count"]) is not int or item["count"] <= 0:
@@ -319,7 +457,9 @@ def validate_event(ev):
             errs.append(f"缺少字段 {k}")
     if errs:
         return errs
-    if ev["schemaVersion"] != SCHEMA_VERSION:
+    if not isinstance(ev.get("kind"), str) or not isinstance(ev.get("skill"), str):
+        return ["kind 与 skill 须为字符串"]
+    if type(ev["schemaVersion"]) is not int or ev["schemaVersion"] != SCHEMA_VERSION:
         errs.append(f"schemaVersion 应为 {SCHEMA_VERSION}")
     try:
         parse_at(ev["at"])
@@ -329,22 +469,30 @@ def validate_event(ev):
         errs.append(f"skill 无效：{ev['skill']}")
     kind = ev["kind"]
     if kind in ACTION_KINDS:
-        if ev.get("status") not in ACTION_STATUSES:
+        if not isinstance(ev.get("status"), str) or ev["status"] not in ACTION_STATUSES:
             errs.append(f"动作事件 status 无效：{ev.get('status')}")
         if "observed" in ev:
             errs.append("动作事件不应有 observed")
     elif kind == "observe":
-        if ev.get("observed") not in OBSERVATIONS:
+        if not isinstance(ev.get("observed"), str) or ev["observed"] not in OBSERVATIONS:
             errs.append(f"观察事件 observed 无效：{ev.get('observed')}")
         if "status" in ev:
             errs.append("观察事件不应有 status")
+    elif kind == "screen":
+        if "status" in ev or "observed" in ev:
+            errs.append("screen 不使用 status 或 observed")
     else:
         errs.append(f"kind 无效：{kind}")
-    for k in ("platform", "account", "runId", "attemptId", "company"):
-        if not ev.get(k):
+    for k in ("platform", "account", "runId", "attemptId"):
+        if not isinstance(ev.get(k), str) or not ev[k].strip():
             errs.append(f"{k} 不能为空")
-    if not ev.get("reason"):
+    if not isinstance(ev.get("reason"), str) or not ev["reason"].strip():
         errs.append("reason 不能为空")
+    if ev.get("hrAt") is not None:
+        try:
+            parse_at(ev["hrAt"])
+        except (TypeError, ValueError):
+            errs.append("hrAt 须为带时区的 ISO 时间")
     if ev.get("decision") is not None and not DECISION_RE.match(str(ev["decision"])):
         errs.append("decision 应形如 D-20261028-01")
     if ev.get("step") is not None:
@@ -369,7 +517,133 @@ def validate_event(ev):
         errs.extend(validate_acknowledged(ev["acknowledged"]))
     if "boundaryAt" in ev:
         errs.append("boundaryAt 由 threads 计算，不能在事件中指定")
+    errs.extend(validate_v1(ev))
     return errs
+
+
+def validate_v1(ev):
+    errors = []
+    if not isinstance(ev.get("eventId"), str) or not re.fullmatch(r"evt-[0-9a-f]{12}", ev["eventId"]):
+        errors.append("eventId 无效")
+    try:
+        if (ev.get("threadKey"), ev.get("jobKey")) != event_keys(ev):
+            errors.append("threadKey / jobKey 与页面字段不符")
+    except (ValueError, TypeError, AttributeError):
+        errors.append("平台或标识字段无效")
+    for name in ("company", "title", "location", "recruiter", "targetRole", "jobId"):
+        if ev.get(name) is not None and not isinstance(ev[name], str):
+            errors.append(f"{name} 须为字符串或 null")
+    for name in ("profileRev", "styleRev"):
+        if name in ev and (not isinstance(ev[name], str) or not re.fullmatch(r"[0-9a-f]{12}", ev[name])):
+            errors.append(f"{name} 无效")
+    for name in ("checks", "asks"):
+        if name in ev:
+            values = ev[name]
+            if (not isinstance(values, list) or any(not isinstance(v, str) or v not in INFO_KEYS for v in values)
+                    or len(set(values)) != len(values)):
+                errors.append(f"{name} 须为不重复的信息子项数组")
+    for name in ("jdFacts", "facts"):
+        if name in ev and (not isinstance(ev[name], dict) or any(
+                key not in INFO_KEYS or not isinstance(value, str) for key, value in ev[name].items())):
+            errors.append(f"{name} 须为信息子项到字符串的对象")
+    kind, observed = ev["kind"], ev.get("observed")
+    if kind == "screen":
+        if ev.get("result") not in ("qualified", "pending", "excluded"):
+            errors.append("screen.result 无效")
+        if not isinstance(ev.get("reasons"), list) or any(not isinstance(x, str) for x in ev.get("reasons", [])):
+            errors.append("screen.reasons 须为字符串数组")
+        if "salaryText" in ev and not isinstance(ev["salaryText"], str):
+            errors.append("salaryText 须为字符串")
+    if "jdFacts" in ev or "checks" in ev:
+        if kind not in ("screen", "greet"):
+            errors.append("jdFacts / checks 只用于 screen 或 greet")
+    if "asks" in ev and kind not in ACTION_KINDS:
+        errors.append("asks 只用于外发动作")
+    if "facts" in ev and not (kind == "observe" and observed == "info"):
+        errors.append("facts 只用于 observe/info")
+    if kind == "observe" and observed == "info" and ("facts" not in ev or not ev.get("jobKey")):
+        errors.append("info 须带 facts 和可派生的 jobKey")
+    if kind == "observe" and observed == "interview_invited" and (not ev.get("decision") or not ev.get("threadKey")):
+        errors.append("interview_invited 须关联 decision 与目标 threadKey")
+    if kind == "observe" and observed == "decision":
+        if not ev.get("decision") or type(ev.get("version")) is not int or ev["version"] < 1:
+            errors.append("decision 须带事项 ID 和正整数 version")
+        steps = ev.get("steps")
+        if not isinstance(steps, list):
+            errors.append("decision.steps 须为数组")
+        else:
+            seen = set()
+            for step in steps:
+                if (not isinstance(step, dict) or set(step) - {"step", "kind", "text", "resume"}
+                        or not isinstance(step.get("step"), str) or not STEP_RE.fullmatch(step["step"])
+                        or step["step"] in seen or not isinstance(step.get("kind"), str) or step["kind"] not in ACTION_KINDS
+                        or ("text" in step) + ("resume" in step) != 1):
+                    errors.append("decision.steps 的步骤、动作或内容结构无效")
+                    continue
+                seen.add(step["step"])
+                field = "text" if "text" in step else "resume"
+                if not isinstance(step[field], str) or not step[field].strip():
+                    errors.append("decision.steps 内容须为非空字符串")
+                if (step["kind"] == "resume") != (field == "resume"):
+                    errors.append("resume 步骤须使用 resume 版本，其他步骤使用 text")
+    if kind == "observe" and observed in ("tail", "handled"):
+        for name in ("tailId", "baseTailId"):
+            value = ev.get(name)
+            if name not in ev or (value is None and name != "baseTailId") or (value is not None and (
+                    not isinstance(value, str) or not re.fullmatch(r"tail-[0-9a-f]{12}", value))):
+                errors.append(f"{name} 无效或缺失")
+        if not ev.get("threadKey"):
+            errors.append("尾部记录须有完整 threadKey")
+        if observed == "tail":
+            errors.extend(validate_tail_record(ev))
+        else:
+            allowed = set(REQUIRED) | {"observed", "tailId", "baseTailId", "listMark", "fingerprints", "jobId", "jobUrl", "tags"}
+            if set(ev) - allowed:
+                errors.append("handled 含不允许的字段")
+            if "listMark" in ev and (not isinstance(ev["listMark"], dict) or set(ev["listMark"]) - {"label", "digest", "unread"}
+                    or not isinstance(ev["listMark"].get("label"), str)
+                    or not isinstance(ev["listMark"].get("digest"), str)
+                    or not re.fullmatch(r"[0-9a-f]{16}", ev["listMark"]["digest"])
+                    or type(ev["listMark"].get("unread")) is not int or ev["listMark"]["unread"] < 0):
+                errors.append("listMark 须为 label、16位 digest 与非负 unread，不存摘要原文")
+    return errors
+
+
+def validate_history_event(events, ev):
+    if any(e["eventId"] == ev["eventId"] for e in events):
+        raise LedgerError("eventId 重复")
+    if ev["kind"] != "observe":
+        return
+    if ev["observed"] == "tail":
+        prior_tails = [e for e in events if e["kind"] == "observe" and e["observed"] == "tail"]
+        if any(e["tailId"] == ev["tailId"] for e in prior_tails):
+            raise LedgerError("tailId 重复")
+        thread_tails = [e for e in prior_tails if e["threadKey"] == ev["threadKey"]]
+        if ev["baseTailId"] and not any(e["tailId"] == ev["baseTailId"] for e in thread_tails):
+            raise LedgerError("baseTailId 不属于该会话")
+        if thread_tails and parse_at(ev["readAt"]) < parse_at(thread_tails[-1]["readAt"]):
+            raise LedgerError("readAt 早于该会话最新读取")
+    if ev["observed"] == "decision":
+        prior = [e for e in events if e["kind"] == "observe" and e["observed"] == "decision"
+                 and e.get("decision") == ev["decision"]]
+        if ev["version"] != max((e["version"] for e in prior), default=0) + 1:
+            raise LedgerError("decision.version 须为现有最大版本加一")
+        used = {step["step"] for e in prior for step in e["steps"]}
+        if used & {step["step"] for step in ev["steps"]}:
+            raise LedgerError("decision.steps 名称不能跨版本重复")
+    if ev["observed"] == "handled":
+        tails = [e for e in events if e["kind"] == "observe" and e["observed"] == "tail"
+                 and e["threadKey"] == ev["threadKey"]]
+        if not tails or tails[-1]["tailId"] != ev["tailId"] or tails[-1]["baseTailId"] != ev["baseTailId"]:
+            raise LedgerError("handled 只能引用同一会话最新 tail 与其 baseTailId")
+        tail = tails[-1]
+        if "fingerprints" in ev and ev["fingerprints"] != tail["fingerprints"]:
+            raise LedgerError("handled.fingerprints 与快照不符")
+        ev["fingerprints"] = tail["fingerprints"]
+        if not tail["complete"] or not tail["anchorUnique"]:
+            raise LedgerError("读取不全或锚点不唯一，不能 handled")
+        if not tail["settled"] and not (ev["skill"] == "user" and isinstance(ev.get("evidence"), str) and ev["evidence"].strip()):
+            raise LedgerError("tail 未 settled，须本人带核对依据收口")
 
 
 def read_events(ws, strict=True):
@@ -377,24 +651,31 @@ def read_events(ws, strict=True):
     events, errors = [], []
     if not path.exists():
         return events, errors
-    with path.open(encoding="utf-8") as f:
-        for no, line in enumerate(f, 1):
-            if not line.strip():
-                continue
+    # 只取最内层事件锁形成完整字节快照，不把只读升级为业务写入。
+    with file_mutex(path.with_name(".events.mutex")):
+        lines = fsutil.read_text(path).splitlines()
+    for no, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError as e:
+            errors.append({"line": no, "error": f"JSON 损坏：{e.msg}"})
+            continue
+        if not isinstance(ev, dict):
+            errors.append({"line": no, "error": "不是 JSON 对象"})
+            continue
+        errs = validate_event(ev)
+        if not errs:
             try:
-                ev = json.loads(line)
-            except json.JSONDecodeError as e:
-                errors.append({"line": no, "error": f"JSON 损坏：{e.msg}"})
-                continue
-            if not isinstance(ev, dict):
-                errors.append({"line": no, "error": "不是 JSON 对象"})
-                continue
-            errs = validate_event(ev)
-            if errs:
-                errors.append({"line": no, "error": "；".join(errs)})
-                continue
-            ev["_line"] = no
-            events.append(ev)
+                validate_history_event(events, ev)
+            except LedgerError as error:
+                errs.append(str(error))
+        if errs:
+            errors.append({"line": no, "error": "；".join(errs)})
+            continue
+        ev["_line"] = no
+        events.append(ev)
     if strict and errors:
         raise LedgerError(
             "事件记录有损坏行，禁止外发，请先人工处理："
@@ -743,13 +1024,13 @@ def build_threads(events, platform=None):
             boundary = ev["readAt"] if obs == "adopted" else ev["at"] if obs == "released" else None
             if boundary and (t["boundaryAt"] is None or parse_at(boundary) > parse_at(t["boundaryAt"])):
                 t["boundaryAt"] = boundary
-        elif ev["status"] == "sent":
+        elif ev["kind"] in ACTION_KINDS and ev["status"] == "sent":
             if t["boundaryAt"] is None or parse_at(ev["at"]) > parse_at(t["boundaryAt"]):
                 t["boundaryAt"] = ev["at"]
             t["lastOutbound"] = {"kind": ev["kind"], "at": ev["at"]}
             if ev.get("text") or ev["kind"] == "resume":
                 t["outboundTexts"].append({"kind": ev["kind"], "at": ev["at"], "text": ev.get("text")})
-            if ev["kind"] == "followup":
+            if ev["kind"] == "nudge":
                 t["followupsSent"] += 1
                 t["followupsSinceReply"] += 1
                 t["lastFollowupAt"] = ev["at"]
@@ -839,7 +1120,10 @@ def company_observation_reasons(events, platform, company):
 def first_contact_reasons(args, events, scope):
     """首次联系去重：所有动作建立的联系都算，不只 greet。"""
     reasons = []
-    job_id = args.job_id or job_id_from_url(args.platform, args.job_url)
+    url_id = job_id_from_url(args.platform, args.job_url)
+    if url_id and args.job_id and args.job_id != url_id:
+        raise LedgerError("jobId 与链接中可读取的 ID 不符")
+    job_id = args.job_id or url_id
     contacts = [a for a in attempts_of(events).values() if attempt_blocks(a, args.run)]
     contacts += [{**ev, "lastAt": ev["at"], "jobId": ev.get("jobId"), "status": "adopted"}
                  for ev in events if ev["kind"] == "observe" and ev["observed"] == "adopted"]
@@ -892,11 +1176,11 @@ def conversation_reasons(args, events, now, tz):
         other_pauses = [d for d in t["pausedBy"] if d != args.decision]
         if other_pauses:
             reasons.append({"type": "paused", "detail": f"等待本人决定（{'、'.join(other_pauses)}）：{who}"})
-        if args.kind == "followup":
+        if args.kind == "nudge":
             ok, why = followup_eligibility(t, now, tz)
             if not ok:
                 reasons.append({"type": "followup_not_eligible", "detail": f"{why}：{who}"})
-    if args.kind == "followup" and not threads:
+    if args.kind == "nudge" and not threads:
         reasons.append({"type": "no_thread", "detail": "本地没有该会话的记录；只有本人明确点名交给 Agent 才能登记（observe/adopted）"})
     return reasons, threads
 
@@ -955,7 +1239,8 @@ def cmd_decision(args, ws):
         steps.setdefault(a["step"] or "default", []).append(a["status"])
     step_states = {k: step_state(v) for k, v in steps.items()}
     completed = decision_completed(events, args.id)
-    local_done = [ev["observed"] for ev in obs if ev["observed"] not in ("paused", DECISION_DONE_OBSERVATION)]
+    local_done = [ev["observed"] for ev in obs if ev["observed"] not in
+                  ("paused", "decision", "interview_invited", DECISION_DONE_OBSERVATION)]
     unstepped = unstepped_decision_attempts(events, args.id)
     if completed:
         state, advice = "done", "决定已全部执行；只需确认 inbox 已标「已执行」，不要再发"
@@ -1029,10 +1314,20 @@ def cmd_append(args, ws):
         raise LedgerError(f"输入不是有效 JSON：{e}")
     if not isinstance(ev, dict):
         raise LedgerError("输入须为 JSON 对象")
+    if any(key in ev and not isinstance(ev[key], str) for key in ("kind", "skill", "status", "observed")):
+        raise LedgerError("kind、skill、status、observed 须为字符串")
+    if "eventId" in ev:
+        raise LedgerError("eventId 由脚本生成，不能指定")
+    if ev.get("kind") == "observe" and ev.get("observed") == "tail":
+        raise LedgerError("observe/tail 只能用 ledger tail 写入")
     profile = load_profile(ws)
     tz = tz_of(profile)
     ev.setdefault("schemaVersion", SCHEMA_VERSION)
-    ev.setdefault("at", now_iso(tz))
+    ev.setdefault("at", fsutil.now(tz).isoformat())
+    try:
+        parse_at(ev["at"])
+    except (ValueError, TypeError) as error:
+        raise LedgerError("at 须为带时区的 ISO 时间") from error
     if ev.get("platform"):
         load_platform(ev["platform"])
     if not ev.get("account") and ev.get("platform"):
@@ -1043,11 +1338,16 @@ def cmd_append(args, ws):
         raise LedgerError("jobUrl 须为字符串或 null")
     if ev.get("jobUrl") and ev.get("platform"):
         ev["jobUrl"] = normalize_job_url(ev["platform"], ev["jobUrl"])
-        ev.setdefault("jobId", job_id_from_url(ev["platform"], ev["jobUrl"]))
+        url_id = job_id_from_url(ev["platform"], ev["jobUrl"])
+        if url_id and ev.get("jobId") not in (None, "", url_id):
+            raise LedgerError("jobId 与链接中可读取的 ID 不符")
+        if url_id is not None or not ev.get("jobId"):
+            ev["jobId"] = url_id
     if not ev.get("attemptId"):
         if ev.get("kind") in ACTION_KINDS and ev.get("status") not in STANDALONE_STATUSES:
             raise LedgerError("终态事件须带上对应 pending 的 attemptId")
         ev["attemptId"] = "att-" + uuid.uuid4().hex[:12]
+    ev = prepare_event(ev, tz)
     errs = validate_event(ev)
     if errs:
         raise LedgerError("事件不合格：" + "；".join(errs))
@@ -1058,6 +1358,7 @@ def cmd_append(args, ws):
 
     def write():
         events, _ = read_events(ws)
+        validate_history_event(events, ev)
         if adopting:
             result = adoption_result(events, ev)
             if result is not None:
@@ -1074,10 +1375,291 @@ def cmd_append(args, ws):
     # 本人交出会话与 pending 共用有效锁检查。
     with lock_mutex(ws):
         version_gate(ws, "write")
-        if adopting or (ev["kind"] in ACTION_KINDS and ev["status"] == "pending"):
+        if ev["kind"] == "screen":
+            require_live_lock(ws, ev["runId"], tz, allow_record=True)
+        elif adopting or (ev["kind"] in ACTION_KINDS and ev["status"] == "pending"):
             require_live_lock(ws, ev["runId"], tz, renew=True)
         out, code = write()
     return emit(out, code)
+
+
+# ---------- 会话尾部：只保存指纹，不保存输入原文 ----------
+
+def fingerprint_valid(fp):
+    if fp == "start":
+        return True
+    if not isinstance(fp, dict):
+        return False
+    if set(fp) == {"id"}:
+        return isinstance(fp["id"], str) and bool(fp["id"].strip())
+    if set(fp) != {"speaker", "type", "digest", "date", "minute", "precision"}:
+        return False
+    if fp["speaker"] not in ("us", "hr") or fp["type"] not in ("text", "card"):
+        return False
+    if not isinstance(fp["digest"], str) or not re.fullmatch(r"[0-9a-f]{16}", fp["digest"]):
+        return False
+    try:
+        if fp["date"] is not None and date.fromisoformat(fp["date"]).isoformat() != fp["date"]:
+            return False
+        if fp["minute"] is not None:
+            if not isinstance(fp["minute"], str) or not re.fullmatch(r"\d{2}:\d{2}", fp["minute"]):
+                return False
+            datetime.strptime(fp["minute"], "%H:%M")
+    except (ValueError, TypeError):
+        return False
+    return fp["precision"] == ("none" if fp["date"] is None else "minute" if fp["minute"] else "day")
+
+
+def validate_tail_record(ev):
+    errors = []
+    for key in ("complete", "anchorUnique", "settled", "reviewRequired"):
+        if type(ev.get(key)) is not bool:
+            errors.append(f"tail.{key} 须为布尔值")
+    if ev.get("result") not in ("same", "extended", "new_anchor", "mismatch"):
+        errors.append("tail.result 无效")
+    if not fingerprint_valid(ev.get("anchor")):
+        errors.append("tail.anchor 指纹无效")
+    for key in ("fingerprints", "bridge"):
+        if key == "bridge" and key not in ev:
+            continue
+        if not isinstance(ev.get(key), list) or any(fp == "start" or not fingerprint_valid(fp) for fp in ev[key]):
+            errors.append(f"tail.{key} 指纹序列无效")
+    try:
+        if parse_at(ev.get("readAt")) > parse_at(ev["at"]):
+            errors.append("tail.readAt 晚于事件时间")
+    except (ValueError, TypeError):
+        errors.append("tail.readAt 无效")
+    if ev.get("newCount") is not None and (type(ev["newCount"]) is not int or ev["newCount"] < 0):
+        errors.append("tail.newCount 须为非负整数或 null")
+    if "bridge" in ev and type(ev.get("bridgeComplete")) is not bool:
+        errors.append("tail.bridgeComplete 须为布尔值")
+    if ev.get("settled") and ev.get("result") == "new_anchor" and (not ev.get("bridge") or not ev.get("bridgeComplete")):
+        errors.append("new_anchor settled 缺少完整 bridge")
+    if "text" in ev or "messages" in ev:
+        errors.append("tail 不得保存消息原文")
+    if ev.get("settled") and (ev.get("reviewRequired") or ev.get("result") not in ("same", "new_anchor")
+                               or not ev.get("baseTailId") or not ev.get("complete") or not ev.get("anchorUnique")):
+        errors.append("tail.settled 与核对证据矛盾")
+    return errors
+
+
+def message_fingerprint(message, speaker, read_at, tz, platform):
+    if (not isinstance(message, dict) or set(message) - {"speaker", "type", "text", "label", "id", "attemptId"}
+            or message.get("speaker", speaker) != speaker or message.get("type") not in ("text", "card")
+            or not isinstance(message.get("text"), str) or not message["text"].strip()
+            or (message.get("label") is not None and not isinstance(message["label"], str))):
+        raise LedgerError("尾部消息的发言方、类型、文字或时间标签无效")
+    if "attemptId" in message and (not isinstance(message["attemptId"], str) or not message["attemptId"].strip()):
+        raise LedgerError("bridge.attemptId 须为非空字符串")
+    if "id" in message:
+        if (not load_platform(platform)["messageId"]["available"] or not isinstance(message["id"], str)
+                or not message["id"].strip()):
+            raise LedgerError("平台未启用稳定消息 ID 或 id 无效")
+        return {"id": message["id"]}
+    return dict(speaker=speaker, type=message["type"], digest=content_digest(message["text"]),
+                **resolve_time_label(message.get("label"), read_at, tz, platform))
+
+
+def definite_fingerprint(fp):
+    return fp == "start" or "id" in fp or bool(fp.get("date") and fp.get("minute"))
+
+
+def fingerprints_equal(left, right):
+    return definite_fingerprint(left) and definite_fingerprint(right) and left == right
+
+
+def sequence_equal(left, right):
+    return len(left) == len(right) and all(fingerprints_equal(a, b) for a, b in zip(left, right))
+
+
+def tail_state(events, thread):
+    """仅供尾部安全检查；完整 threads 派生在后续任务实现。"""
+    latest, handled, review = None, None, False
+    tails = {}
+    for event in events:
+        if event["kind"] != "observe" or event.get("threadKey") != thread:
+            continue
+        if event["observed"] == "tail":
+            latest = event
+            tails[event["tailId"]] = event
+            review |= event["reviewRequired"]
+        elif event["observed"] == "handled":
+            handled = tails[event["tailId"]]
+            if event["skill"] == "user" and isinstance(event.get("evidence"), str) and event["evidence"].strip():
+                review = False
+    return {"latest": latest, "handled": handled, "review": review, "tails": tails,
+            "pending": latest is not None and (handled is None or handled["tailId"] != latest["tailId"])}
+
+
+def compare_tail(base, anchor, messages, complete, unique):
+    if not complete:
+        return "mismatch", None, "incomplete_read"
+    if not unique:
+        return "mismatch", None, "anchor_ambiguity"
+    if not all(definite_fingerprint(fp) for fp in [anchor, *messages]):
+        return "mismatch", None, "time_ambiguity"
+    ids = [fp["id"] for fp in [anchor, *messages] if isinstance(fp, dict) and "id" in fp]
+    if len(set(ids)) != len(ids):
+        return "mismatch", None, "duplicate_identity"
+    if base is None:
+        return "new_anchor", len(messages), "no_base"
+    if not all(definite_fingerprint(fp) for fp in [base["anchor"], *base["fingerprints"]]):
+        return "mismatch", None, "time_ambiguity"
+    if not base["complete"] or not base["anchorUnique"]:
+        return "mismatch", None, "incomplete_base"
+    if not fingerprints_equal(base["anchor"], anchor):
+        if anchor == "start":
+            return "mismatch", None, "anchor_ambiguity"
+        return "new_anchor", len(messages), "anchor_changed"
+    prior = base["fingerprints"]
+    if len(messages) < len(prior):
+        return "mismatch", None, "count_decreased"
+    if not sequence_equal(prior, messages[:len(prior)]):
+        return "mismatch", None, "content_or_order_changed"
+    if len(messages) == len(prior):
+        return "same", 0, "same"
+    return "extended", len(messages) - len(prior), "extended"
+
+
+def bridge_verified(events, base, anchor, messages, raw_bridge, bridge, complete, run, read_at, tz, platform, thread):
+    """验证连续覆盖、目标、内容和发送时间；编号本身不构成成功证据。"""
+    if not complete or not bridge:
+        return False, True, "incomplete_bridge"
+    start = 0 if base["anchor"] == "start" else 1
+    if start and (raw_bridge[0]["speaker"] != "us" or not fingerprints_equal(bridge[0], base["anchor"])):
+        return False, True, "bridge_anchor_mismatch"
+    if not all(definite_fingerprint(fp) for fp in bridge):
+        return False, True, "bridge_time_ambiguity"
+    if start and sum(fingerprints_equal(fp, base["anchor"]) for fp in bridge) != 1:
+        return False, True, "bridge_anchor_ambiguity"
+    us = [i for i in range(start, len(bridge)) if raw_bridge[i]["speaker"] == "us"]
+    if not us or not fingerprints_equal(bridge[us[-1]], anchor):
+        return False, True, "bridge_current_anchor_mismatch"
+    if sum(fingerprints_equal(fp, anchor) for fp in bridge) != 1:
+        return False, True, "bridge_current_anchor_ambiguity"
+    ids = [fp["id"] for fp in bridge if "id" in fp]
+    if len(ids) != len(set(ids)):
+        return False, True, "bridge_identity_ambiguity"
+    before = [bridge[i] for i in range(start, us[0]) if raw_bridge[i]["speaker"] == "hr"]
+    if not sequence_equal(before, base["fingerprints"]):
+        return False, True, "bridge_hr_before_send_changed"
+    after = [bridge[i] for i in range(us[-1] + 1, len(bridge)) if raw_bridge[i]["speaker"] == "hr"]
+    if not sequence_equal(after, messages):
+        return False, True, "bridge_tail_mismatch"
+    all_hr = [bridge[i] for i in range(start, len(bridge)) if raw_bridge[i]["speaker"] == "hr"]
+    atts, used = attempts_of(events), set()
+    for i in us:
+        message = raw_bridge[i]
+        attempt_id = message.get("attemptId")
+        attempt = atts.get(attempt_id)
+        if not attempt or attempt_id in used or attempt["runId"] != run or attempt["status"] != "sent":
+            return False, True, "bridge_unconfirmed_send"
+        used.add(attempt_id)
+        sent = next((e for e in reversed(attempt["events"]) if e["status"] == "sent"), None)
+        if not sent or sent["threadKey"] != thread or sent["runId"] != run:
+            return False, True, "bridge_target_mismatch"
+        # 不依赖后续身份冻结功能：bridge 自身拒绝用改绑目标的终态证明连续性。
+        for field in ("platform", "account", *load_platform(platform)["conversationKey"]):
+            normalize = (lambda value: value) if field in ("platform", "account") else norm_text
+            if any(e.get(field) is not None and normalize(e[field]) != normalize(sent.get(field) or "")
+                   for e in attempt["events"]):
+                return False, True, "bridge_target_mismatch"
+        payload = sent.get("resume") if sent["kind"] == "resume" else sent.get("text")
+        expected_type = "card" if sent["kind"] == "resume" else "text"
+        if (message["type"] != expected_type or not isinstance(payload, str)
+                or content_digest(payload) != content_digest(message["text"])):
+            return False, True, "bridge_content_mismatch"
+        when = resolve_time_label(message.get("label"), read_at, tz, platform)
+        if not when["date"] or not when["minute"]:
+            return False, True, "bridge_time_ambiguity"
+        page_at = datetime.fromisoformat(when["date"] + "T" + when["minute"]).replace(tzinfo=tz)
+        sent_at = parse_at(sent["at"])
+        if (not parse_at(base["readAt"]) <= sent_at <= read_at
+                or not page_at - timedelta(minutes=2) <= sent_at < page_at + timedelta(minutes=3)):
+            return False, True, "bridge_send_time_mismatch"
+    if not sequence_equal(all_hr, base["fingerprints"]):
+        # 新锚点之后仍可见的新 HR 留给下一次处理；跨锚点丢失则只能本人核对。
+        hidden = [bridge[i] for i in range(start, us[-1]) if raw_bridge[i]["speaker"] == "hr"]
+        return False, not sequence_equal(hidden, base["fingerprints"]), "bridge_new_hr"
+    return True, False, "bridge_verified"
+
+
+def cmd_tail(args, ws):
+    try:
+        body = json.loads(args.json if args.json is not None else sys.stdin.read())
+    except ValueError as error:
+        raise LedgerError("尾部输入不是有效 JSON") from error
+    if not isinstance(body, dict) or set(body) - {"anchor", "messages", "complete", "anchorUnique", "bridge", "bridgeComplete"}:
+        raise LedgerError("尾部输入结构或字段无效")
+    for key in ("complete", "anchorUnique", "bridgeComplete"):
+        if key in body and type(body[key]) is not bool:
+            raise LedgerError(f"{key} 须为布尔值")
+    if not isinstance(body.get("messages"), list) or ("bridge" in body and not isinstance(body["bridge"], list)):
+        raise LedgerError("messages / bridge 须为数组")
+    tz = tz_of(load_profile(ws))
+    read_at = parse_at(args.read_at)
+    if read_at > fsutil.now(tz):
+        raise LedgerError("readAt 不能晚于当前时间")
+    with lock_mutex(ws):
+        lock = require_live_lock(ws, args.run, tz, allow_record=True)
+        events, _ = read_events(ws)
+        identities = [e for e in events if e.get("threadKey") == args.thread]
+        if not identities:
+            raise LedgerError("threadKey 未登记，请先记录该会话的页面身份")
+        source = identities[-1]
+        platform = source["platform"]
+        anchor_raw = body.get("anchor")
+        anchor = "start" if anchor_raw == "start" else message_fingerprint(anchor_raw, "us", read_at, tz, platform)
+        messages = [message_fingerprint(message, "hr", read_at, tz, platform) for message in body["messages"]]
+        raw_bridge = body.get("bridge", [])
+        bridge = []
+        for message in raw_bridge:
+            if not isinstance(message, dict) or message.get("speaker") not in ("us", "hr"):
+                raise LedgerError("bridge 须明确每条消息的 speaker")
+            bridge.append(message_fingerprint(message, message["speaker"], read_at, tz, platform))
+        if body.get("bridgeComplete") and "bridge" not in body:
+            raise LedgerError("bridgeComplete 缺少 bridge")
+        state = tail_state(events, args.thread)
+        if state["latest"] and read_at < parse_at(state["latest"]["readAt"]):
+            raise LedgerError("readAt 不能早于该会话最新读取")
+        base = state["tails"].get(args.base) if args.base else state["handled"]
+        if args.base and base is None:
+            raise LedgerError("baseTailId 不属于该会话")
+        if base and read_at < parse_at(base["readAt"]):
+            raise LedgerError("readAt 不能早于基准读取时间")
+        complete, unique = body.get("complete", False), body.get("anchorUnique", False)
+        result, count, reason = compare_tail(base, anchor, messages, complete, unique)
+        review = state["review"] or result == "mismatch"
+        settled = bool(args.base and result == "same")
+        if anchor == "start" and any(a["status"] == "sent" and event_keys(a)[0] == args.thread for a in attempts_of(events).values()):
+            result, count, reason, review, settled = "mismatch", None, "start_conflicts_with_sent", True, False
+        if base and result == "new_anchor":
+            settled, failed, reason = bridge_verified(events, base, anchor, messages, raw_bridge, bridge,
+                                                       body.get("bridgeComplete", False), args.run, read_at, tz, platform, args.thread)
+            settled = bool(args.base and settled)
+            review |= failed
+        if state["pending"] and not args.base:
+            review, settled, reason = True, False, "pending_base_required"
+        if any(a["status"] in ("pending", "uncertain") and event_keys(a)[0] == args.thread for a in attempts_of(events).values()):
+            review, settled, reason = True, False, "unresolved_send"
+        settled = settled and not review
+        if review:
+            count = None
+        ev = {key: source.get(key) for key in ("platform", "account", "company", "title", "location", "recruiter", "jobId", "targetRole")}
+        ev.update(schemaVersion=SCHEMA_VERSION, runId=args.run, skill=lock["skill"], kind="observe", observed="tail",
+                  at=fsutil.now(tz).isoformat(), attemptId="att-" + uuid.uuid4().hex[:12], reason=reason, evidence=None,
+                  tailId="tail-" + uuid.uuid4().hex[:12], baseTailId=base["tailId"] if base else None,
+                  result=result, newCount=count, anchor=anchor, fingerprints=messages, readAt=args.read_at,
+                  complete=complete, anchorUnique=unique, settled=settled, reviewRequired=review)
+        if "bridge" in body:
+            ev.update(bridge=bridge, bridgeComplete=body.get("bridgeComplete", False))
+        ev = prepare_event(ev)
+        errors = validate_event(ev)
+        if errors:
+            raise LedgerError("尾部事件无效：" + "；".join(errors))
+        validate_history_event(events, ev)
+        append_line(ws, ev)
+        return emit({key: ev[key] for key in ("tailId", "baseTailId", "result", "newCount", "reason", "settled")})
 
 
 # ---------- 命令：quota ----------
@@ -1192,7 +1774,7 @@ def lock_expired(lock, now):
     return parse_at(lock["expiresAt"]) <= now
 
 
-def require_live_lock(ws, run_id, tz, renew=False):
+def require_live_lock(ws, run_id, tz, renew=False, allow_record=False):
     """调用方须已持有 lock_mutex。run_id 必须是当前未过期的持锁者，且本轮未禁发。"""
     version_gate(ws, "write")
     now = fsutil.now(tz)
@@ -1204,10 +1786,10 @@ def require_live_lock(ws, run_id, tz, renew=False):
         raise LedgerError(f"runId {run_id} 正在释放运行锁，禁止新的外发；请完成 lock release 收尾")
     if lock_expired(lock, now):
         raise LedgerError(f"runId {run_id} 的运行锁已过期，禁止新的外发；请 lock renew 或重新获取")
-    if lock.get("noSend"):
+    if lock.get("noSend") and not allow_record:
         raise LedgerError(f"runId {run_id} 本轮为禁发模式（--no-send），不能写入新的外发")
     pause = read_pause(ws)
-    if pause:
+    if pause and not allow_record:
         raise LedgerError(f"已全局暂停（{pause.get('at')}，{pause.get('reason')}），禁止新的外发；"
                           "本人回「恢复」或 ledger pause off 之后才能继续")
     if renew:
@@ -1382,12 +1964,15 @@ def reconcile_run(ws, old_lock, tz):
             last = a["events"][-1]
             ev = {k: v for k, v in last.items() if not k.startswith("_")}
             ev.update({
-                "at": now_iso(tz),
+                "at": fsutil.now(tz).isoformat(),
                 "status": "uncertain",
                 "reason": f"本轮（{old_lock.get('runId')}）锁{cause}，结果未确认，需人工核对",
                 "evidence": None,
+                "eventId": "evt-" + uuid.uuid4().hex[:12],
             })
+            validate_history_event(events, ev)
             append_line(ws, ev)
+            events.append(ev)
         elif a["status"] != "uncertain" or a["attemptId"] not in release_ids:
             continue
         out.append({"attemptId": a["attemptId"], "company": a["company"], "title": a["title"], "kind": a["kind"]})
@@ -1439,6 +2024,12 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("validate", help="校验事件记录与停止名单")
+    tail = sub.add_parser("tail", help="读取会话尾部并记录指纹，不保存原文")
+    tail.add_argument("--run", required=True)
+    tail.add_argument("--thread", required=True)
+    tail.add_argument("--read-at", required=True)
+    tail.add_argument("--base")
+    tail.add_argument("--json")
 
     c = sub.add_parser("check", help="外发前检查")
     c.add_argument("--platform", required=True)
@@ -1503,7 +2094,7 @@ def build_parser():
 
 COMMANDS = {
     "validate": cmd_validate, "check": cmd_check, "decision": cmd_decision, "guard": cmd_guard,
-    "append": cmd_append,
+    "append": cmd_append, "tail": cmd_tail,
     "quota": cmd_quota, "threads": cmd_threads, "stats": cmd_stats, "lock": cmd_lock,
     "pause": cmd_pause, "stoplist": cmd_stoplist,
 }
@@ -1517,7 +2108,7 @@ def entry_mode(args):
         return {"status": "read", "on": "write", "off": "recover"}[args.action]
     if args.cmd == "stoplist":
         return "read" if args.action == "list" else "write"
-    return "write" if args.cmd in {"append", "guard"} else "read"
+    return "write" if args.cmd in {"append", "guard", "tail"} else "read"
 
 
 def main(argv=None):

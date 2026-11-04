@@ -104,7 +104,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 
 所有 runtime 都按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护)、[尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 执行。完整读取才下否定结论，核对会话前不读写输入框，未知草稿不清；no-send / L1 只起草时不碰外发输入框。第 4 步放弃发送例外只在入口有明确正常成功结果、环境可用且连续观察到身份一致的目标空会话时适用；调用过后续可能外发动作的，还要求它们全部有结构化 `not_executed` 证据。身份丢失、失败响应、超时后即使读到空会话也不适用。可能外发前逐动作 guard，不将输入与发送合并；写后读回须与最终文字完全一致。
 
-1. `ledger append` 一条 `kind: greet, status: pending`，`text` 为拟发文字，`tags` 记 `greeting:<mode>`；记下返回的 `attemptId`。写入失败（包括已失去运行锁、本轮禁发）立即停止整轮，不点击。
+1. 事件格式为 v1，`eventId`、`threadKey`、`jobKey` 由脚本生成，不复制旧事件 ID；匹配方向写 `targetRole`。`ledger append` 一条 `kind: greet, status: pending`，`text` 为拟发文字，`tags` 记 `greeting:<mode>`；记下返回的 `attemptId`。写入失败（包括已失去运行锁、本轮禁发）立即停止整轮，不点击。
 2. `ledger guard --run <runId> --attempt <attemptId>` 返回 `allowed: true` 后**立即**点击首次沟通入口，中间不做别的事；等待并观察结果，不连点。按平台首次沟通页面要点判断出现的是哪种情况：
 
 | 点击后 | 处理 |

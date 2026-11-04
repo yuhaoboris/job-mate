@@ -18,7 +18,7 @@ description: 巡检招聘平台（首批 BOSS 直聘）的 HR 会话：分类新
 - [../../platforms/boss/common.md](../../platforms/boss/common.md)、[../../platforms/boss/followup.md](../../platforms/boss/followup.md)：BOSS 直聘通用要点与消息页面细节
 - [../../shared/execution.md](../../shared/execution.md)：所有 runtime 的能力自检、完整读取、草稿保护、逐动作 guard 与全部尝试收尾；准备浏览器另读 [浏览器入口](../../shared/browser/README.md)
 
-下文的 `ledger`、`notify` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py` 和 `.../scripts/notify.py`，先解析成绝对路径再调用。
+下文的 `ledger`、`notify` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py` 和 `.../scripts/notify.py`，先解析成绝对路径再调用。事件格式为 v1，脚本生成 eventId、threadKey、jobKey；终态只复用 attemptId，不复制旧 eventId。未答尾部按[尾部读取与处理](../../shared/ledger.md#尾部读取与处理)先 `ledger tail`，处理后必须 `--base <本次处理的tailId>` 重读；仅最新且 settled 的快照可 handled，否则由本人带依据核对，不能换基准消除歧义。
 
 ## 1. 准备
 
@@ -81,7 +81,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 **本人已接管（`manual`）的会话，旧决定一律不执行**，在汇报中列出，等本人明确交还后再处理。结论本身就是「交还会话」的除外。
 
-1. **列出结论要求的全部动作，排好顺序**：本地动作在前（可以重复执行），外发在后。给每个外发动作起一个步骤编号，如 `reply1`、`resume1`，同一事项每次运行都用同样的编号。执行决定的外发**必须**带步骤编号，`ledger` 会拒绝不带的。
+1. **列出结论要求的全部动作，排好顺序**：本地在前、外发在后。先 `append` 一条 `observe/decision`：带事项 `decision`、连续 `version`、`steps`；每步 `{step,kind,text}` 或 `{step,kind:resume,resume}`，本人批准原文不改写。新决定的版本加一、步骤名不得跨版复用；同一版本中断续做沿用原编号。执行决定的外发**必须**带步骤编号，`ledger` 会拒绝不带的。
 
 | 动作 | 例子 | 执行 |
 |---|---|---|
@@ -188,7 +188,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 1. 先比对**所有**本地 `sent`（包括构成分界的那条）：文字比 `outboundTexts`，简历卡片比 `resume` 尝试；同类且记录时间在页面区间前后 2 分钟内，算 Agent 发的。
 2. 对应不上、区间整个早于分界：历史，不比对内容、不保存原文。整个晚于分界：本人接管，记 `manual`。
-3. 跨分界（同一分钟或同一天日期标签）：本轮不发，先 `paused` 再写「这条是你发的吗？」；选项「是我，我来处理」（manual）/「交给 Agent 继续」（released）。选交还时 `released.acknowledged` 按页面标签分组，记录 `shown`、`precision: day|minute`、`kind: text|resume|contact|interview`、正整数 `count`，不记原文。分界仍取事件时间。
+3. 跨分界（同一分钟或同一天日期标签）：本轮不发，先 `paused` 再写「这条是你发的吗？」；选项「是我，我来处理」（manual）/「交给 Agent 继续」（released）。选交还时 `released.acknowledged` 按换算后的绝对日期（有分钟带分钟）分组；相对标签带上当时的 readAt 交脚本按平台词表换算，不以答复当天代替读取日，孤立时分不猜今天。记录 `shown`、`precision: day|minute`、`kind: text|resume|contact|interview`、正整数 `count`，不记原文。分界仍取事件时间。
 4. 后续跨界活动中，同标签同类型按页面从早到晚的前 count 条视为已确认历史，超出条数仍判断为无法判断；整个晚于分界的新活动仍是接管。上午确认当天 1 条，下午新发「14:00」是接管；若也只显示日期，则是第 2 条、再次暂停，不能算历史。
 
 HR 有新的实质性回复时，先记 `observe/replied`（`reason` 写一句摘要，不抄全文），再处理。
@@ -206,7 +206,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 回复、发简历、主动跟进、执行已决定事项，**每一次**发送都先过这几步，任何一步不通过就不发：
 
 1. 本轮未禁发。
-2. `ledger check --platform boss --kind <reply|resume|followup> --company <公司> --recruiter <姓名(职务)> --run <runId>`（执行已决定事项时加 `--decision <ID>`）返回 `allowed: true`。它会检查停止名单、会话是否结束、本人接管、等待决定的暂停、未确认的外发，以及主动跟进的条件。
+2. `ledger check --platform boss --kind <reply|resume|nudge> --company <公司> --recruiter <姓名(职务)> --run <runId>`（执行已决定事项时加 `--decision <ID>`）返回 `allowed: true`。它会检查停止名单、会话是否结束、本人接管、等待决定的暂停、未确认的外发，以及主动跟进的条件。
 3. 重读会话末尾：如果出现了新消息，回到第 4 节重新判断。
 4. `ledger append` 一条 `pending`（执行已决定事项时带 `decision`）。返回错误（如已失去运行锁、本轮禁发）时**立即停止整轮**。
 5. **每一次**可能把消息发出去的点击（「发送」「同意」「发简历」的确认按钮）之前，执行 `ledger guard --run <runId> --attempt <attemptId>`，返回 `allowed: true` 后**立即**点击，中间不做别的事。返回失败说明已失锁或该尝试已被改记，**立即停止整轮**：不点击，也不为同一条消息新建尝试；结果交给本人核对。中途有过等待、卡顿或工具超时，点击前重新读页面再 `guard`。
@@ -237,11 +237,11 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 
 ## 6. 主动跟进（仅 L3）
 
-1. 只跟进 `ledger threads` 返回 `canFollowup: true` 的会话；第 5.0 节的 `check --kind followup` 会再核对一次：每天至多 1 次、连续 2 次未回停 7 天、总数至多 3 次、未接管、未暂停、未结束。
+1. 只跟进 `ledger threads` 返回 `canFollowup: true` 的会话；第 5.0 节的 `check --kind nudge` 会再核对一次：每天至多 1 次、连续 2 次未回停 7 天、总数至多 3 次、未接管、未暂停、未结束。
 2. 还要满足页面状态：我方最后一条消息「已读」满 1 小时未回，或「送达」满 1 小时仍未读。以消息气泡上的时间起算，不从记录写入时间算。
 3. 只在 `profile.json` 的 `schedule.activeHours` 内跟进。
 5. 内容：一条与 JD 相关、`candidate.md` 有依据的真实经历，或一个具体问题；不催促，不重复上一条，不写「再跟进一下」。
-6. 过第 5.0 节的检查，`pending` 为 `kind: followup`，发送确认同第 5.1 节。
+6. 过第 5.0 节的检查，`pending` 为 `kind: nudge`，发送确认同第 5.1 节。
 
 ## 7. 上报
 

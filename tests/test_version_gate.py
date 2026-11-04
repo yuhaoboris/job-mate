@@ -26,6 +26,8 @@ ENTRY_CASES = [
     ("ledger", "guard --run setup-run --attempt att-example", "write"),
     ("ledger", "append --json {}", "write"),
     ("ledger", "append", "write"),  # stdin 不能绕过
+    ("ledger", "tail --run setup-run --thread boss|main|company|recruiter --read-at 2026-01-01T12:00:00+08:00 --json {}", "write"),
+    ("ledger", "tail --run setup-run --thread boss|main|company|recruiter --read-at 2026-01-01T12:00:00+08:00", "write"),
     ("ledger", "quota --platform boss --run setup-run", "read"),
     ("ledger", "threads", "read"),
     ("ledger", "stats", "read"),
