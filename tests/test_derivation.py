@@ -425,6 +425,25 @@ class DerivationTest(unittest.TestCase):
         self.assertEqual(handled["at"], os.environ["JOB_MATE_NOW"])
         self.assertNotEqual(handled["readAt"], handled["at"])
 
+    def test_ack_retargeted_from_other_recruiter_keeps_sent_but_requires_review(self):
+        self.event(kind="observe", observed="interview_invited", decision="D-20261104-11")
+        pending = self.event(kind="reply", status="pending", decision="D-20261104-11", step="ack", recruiter="招聘者乙(HR)")
+        self.event(kind="reply", status="sent", decision="D-20261104-11", step="ack", attemptId=pending["attemptId"])
+        status = self.status()
+        self.assertEqual(status["state"], "needs_review")
+        self.assertEqual(status["attempts"][0]["status"], "sent")
+        self.assertEqual(status["attempts"][0]["mappingIssue"], "ack_target_conflict")
+        self.assertTrue(status["unmappedAttempts"])
+
+    def test_ack_allows_unknown_recruiter_to_be_completed_without_retargeting(self):
+        self.event(kind="observe", observed="interview_invited", decision="D-20261104-11")
+        pending = self.event(kind="reply", status="pending", decision="D-20261104-11", step="ack", recruiter=None)
+        self.event(kind="reply", status="sent", decision="D-20261104-11", step="ack", attemptId=pending["attemptId"])
+        status = self.status()
+        self.assertEqual(status["state"], "not_started")
+        self.assertIsNone(status["systemAttempts"][0]["mappingIssue"])
+        self.assertEqual(status["systemAttempts"][0]["status"], "sent")
+
     def test_projection_is_read_only_and_does_not_reinterpret_tail_safety(self):
         first = self.f.ok_tail()
         verified = self.f.ok_tail(base=first["tailId"])

@@ -1338,6 +1338,20 @@ def cmd_check(args, ws):
 
 # ---------- 命令：decision ----------
 
+def attempt_target_conflict(attempt, target):
+    fields = {"platform", "account", "company", "title", "recruiter", "jobId",
+              *load_platform(attempt["platform"])["conversationKey"]}
+    for field in fields:
+        if field in ("platform", "account", "jobId"):
+            normalize = lambda value: value
+        else:
+            normalize = norm_company if field == "company" else norm_text
+        if target.get(field) is not None and any(
+                e.get(field) is not None and normalize(e[field]) != normalize(target[field]) for e in attempt["events"]):
+            return True
+    return False
+
+
 def decision_attempt(attempt, decision, owners, effective, invitations, positions):
     """当前尚无 prepare 冻结：只用已登记且唯一的 step 归版，不倒推新授权。"""
     first = attempt["events"][0]
@@ -1345,16 +1359,18 @@ def decision_attempt(attempt, decision, owners, effective, invitations, position
     steps = {e["step"] for e in attempt["events"] if e.get("step")}
     owner = owners.get(attempt["step"])
     claims = [e["decisionVersion"] for e in attempt["events"] if e.get("decisionVersion") is not None]
-    ack = attempt["step"] == "ack" and any(
-        e["threadKey"] == event_keys(attempt)[0] and positions[e["eventId"]] < positions[first["eventId"]]
-        for e in invitations)
+    invitation = next((e for e in invitations if e["threadKey"] == event_keys(attempt)[0]
+                       and positions[e["eventId"]] < positions[first["eventId"]]), None)
+    ack = attempt["step"] == "ack" and invitation is not None
     issue, version = None, None
     if ids != {decision} or len(steps) != 1:
         issue = "ambiguous_link"
     elif first.get("decision") != decision or first.get("step") != attempt["step"]:
         issue = "late_binding"
     elif ack:
-        if attempt["kind"] != "reply":
+        if attempt_target_conflict(attempt, invitation):
+            issue = "ack_target_conflict"
+        elif attempt["kind"] != "reply":
             issue = "ack_kind_conflict"
         elif claims:
             issue = "ack_has_version"
@@ -1364,17 +1380,7 @@ def decision_attempt(attempt, decision, owners, effective, invitations, position
         number, declaration, definition = owner
         payload_key = "resume" if definition["kind"] == "resume" else "text"
         payload = next((e[payload_key] for e in reversed(attempt["events"]) if e.get(payload_key) is not None), None)
-        target_conflict = False
-        fields = {"platform", "account", "company", "title", "recruiter", "jobId",
-                  *load_platform(first["platform"])["conversationKey"]}
-        for field in fields:
-            if field in ("platform", "account", "jobId"):
-                normalize = lambda value: value
-            else:
-                normalize = norm_company if field == "company" else norm_text
-            if declaration.get(field) is not None and any(
-                    e.get(field) is not None and normalize(e[field]) != normalize(declaration[field]) for e in attempt["events"]):
-                target_conflict = True
+        target_conflict = attempt_target_conflict(attempt, declaration)
         if any(type(value) is not int or value != number for value in claims):
             issue = "version_conflict"
         elif target_conflict:
