@@ -18,7 +18,7 @@
 
 - 只读始终允许；工作区版本较高时输出 `warnings: ["suite_older_than_workspace"]`（可与其他警告并存）。
 - 写入要求主版本相同，且工作区的「主.次」不高于脚本；拒绝时退出码 2，`code` 为 `suite_major_mismatch` 或 `suite_too_old`，先更新整套技能。普通取锁成功后升级较低的工作区版本，不降级标记。
-- 恢复只要求主版本相同：`lock acquire --skill setup --recovery`、`lock release`、`pause off`、`workspace restore`。恢复锁记 `mode: recovery`，只允许恢复类写入；其他写入（包括 `guard`、续期、进度及通知写入）退出码 2，`code: recovery_lock_only`。只读仍可用。
+- 恢复只要求主版本相同：`lock acquire --skill setup --recovery`、`lock release`、`pause off`、`workspace commit --recover`、`workspace restore`。恢复锁记 `mode: recovery`，只允许恢复类写入；其他写入（包括 `guard`、续期、进度及通知写入）退出码 2，`code: recovery_lock_only`。只读仍可用。
 - `restore` 未传 `--run` 时自动获取恢复锁；传入时必须是有效 setup 锁。恢复保留恢复前的 `suiteVersion`，不采用备份中的旧版本。
 - 无标记时，`init` 或显式指定目录的 `progress start --mode new --variant typical|custom` 可建立骨架；已有标记时均按写入准入，不能借新建绕过保护。`backup`、全部进度修改、通知排队 / 认领 / 回执 / 入站是写入；`outbox` 不带 `--claim` 是只读。
 
@@ -44,6 +44,10 @@
 | `backups/` | 配置文件备份，`setup` 重新设置或修改前生成 | `scripts/workspace.py backup` |
 
 `scripts/workspace.py` 提供 `progress`（见下）、`init`（建立骨架）、`check`（体检：`problems` 必须修复，`warnings` 是缺少的新字段等提示）、`backup` / `backups` / `restore`（备份与恢复配置文件；恢复时保留备份之后新增的停止项，`apply` / `followup` 运行中拒绝恢复）、`changed --since <备份>`（列出备份之后被改动的配置文件）。
+
+## 配置提交与恢复
+
+setup 确认后生成工作区外暂存目录，用 `workspace commit --staging <目录> --run <runId>` 一次提交；停止名单增删可另带 `--stoplist-ops <JSON文件>`，同事务完成。残留 `.job-mate-txn.json` 时先说明，再持 setup 锁执行 `workspace commit --recover --run <runId>`；未恢复不新提交或 restore，apply/followup 取锁也被阻断。完整接口、封闭字段校验、备份清单、损坏停止名单修复和明确放弃见[配置事务](config-transaction.md)。
 
 ## setup 进度
 
@@ -136,7 +140,7 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
 - 不需要通知时只写 `{"channel":"none"}`；缺少 im 等同 none。未知结构报 problems。
 - `progress` 仅保存访谈答案，不把答案自动应用到 profile。部分重新设置只合并所选领域的本人确认变更；未选字段与授权均保留。IM 与定时运行不能新增授权或修改求职条件。
 
-更新流程：读取 → 只合并本人明确要求长期保存的变更 → 保存 → 读回核对。「这次」的修改只用于本轮，不写回。文件损坏或版本不识别时停止并请本人处理，不用空文件覆盖。
+setup 更新流程：读取 → 仅合并本人明确要求长期保存的变更到暂存 → 持锁 commit → 读回核对。「这次」的修改只用于本轮，不写回。文件损坏或版本不识别时停止并请本人处理，不用空文件覆盖。
 
 ## stoplist.yaml
 

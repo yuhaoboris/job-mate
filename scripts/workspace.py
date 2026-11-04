@@ -17,12 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fsutil  # noqa: E402
 import ledger  # noqa: E402
 import notify  # noqa: E402
+import config_txn  # noqa: E402
 
 MARKER = ledger.MARKER
-CONFIG_FILES = [
-    "job-mate.json", "profile.json", "stoplist.yaml", "candidate.md",
-    "qa.yaml", "rules.md", "resumes/index.yaml",
-]
+CONFIG_FILES = list(config_txn.CONFIG_FILES)
 PROGRESS_FILE = "setup-progress.json"
 
 # 标准流程的唯一定义；SKILL.md 的步骤表由测试核对顺序。
@@ -300,6 +298,8 @@ def check_resumes(ws, problems, warnings):
 
 def check_workspace(ws, include_progress=True):
     problems, warnings, info = [], [], {}
+    if config_txn.pending(ws) is not None:
+        problems.append({"file": config_txn.JOURNAL, "problem": "配置事务未完成，请先说明情况并用 commit --recover 恢复"})
     if include_progress and (ws / PROGRESS_FILE).exists():
         try:
             draft = read_progress(ws)
@@ -360,23 +360,7 @@ def backups_dir(ws):
 
 
 def do_backup(ws, label=None):
-    name = now_stamp() + (f"-{re.sub(r'[^0-9A-Za-z_-]+', '-', label)}" if label else "")
-    dest = backups_dir(ws) / name
-    n = 1
-    while dest.exists():
-        n += 1
-        dest = backups_dir(ws) / f"{name}-{n}"
-    name = dest.name
-    dest.mkdir(parents=True)
-    copied = []
-    for f in CONFIG_FILES:
-        src = ws / f
-        if src.exists():
-            target = dest / f
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, target)
-            copied.append(f)
-    return name, copied
+    return config_txn.new_backup(ws, label, config_txn.capture(ws))
 
 
 def cmd_backup(args):
@@ -394,9 +378,8 @@ def cmd_backups(args):
 
 def cmd_restore(args):
     ws = ledger.find_workspace(args.workspace)
-    src = backups_dir(ws) / args.name
-    if not src.is_dir():
-        raise WorkspaceError(f"找不到备份：{args.name}")
+    config_txn.refuse_pending(ws)
+    config_txn.backup_root(ws, args.name)
     tz = ledger.recovery_tz(ws)
     # 恢复全程持有运行锁：期间 apply / followup 无法启动，读不到前后混合的配置。
     # setup 在自己持锁时可传 --run 沿用；其他任何有效锁（包括别的 setup）都拒绝。
@@ -413,37 +396,36 @@ def cmd_restore(args):
         lock = out.get("lock") or {}
         raise WorkspaceError(f"{lock.get('skill')}（{lock.get('runId')}）正在运行，等它结束后再恢复")
     run_id, reused = out["lock"]["runId"], out["reused"]
-    suite_version = ledger.read_json(ws / MARKER)["suiteVersion"]
     safety, restored, kept = None, [], []
+    body_error, corrupt_saved = None, None
     restore_error, release_error = None, None
     release = {"attempted": False, "released": False, "reason": "沿用调用者运行锁，由调用者收尾"}
     try:
-        safety, _ = do_backup(ws, "before-restore")
-        with ledger.stoplist_mutex(ws):
-            for f in CONFIG_FILES:
-                if not (src / f).exists():
-                    continue
-                (ws / f).parent.mkdir(parents=True, exist_ok=True)
-                if f == "stoplist.yaml":
-                    # 停止名单是安全数据：恢复备份版本，同时保留备份之后新增的条目
-                    old_text = (src / f).read_text(encoding="utf-8")
-                    cur_path = ws / f
-                    current = ledger.parse_stoplist(cur_path.read_text(encoding="utf-8")) if cur_path.exists() else []
-                    old = ledger.parse_stoplist(old_text)
-                    added = [ledger.public_entry(e) for e in current
-                             if not ledger.find_stop_entry(old, e["name"])]
-                    ledger.write_atomic(cur_path, ledger.stoplist_text_with(old_text, added))
-                    ledger.load_stoplist(ws)
-                    kept = [e["name"] for e in added]
-                elif f == MARKER:
-                    meta = ledger.read_json(src / f)
-                    meta["suiteVersion"] = suite_version
-                    ledger.write_atomic(ws / f, json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
-                else:
-                    ledger.write_atomic(ws / f, fsutil.read_text(src / f))
-                restored.append(f)
+        data, _ = config_txn.load_backup(ws, args.name)
+        config_txn.validate(data)
+        config_txn.live_setup(ws, run_id, "recover")
+        current_path = config_txn.safe(ws, "stoplist.yaml")
+        current_raw = current_path.read_bytes() if current_path.exists() else b""
+        if args.stoplist_from_backup and "stoplist.yaml" not in data:
+            raise config_txn.TransactionError("backup_corrupt", "所选备份没有停止名单，不能据此清空或修复")
+        try:
+            current = ledger.parse_stoplist(current_raw.decode("utf-8"))
+        except (UnicodeError, ledger.LedgerError) as error:
+            if not args.stoplist_from_backup:
+                raise config_txn.TransactionError("stoplist_unreadable", "当前停止名单不可解析；本人确认后使用 --stoplist-from-backup", exit_code=1) from error
+            corrupt_saved, _ = config_txn.new_backup(ws, "corrupt", {"stoplist.yaml": current_raw})
+            current = []
+        if "stoplist.yaml" in data:
+            if not args.stoplist_from_backup:
+                old_text = data["stoplist.yaml"].decode("utf-8")
+                old = ledger.parse_stoplist(old_text)
+                added = [ledger.public_entry(e) for e in current if not ledger.find_stop_entry(old, e["name"])]
+                data["stoplist.yaml"] = ledger.stoplist_text_with(old_text, added).encode("utf-8")
+                kept = [e["name"] for e in added]
+        committed = config_txn.commit(ws, data, run_id, do_backup, mode="recover", backup_label="before-restore")
+        safety, restored = committed["backup"], list(data)
     except (WorkspaceError, ledger.LedgerError, OSError, ValueError) as e:
-        restore_error = str(e)
+        body_error, restore_error = e, str(e)
     finally:
         if not reused:
             try:
@@ -461,7 +443,10 @@ def cmd_restore(args):
     result = {"restored": restored, "from": args.name, "previousSavedAs": safety,
               "stoplistKeptSinceBackup": kept, "reconciled": list(reconciled.values()),
               "runId": run_id, "restoreSucceeded": restore_error is None,
-              "restoreError": restore_error, "releaseError": release_error, "release": release}
+              "restoreError": restore_error, "releaseError": release_error, "release": release,
+              "corruptStoplistSavedAs": corrupt_saved}
+    if isinstance(body_error, config_txn.TransactionError):
+        result.update(code=body_error.code, txnId=body_error.txnId)
     errors = []
     if restore_error is not None:
         errors.append(f"恢复失败：{restore_error}")
@@ -469,15 +454,71 @@ def cmd_restore(args):
         errors.append(f"释放运行锁失败（runId {run_id} 未确认释放，停止操作）：{release_error}")
     if errors:
         result["error"] = "；".join(errors)
-    return emit(result, 2 if errors else 0)
+    return emit(result, 2 if release_error else getattr(body_error, "exit_code", 2) if restore_error else 0)
+
+
+def stoplist_ops(ws, filename):
+    source = Path(filename).expanduser()
+    if source.is_symlink() or not source.is_file():
+        raise WorkspaceError("停止名单操作须是普通 JSON 文件")
+    operations = config_txn.schema.json_value(source.read_bytes())
+    if not isinstance(operations, list) or not operations:
+        raise WorkspaceError("stoplist-ops 须为非空操作数组")
+    path = config_txn.safe(ws, "stoplist.yaml")
+    text = path.read_bytes().decode("utf-8") if path.exists() else ""
+    ledger.parse_stoplist(text)
+    for op in operations:
+        config_txn.schema.object_fields(op, {"op", "name", "aliases", "reason", "source"}, {"op", "name"})
+        if not config_txn.schema.text(op["name"]):
+            raise WorkspaceError("stoplist 操作 name 须非空")
+        entries = ledger.parse_stoplist(text)
+        hit = next((e for e in entries if ledger.norm_company(e["name"]) == ledger.norm_company(op["name"])), None)
+        if op["op"] == "remove":
+            config_txn.schema.object_fields(op, {"op", "name"}, {"op", "name"})
+            if hit is None:
+                raise WorkspaceError("remove 必须明确命中已有 name，不按别名或包含关系删除")
+            lines = text.splitlines(keepends=True)
+            text = "".join(lines[:hit["_start"]] + lines[hit["_end"]:])
+        elif op["op"] == "add":
+            config_txn.schema.object_fields(op, {"op", "name", "aliases", "reason", "source"}, {"op", "name", "reason", "source"})
+            if (not config_txn.schema.strings(op.get("aliases", [])) or not config_txn.schema.text(op["reason"])
+                    or not config_txn.schema.text(op["source"])):
+                raise WorkspaceError("add 须有合法 aliases、非空 reason/source")
+            if not ledger.find_stop_entry(entries, op["name"]):
+                entry = {key: op[key] for key in ("name", "reason", "source")}
+                entry.update(aliases=op.get("aliases", []), added=fsutil.now(ledger.recovery_tz(ws)).date().isoformat())
+                text = ledger.stoplist_text_with(text, [entry])
+        else:
+            raise WorkspaceError("stoplist-ops 只接受 add / remove")
+        ledger.parse_stoplist(text)
+    return text.encode("utf-8")
+
+
+def cmd_commit(args):
+    ws = ledger.find_workspace(args.workspace)
+    if args.recover:
+        if args.stoplist_ops or args.staging or args.abandon != args.confirm_mixed_config:
+            raise WorkspaceError("recover 不接收暂存/操作；放弃须同时 --abandon --confirm-mixed-config")
+        config_txn.live_setup(ws, args.run, "recover")
+        return emit(config_txn.recover(ws, abandon=args.abandon, run=args.run))
+    if args.abandon or args.confirm_mixed_config:
+        raise WorkspaceError("放弃参数仅用于 --recover")
+    config_txn.refuse_pending(ws)
+    config_txn.live_setup(ws, args.run, "write")
+    staged = config_txn.stage_files(ws, args.staging, allow_empty=bool(args.stoplist_ops))
+    if args.stoplist_ops:
+        if "stoplist.yaml" in staged:
+            raise WorkspaceError("暂存停止名单与 --stoplist-ops 冲突，不能同时提交")
+        staged["stoplist.yaml"] = stoplist_ops(ws, args.stoplist_ops)
+    return emit(config_txn.commit(ws, staged, args.run, do_backup))
 
 
 def cmd_changed(args):
     """对比备份与当前配置，列出备份之后被改动的文件（setup 写入前用来发现期间的变化）。"""
     ws = ledger.find_workspace(args.workspace)
-    src = backups_dir(ws) / args.since
-    if not src.is_dir():
-        raise WorkspaceError(f"找不到备份：{args.since}")
+    src = config_txn.backup_root(ws, args.since)
+    config_txn.load_backup(ws, args.since)
+    config_txn.guard_root(ws)
     changed = []
     for f in CONFIG_FILES:
         a, b = src / f, ws / f
@@ -666,6 +707,15 @@ def build_parser():
     r = sub.add_parser("restore", help="从备份恢复配置文件（先自动备份当前版本；保留备份后新增的停止项）")
     r.add_argument("name")
     r.add_argument("--run", help="setup 已持有运行锁时传入其 runId，沿用该锁")
+    r.add_argument("--stoplist-from-backup", action="store_true", help="本人确认后只使用备份停止名单，保存损坏原字节")
+    commit = sub.add_parser("commit", help="setup 配置事务：校验、备份、提交或恢复残留事务")
+    commit.add_argument("--run", required=True)
+    source = commit.add_mutually_exclusive_group(required=True)
+    source.add_argument("--staging")
+    source.add_argument("--recover", action="store_true")
+    commit.add_argument("--stoplist-ops", help="本人确认的停止名单 add/remove JSON 操作文件")
+    commit.add_argument("--abandon", action="store_true")
+    commit.add_argument("--confirm-mixed-config", action="store_true")
     c = sub.add_parser("changed", help="列出某个备份之后被改动的配置文件")
     c.add_argument("--since", required=True)
     pg = sub.add_parser("progress", help="setup 引导进度")
@@ -690,10 +740,12 @@ def build_parser():
 
 COMMANDS = {"init": cmd_init, "check": cmd_check, "backup": cmd_backup,
             "backups": cmd_backups, "restore": cmd_restore, "changed": cmd_changed,
-            "progress": cmd_progress}
+            "progress": cmd_progress, "commit": cmd_commit}
 
 
 def entry_mode(args):
+    if args.cmd == "commit":
+        return "recover" if args.recover else "write"
     if args.cmd == "restore":
         return "recover"
     if args.cmd == "progress":
@@ -719,10 +771,16 @@ def main(argv=None):
                     init_workspace(ws)
                 return COMMANDS[args.cmd](args)
         ws = ledger.find_workspace(path)
+        if args.cmd in ("commit", "restore", "backup"):
+            config_txn.guard_root(ws)
         with ledger.gated(ws, entry_mode(args)):
+            if args.cmd in ("commit", "restore", "backup"):
+                with fsutil.locked(config_txn.safe(ws, "ledger/config.lock")):
+                    ledger.version_gate(ws, entry_mode(args))
+                    return COMMANDS[args.cmd](args)
             return COMMANDS[args.cmd](args)
     except (WorkspaceError, ledger.LedgerError, ValueError, OSError) as e:
-        return emit(ledger.error_result(e), 2)
+        return emit(ledger.error_result(e), getattr(e, "exit_code", 2))
 
 
 if __name__ == "__main__":

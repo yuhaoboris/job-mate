@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -68,6 +69,11 @@ ENTRY_CASES = [
     ("workspace", "init {ws} --account boss:main:合成", "write"),
     ("workspace", "check", "read"),
     ("workspace", "backup", "write"),
+    ("workspace", "commit --staging {ws}.staging --run setup-run", "write"),
+    ("workspace", "commit --staging {ws}.staging --run setup-run --stoplist-ops {ws}.ops.json", "write"),
+    ("workspace", "commit --recover --run setup-run", "recover"),
+    ("workspace", "commit --recover --abandon --confirm-mixed-config --run setup-run", "recover"),
+    ("workspace", "restore sample --stoplist-from-backup", "recover"),
     ("workspace", "backups", "read"),
     ("workspace", "restore sample", "recover"),
     ("workspace", "restore sample --run setup-run", "recover"),
@@ -156,6 +162,10 @@ class VersionGateTest(unittest.TestCase):
         sample.mkdir(parents=True)
         ledger.write_atomic(sample / ledger.MARKER, json.dumps(dict(meta, suiteVersion="1.0.0")))
         ledger.write_atomic(sample / "rules.md", "备份规则")
+        ledger.write_atomic(sample / "stoplist.yaml", "# 空停止名单\n")
+        ledger.write_atomic(sample / "MANIFEST.json", json.dumps({"schemaVersion": 1, "files": [
+            {"path": name, "sha256": hashlib.sha256((sample / name).read_bytes()).hexdigest()}
+            for name in ("job-mate.json", "rules.md", "stoplist.yaml")]}))
         if recovery:
             ledger.write_lock(ws, {"skill": "setup", "runId": "setup-run", "mode": "recovery",
                                    "expiresAt": "2026-01-01T13:00:00+08:00", "ttlMinutes": 60})
@@ -164,7 +174,7 @@ class VersionGateTest(unittest.TestCase):
     def snapshot(self, ws):
         # 专用互斥文件不是业务状态；只读入口允许创建它们。
         return {str(p.relative_to(ws)): p.read_bytes() for p in ws.rglob("*")
-                if p.is_file() and not p.name.endswith(".mutex")}
+                if p.is_file() and not p.name.endswith(".mutex") and p.relative_to(ws).as_posix() != "ledger/config.lock"}
 
     def test_entry_table_automatically_covers_all_argparse_command_paths(self):
         for name, module in MODULES.items():
@@ -181,7 +191,7 @@ class VersionGateTest(unittest.TestCase):
         for script, command, mode in ENTRY_CASES:
             with self.subTest(script=script, command=command, mode=mode):
                 ws = self.make_ws()
-                if command == "restore sample --run setup-run":
+                if command == "restore sample --run setup-run" or command.startswith("commit --recover"):
                     ledger.write_lock(ws, {"skill": "setup", "runId": "setup-run",
                                            "expiresAt": "2026-01-01T13:00:00+08:00"})
                 before = self.snapshot(ws)

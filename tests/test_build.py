@@ -38,7 +38,7 @@ def run_build(*argv):
 
 
 # 已完整改写的文档进入体量预算；其余在对应任务重写时加入。
-TEXT_BUDGETS = {"shared/notify.md": 16000, "shared/ledger.md": 16000, "shared/derived.md": 16000, "shared/accounts.md": 16000, "shared/export.md": 16000, "shared/tails.md": 16000, "shared/sending.md": 16000, "shared/execution.md": 16000,
+TEXT_BUDGETS = {"shared/config-transaction.md": 16000, "shared/notify.md": 16000, "shared/ledger.md": 16000, "shared/derived.md": 16000, "shared/accounts.md": 16000, "shared/export.md": 16000, "shared/tails.md": 16000, "shared/sending.md": 16000, "shared/execution.md": 16000,
                 "shared/workspace.md": 16000, "skills/setup/SKILL.md": 20000}
 
 
@@ -167,6 +167,41 @@ class BuildTest(unittest.TestCase):
                 pending = ledger("prepare", "--run", "built-send", "--json", json.dumps(intent, ensure_ascii=False))
                 self.assertTrue(pending["allowed"])
                 self.assertTrue(ledger("guard", "--run", "built-send", "--attempt", pending["attemptId"])["allowed"])
+
+    def test_all_built_configuration_transactions_run_independently(self):
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        for directory in map(Path, result["built"]):
+            with self.subTest(package=directory.name):
+                for module in ("config_schema.py", "config_txn.py"):
+                    self.assertTrue((directory / "scripts" / module).is_file())
+                ws = Path(self.tmp.name) / ("txn-" + directory.name)
+                stage = Path(self.tmp.name) / ("staging-" + directory.name)
+                stage.mkdir()
+                (stage / "rules.md").write_text("合成事务规则", encoding="utf-8")
+                def cli(script, *args, crash=None):
+                    env = dict(os.environ, JOB_MATE_TESTING="1", PYTHONDONTWRITEBYTECODE="1")
+                    env.pop("JOB_MATE_TEST_CRASH_AT", None)
+                    if crash:
+                        env["JOB_MATE_TEST_CRASH_AT"] = crash
+                    p = subprocess.run([sys.executable, "-B", "-I", str(directory / "scripts" / script), *args],
+                                       cwd=self.tmp.name, capture_output=True, text=True, encoding="utf-8", env=env, timeout=30)
+                    self.assertFalse(p.stderr, p.stderr)
+                    self.assertEqual(p.returncode, 70 if crash else 0, p.stdout)
+                    return json.loads(p.stdout) if p.stdout else {}
+                cli("workspace.py", "init", str(ws), "--account", "boss:built:合成账号")
+                cli("ledger.py", "--workspace", str(ws), "lock", "acquire", "--skill", "setup", "--run", "built-txn")
+                args = ("--workspace", str(ws))
+                cli("workspace.py", *args, "commit", "--staging", str(stage), "--run", "built-txn", crash="after_file_1")
+                self.assertTrue((ws / "rules.md").is_file())
+                out = cli("workspace.py", *args, "commit", "--recover", "--run", "built-txn")
+                self.assertTrue(out["recovered"])
+                self.assertFalse((ws / "rules.md").exists())
+                cli("workspace.py", *args, "commit", "--staging", str(stage), "--run", "built-txn")
+                backup = cli("workspace.py", *args, "backup")["backup"]
+                (ws / "rules.md").write_text("合成修改", encoding="utf-8")
+                cli("workspace.py", *args, "restore", backup, "--run", "built-txn")
+                self.assertEqual((ws / "rules.md").read_text(encoding="utf-8"), "合成事务规则")
 
     def test_quiet_close_sends_no_done_and_no_summary(self):
         """IM 实测 P8.5/P8.6 回归：只做收尾的轮次不得发 done / summary。

@@ -605,10 +605,12 @@ class WorkspaceTest(unittest.TestCase):
         self.assertNotIn("Traceback", proc.stderr)
         out = json.loads(proc.stdout)
         self.assertFalse(out["restoreSucceeded"])
-        self.assertIn("utf-8", out["restoreError"])
+        # 设计14.2：清单/摘要整批预检，损坏备份不再允许先恢复前两个文件。
+        self.assertEqual(out["code"], "backup_corrupt")
+        self.assertIn("摘要", out["restoreError"])
         self.assertIn("损坏", out["releaseError"])
-        self.assertEqual(out["restored"], ["job-mate.json", "profile.json"])
-        self.assertTrue(out["previousSavedAs"])
+        self.assertEqual(out["restored"], [])
+        self.assertIsNone(out["previousSavedAs"])
         self.assertFalse(out["release"]["released"])
         self.assertEqual(workspace.ledger.read_lock(self.ws)["runId"], out["runId"])
 
@@ -763,7 +765,7 @@ class WorkspaceTest(unittest.TestCase):
         code, out = run("--workspace", str(self.ws), "backup", "--label", "before resetup")
         self.assertEqual(code, 0)
         name = out["backup"]
-        self.assertTrue(name.endswith("before-resetup"))
+        self.assertIn("-before-resetup-", name)  # T5.5备份名含随机事务身份。
         self.assertIn("resumes/index.yaml", out["files"])
         (self.ws / "rules.md").write_text("# 新规则\n")
         code, out = run("--workspace", str(self.ws), "restore", name)
@@ -878,7 +880,7 @@ class WorkspaceIsolationTest(unittest.TestCase):
         # 仅拷贝数据脚本，验证脱离 desktop 模块仍能加载、体检和拒绝旧选项。
         scripts = Path(self.tmp.name) / "isolated"
         scripts.mkdir()
-        for name in ("workspace.py", "ledger.py", "notify.py", "fsutil.py", "platforms.py", "outbound.py"):
+        for name in ("workspace.py", "ledger.py", "notify.py", "fsutil.py", "platforms.py", "outbound.py", "config_txn.py", "config_schema.py"):
             shutil.copy2(source.parent / name, scripts / name)
         for tail, expected in ((["check"], 0), (["check", "--env"], 2)):
             result = subprocess.run([sys.executable, "-I", str(scripts / "workspace.py"),

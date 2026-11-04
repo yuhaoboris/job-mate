@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import hashlib
 import json
 import os
 import queue
@@ -129,6 +130,8 @@ class MutationCoordinationTest(unittest.TestCase):
             self.assertEqual(invoke(notify, ws, "send", "--kind", "alert", "--key", "test", "--text", "合成消息")[0], 0)
             (ws / "backups/sample").mkdir(parents=True)
             ledger.write_atomic(ws / "backups/sample/rules.md", "备份规则")
+            ledger.write_atomic(ws / "backups/sample/MANIFEST.json", json.dumps({"schemaVersion": 1, "files": [
+                {"path": "rules.md", "sha256": hashlib.sha256("备份规则".encode("utf-8")).hexdigest()}]}))
         return ws
 
     def spawn(self, ws, role, script, args, version="1.0.0", hook="gate"):

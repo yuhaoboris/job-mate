@@ -101,7 +101,7 @@ def mutation_held(ws):
 def mutation_mutex(ws):
     """中央写入协调锁；只在同进程同线程同工作区内重入。
 
-    顺序：mutation → poll → im / lock / stoplist → events。
+    顺序：mutation → config（配置事务）→ poll → im / lock / stoplist → events。
     lock 与 stoplist 不互相嵌套；IM 指令在释放 im 后才取 lock。
     所有写入/恢复/创建入口先取中央锁，业务锁不可反向调用新入口。
     """
@@ -131,6 +131,8 @@ def error_result(error):
     out = {"error": str(error)}
     if isinstance(error, VersionGateError):
         out["code"] = error.code
+    if getattr(error, "txnId", None) is not None:
+        out["txnId"] = error.txnId
     if getattr(error, "suite_warnings", None):
         out["warnings"] = error.suite_warnings
     return out
@@ -2680,6 +2682,8 @@ def acquire_lock(ws, tz, skill, run=None, ttl=DEFAULT_LOCK_TTL_MINUTES, no_send=
     if recovery and skill != "setup":
         raise LedgerError("恢复锁只能由 setup 获取")
     version_gate(ws, "recover" if recovery else "write")
+    if skill in {"apply", "followup"} and ((ws / ".job-mate-txn.json").exists() or (ws / ".job-mate-txn.json").is_symlink()):
+        return 1, {"acquired": False, "code": "config_txn_incomplete", "reason": "存在未完成配置事务，请先由 setup 恢复"}
     # 只检查 mode，不依赖 workspace.py 的步骤格式，避免两个脚本循环导入。
     progress = ws / "setup-progress.json"
     if skill in {"apply", "followup"} and progress.exists():

@@ -94,13 +94,13 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 
 1. 汇总：新建按阶段列全部取值；重置列与备份相比每个文件的改动。标出默认、跳过与未知项。本人说「改第 n 步」时用 `progress goto` 跳回。已有工作区缺少的字段在对应步骤按默认值补齐并告知（browser 例外，只按第 6.1 节本人选择写入，不补默认）。
 2. **本人确认后** `ledger lock acquire --skill setup`；被其他任务占用时等其结束，不抢锁。持锁后先按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 完成入口对账：即使 acquire 的 `reconciled` 为空，也检查完整 `ledger threads` 的 `unresolved` 与 inbox，只做本地对账与通知，不操作平台。重置再 `workspace changed --since <备份名>`：期间有变化时重读、合并并重新展示差异，经本人确认再继续。
-3. 按第 7 节写入除停止名单外的文件，每写一个读回核对。停止名单不整体重写，只用 `ledger stoplist add` / `remove` 逐条执行批准的增删。完成后 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 处理 `reconciled` 与释放失败；出错也尝试按此契约收尾，保留草稿，分别报告主体与释放结果，释放未确认时停止，不宣称完全收尾。
+3. 按[配置事务](../../shared/config-transaction.md)把第7节确认内容生成到工作区外暂存目录，`workspace commit --staging <目录> --run <runId>` 一次提交；停止名单批准的增删同事务带 --stoplist-ops，不预先落盘。残留日志先向本人说明，再持锁 `workspace commit --recover --run <runId>`；未恢复不提交。成功后读回，`ledger lock release --run <runId>` 按[释放与对账契约](../../shared/ledger.md#释放与对账契约)处理 `reconciled` 与释放失败；失败保留草稿，主体与释放结果分别报告。
 4. 配置写入后才做经本人另行同意的 IM 全链路测试（第 10 节）；不安装执行器或服务。
 5. `workspace progress finish` 复用体检但不计草稿存在这一项。退出码 0 表示通过并删除草稿；1 表示有问题、草稿保留，按问题回到对应步骤；2 表示命令或草稿错误，先报告处理。`progress clear` 只用于放弃或从头开始，不是完成。之后再 `workspace check` 确认数据配置；runtime 能力与环境另行报告，配置通过不代表实际收发、平台操作或正式验收通过。
 
 ## 4. 修改
 
-读取 → 只改本人明确要求的字段 → 保存 → 读回核对，并说明改了什么。不重新访谈，不动其他文件。改动涉及授权、停止名单、`candidate.md` 时，先 `workspace backup --label edit`。保存前按第 3.3 节第 2–3 步加锁；停止名单只用 `ledger stoplist add` / `remove` 修改。
+读取 → 仅合并本人明确要求的字段到暂存 → 按第3.3节持锁 commit → 读回核对。不重新访谈、不动其他文件；提交自动备份，停止名单纳入同一事务。
 
 ## 5. 体检
 
@@ -126,13 +126,13 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 
 ## 7. 生成文件
 
-各步骤先按下表起草，确认与写入阶段才按 workspace.md 格式逐个保存，每写一个读回核对。`candidate` 步由简历与现成材料起草，逐节确认新经历、新数字与未确认项；`qa` 步按更新后的事实逐条核对 `basis`，失去依据的列出请本人决定。
+各步骤先按下表起草，确认后按第3.3节生成暂存、一次 commit 并读回核对。`candidate` 步由简历与现成材料起草，逐节确认新经历、新数字与未确认项；`qa` 步按更新后的事实逐条核对 `basis`，失去依据的列出请本人决定。
 
 | 文件 | 来源与要点 |
 |---|---|
 | `job-mate.json` | `accounts` 中的 `displayName` 取本人在平台上显示的名字，由本人告知或只读查看 |
 | `profile.json` | 可机器判断的条件、限额、授权、招呼语方式；未提供的限额用默认值 |
-| `stoplist.yaml` | 用 `ledger stoplist add` 逐条添加，每条写明原因和来源。「待核实、不自动联系」的公司也写进来，并在 `reason` 中注明 |
+| `stoplist.yaml` | 只生成本人批准的 add/remove 操作，原因和来源明确；「待核实」记入 reason，同事务提交 |
 | `candidate.md` | 个人事实：基本信息、技术栈分层（生产主力 / 用过 / 个人实践）、明确缺少的经历、工作经历、可公开的数字、未确认项。只写本人提供或简历中有依据的内容 |
 | `qa.yaml` | 依据 `candidate.md` 生成常见问题口径：学历、年龄、离职原因、期望薪资、技术栈、AI 经验、缺少的经历、驻场出差、联系方式婉拒等。每条写 `basis`；找不到依据的问题不生成，列入汇报请本人补充 |
 | `rules.md` | 偏好的理由和排序习惯，例如方向占比、行业优先级、地点细分、公司类型偏好。数值不与 `profile.json` 重复 |

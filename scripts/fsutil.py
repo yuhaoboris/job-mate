@@ -79,6 +79,20 @@ def write_text_atomic(path, text):
         Path(tmp).unlink(missing_ok=True)
 
 
+def write_bytes_atomic(path, data):
+    """配置备份/回滚保留损坏文件的原字节；与文本替换共用跨系统封装。"""
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        replace_atomic(tmp, path)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
 def publish_text_new(path, text):
     """同目录临时文件写完 fsync 后原子发布；目标若出现则拒绝，不覆盖任何旧文件。
 
