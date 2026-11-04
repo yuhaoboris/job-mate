@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "synthetic": true,
+  "permissions": {"accessibility": {"state": "granted"}},
+  "apps": [{"id": "com.google.Chrome", "name": "Google Chrome", "running": true}],
+  "windows": [{"id": "window-1", "app": "com.google.Chrome", "title": "BOSS直聘 — 合成账号", "page": "jobs", "generation": 0}],
+  "pages": {
+    "jobs": {"elements": [
+      {"id": "root", "role": "group", "text": "合成BOSS职位列表"},
+      {"id": "job-list", "parent": "root", "role": "group", "text": "职位列表"},
+      {"id": "job-python", "parent": "job-list", "role": "link", "text": "合成公司 / Python开发 / 上海 / 15-25K / 今日活跃", "action": {"kind": "navigate", "page": "detail"}},
+      {"id": "messages-nav", "parent": "root", "role": "button", "text": "消息", "action": {"kind": "navigate", "page": "messages"}}
+    ]},
+    "detail": {"elements": [
+      {"id": "root", "role": "group", "text": "合成职位详情"},
+      {"id": "address", "parent": "root", "role": "text", "value": "https://www.zhipin.com/job_detail/synthetic-python.html"},
+      {"id": "jd", "parent": "root", "role": "text", "text": "合成公司，招聘者甲(HR)，Python开发，上海，15-25K，双休，开发合成订单服务。"},
+      {"id": "greet", "parent": "root", "role": "button", "text": "立即沟通", "action": {"kind": "navigate", "page": "thread-new"}},
+      {"id": "back", "parent": "root", "role": "button", "text": "返回职位列表", "action": {"kind": "navigate", "page": "jobs"}}
+    ]},
+    "messages": {"elements": [
+      {"id": "root", "role": "group", "text": "合成消息列表"},
+      {"id": "thread-a-link", "parent": "root", "role": "link", "text": "合成公司 / 招聘者甲(HR) / 今天 10:32 / 两条新消息", "action": {"kind": "navigate", "page": "thread-a"}},
+      {"id": "thread-date-link", "parent": "root", "role": "link", "text": "合成日期公司 / 招聘者乙(HR) / 11月4日", "action": {"kind": "navigate", "page": "thread-date"}},
+      {"id": "thread-invite-link", "parent": "root", "role": "link", "text": "合成邀约公司 / 招聘者丙(HR) / 面试邀约", "action": {"kind": "navigate", "page": "thread-invite"}},
+      {"id": "thread-draft-link", "parent": "root", "role": "link", "text": "合成草稿公司 / 招聘者丁(HR)", "action": {"kind": "navigate", "page": "thread-draft"}},
+      {"id": "thread-editable-link", "parent": "root", "role": "link", "text": "合成编辑公司 / 招聘者戊(HR)", "action": {"kind": "navigate", "page": "thread-editable"}}
+    ]},
+    "thread-new": {"thread": "thread-new", "elements": [
+      {"id": "root", "role": "group", "text": "合成公司 / 招聘者甲(HR) / Python开发"},
+      {"id": "messages", "parent": "root", "role": "group", "text": "会话开头"},
+      {"id": "chat-input", "parent": "root", "role": "text-field", "value": "", "editable": true, "contenteditable": false},
+      {"id": "send", "parent": "root", "role": "button", "text": "发送", "enabled": true, "action": {"kind": "send", "input": "chat-input"}},
+      {"id": "back", "parent": "root", "role": "button", "text": "消息列表", "action": {"kind": "navigate", "page": "messages"}}
+    ]},
+    "thread-a": {"thread": "thread-a", "elements": [
+      {"id": "root", "role": "group", "text": "合成公司 / 招聘者甲(HR) / Python开发"},
+      {"id": "messages", "parent": "root", "role": "group", "text": "消息"},
+      {"id": "chat-input", "parent": "root", "role": "text-field", "value": "", "editable": true, "contenteditable": false},
+      {"id": "send", "parent": "root", "role": "button", "text": "发送", "enabled": true, "action": {"kind": "send", "input": "chat-input"}},
+      {"id": "back", "parent": "root", "role": "button", "text": "消息列表", "action": {"kind": "navigate", "page": "messages"}}
+    ]},
+    "thread-date": {"thread": "thread-date", "elements": [
+      {"id": "root", "role": "group", "text": "合成日期公司 / 招聘者乙(HR)"},
+      {"id": "messages", "parent": "root", "role": "group", "text": "消息"},
+      {"id": "chat-input", "parent": "root", "role": "text-field", "value": "", "editable": true},
+      {"id": "send", "parent": "root", "role": "button", "text": "发送", "action": {"kind": "send", "input": "chat-input"}},
+      {"id": "back", "parent": "root", "role": "button", "text": "消息列表", "action": {"kind": "navigate", "page": "messages"}}
+    ]},
+    "thread-invite": {"thread": "thread-invite", "elements": [
+      {"id": "root", "role": "group", "text": "合成邀约公司 / 招聘者丙(HR)"},
+      {"id": "messages", "parent": "root", "role": "group", "text": "消息"},
+      {"id": "chat-input", "parent": "root", "role": "text-field", "value": "", "editable": true},
+      {"id": "send", "parent": "root", "role": "button", "text": "发送", "action": {"kind": "send", "input": "chat-input"}},
+      {"id": "back", "parent": "root", "role": "button", "text": "消息列表", "action": {"kind": "navigate", "page": "messages"}}
+    ]},
+    "thread-draft": {"thread": "thread-draft", "elements": [
+      {"id": "root", "role": "group", "text": "合成草稿公司 / 招聘者丁(HR)"},
+      {"id": "messages", "parent": "root", "role": "group", "text": "消息"},
+      {"id": "chat-input", "parent": "root", "role": "text-field", "value": "未确认原草稿", "editable": true},
+      {"id": "send", "parent": "root", "role": "button", "text": "发送", "action": {"kind": "send", "input": "chat-input"}},
+      {"id": "back", "parent": "root", "role": "button", "text": "消息列表", "action": {"kind": "navigate", "page": "messages"}}
+    ]},
+    "thread-editable": {"thread": "thread-editable", "elements": [
+      {"id": "root", "role": "group", "text": "合成编辑公司 / 招聘者戊(HR)"},
+      {"id": "messages", "parent": "root", "role": "group", "text": "消息"},
+      {"id": "chat-input", "parent": "root", "role": "text-field", "value": "", "editable": true, "contenteditable": true},
+      {"id": "send", "parent": "root", "role": "button", "text": "发送", "action": {"kind": "send", "input": "chat-input"}},
+      {"id": "back", "parent": "root", "role": "button", "text": "消息列表", "action": {"kind": "navigate", "page": "messages"}}
+    ]}
+  },
+  "state": {
+    "locked": false,
+    "deliveryMode": "delivered",
+    "sendLabel": "今天 10:32",
+    "calls": [],
+    "faults": [],
+    "snapshots": {},
+    "nextSnapshot": 1,
+    "drafts": {},
+    "inputEvents": [],
+    "messages": {
+      "thread-new": [],
+      "thread-a": [
+        {"speaker": "hr", "type": "text", "text": "合成问题一", "label": "今天 10:32"},
+        {"speaker": "hr", "type": "text", "text": "合成问题二", "label": "今天 10:32"}
+      ],
+      "thread-date": [{"speaker": "hr", "type": "text", "text": "合成日期消息", "label": "11月4日"}],
+      "thread-invite": [{"speaker": "hr", "type": "card", "cardType": "interview", "text": "合成面试邀请，请本人决定", "label": "今天 10:32", "buttons": ["接受邀请", "拒绝邀请"]}]
+    }
+  }
+}

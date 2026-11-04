@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""POSIX替身入口；按自身路径加载，不查询真实工具或依赖当前目录。"""
+from pathlib import Path
+import runpy
+
+runpy.run_path(str(Path(__file__).resolve().parents[1] / "agent_desktop.py"), run_name="__main__")

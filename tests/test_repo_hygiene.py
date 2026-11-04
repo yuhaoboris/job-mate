@@ -1,5 +1,6 @@
 """开源文件与仓库隐私边界检查。"""
 import hashlib
+import json
 import shutil
 import subprocess
 import unittest
@@ -9,6 +10,22 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class RepoHygieneTest(unittest.TestCase):
+    def test_desktop_scenarios_are_synthetic_and_have_no_runtime_history(self):
+        fake = ROOT / "tests/fakes"
+        scenarios = sorted((fake / "scenarios").glob("*.json"))
+        self.assertTrue(scenarios)
+        for path in scenarios:
+            with self.subTest(path=path.name):
+                scene = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(scene["schemaVersion"], 1)
+                self.assertIs(scene["synthetic"], True)
+                self.assertEqual(scene["state"]["calls"], [])
+                self.assertEqual(scene["state"]["snapshots"], {})
+                self.assertEqual(scene["state"]["inputEvents"], [])
+                self.assertEqual(scene["state"]["drafts"], {})
+        self.assertFalse(list(fake.rglob("*.lock")))
+        self.assertFalse(list(fake.rglob("*.cmd")))
+
     def test_license_is_apache_2(self):
         # https://www.apache.org/licenses/LICENSE-2.0.txt，下载于 2026-11-04。
         self.assertEqual(hashlib.sha256((ROOT / "LICENSE").read_bytes()).hexdigest(),
