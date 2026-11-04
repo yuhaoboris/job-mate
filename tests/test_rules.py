@@ -12,8 +12,7 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 CORE_RULES = (ROOT / "shared/execution.md", ROOT / "shared/browser/README.md")
-REFERENCES = tuple(ROOT / "integrations" / name / "README.md"
-                   for name in ("agent-desktop",))
+TOOL_DOCUMENTS = (ROOT / "shared/browser/agent-desktop.md", ROOT / "shared/im/lark.md")
 TOOL_CALL = re.compile(
     r"lark-cli\b|agent-desktop\s+(?:--[\w-]+|[a-z][\w-]*\b)|desktop\.py|"
     r"launchctl\b|caffeinate\b|npm\s+install|subprocess|"
@@ -154,15 +153,17 @@ class ExecutionRulesTest(unittest.TestCase):
         content = CORE_RULES[1].read_text(encoding="utf-8")
         self.assertLessEqual(len(content.splitlines()), 25)
         self.assertIn("../execution.md", content)
-        self.assertNotIn("agent-desktop", content)
+        self.assertIn("(agent-desktop.md)", content)
+        self.assertLess(content.index("agent-desktop"), content.index("Agent 自带"))
+        self.assert_terms(content, ("macOS", "Chrome", "辅助功能", "不走 CDP", "不换工具", "锁屏"))
         self.assertNotIn("pi.md", content)
         self.assert_terms(content, ("加锁前", "不操作平台、不回退", "禁发锁", "完整读取", "全部 attempt"))
 
     def test_all_core_documents_have_no_tool_commands(self):
         for path in core_documents():
             with self.subTest(path=path):
-                if path == ROOT / "shared/im/lark.md":
-                    continue  # 唯一随包飞书命令说明；其余核心文档仍只用适配器入口。
+                if path in TOOL_DOCUMENTS:
+                    continue  # 仅这两份随包工具规则可写外部命令。
                 self.assertIsNone(TOOL_CALL.search(path.read_text(encoding="utf-8")))
 
     def test_tool_call_detector_accepts_compatibility_literals_only(self):
@@ -174,6 +175,8 @@ class ExecutionRulesTest(unittest.TestCase):
             self.assertIsNotNone(TOOL_CALL.search(call))
 
     def test_core_does_not_link_out_of_package(self):
+        self.assertEqual(set(TOOL_DOCUMENTS), {ROOT / "shared/browser/agent-desktop.md", ROOT / "shared/im/lark.md"})
+        self.assertTrue(set(TOOL_DOCUMENTS) <= set(core_documents()))
         for directory in ("skills", "shared", "platforms"):
             for source in (ROOT / directory).rglob("*.md"):
                 for target in LINK.findall(source.read_text(encoding="utf-8")):
@@ -182,8 +185,8 @@ class ExecutionRulesTest(unittest.TestCase):
 
     def test_boundary_detector_normalizes_paths(self):
         source = ROOT / "shared/browser/README.md"
-        for target in ("../../integrations/pi/README.md", "../../%69ntegrations/pi/README.md",
-                       "../browser/../../integrations/pi/README.md"):
+        for target in ("../../outside-tools/README.md", "../../%6futside-tools/README.md",
+                       "../browser/../../outside-tools/README.md"):
             self.assertTrue(package_escape(source, target))
         for target in ("../execution.md#1-加锁前能力自检", "../../scripts/ledger.py",
                        "https://example.invalid/reference"):
@@ -223,7 +226,7 @@ class ExecutionRulesTest(unittest.TestCase):
     def test_new_document_links_and_anchors_resolve(self):
         maintained = (ROOT / name for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md",
                                                 "docs/design.md", "docs/README.md"))
-        for source in (*core_documents(), *REFERENCES, *maintained):
+        for source in (*core_documents(), *maintained):
             for target in LINK.findall(source.read_text(encoding="utf-8")):
                 parsed = urlsplit(target)
                 if parsed.scheme or parsed.netloc:
@@ -238,14 +241,19 @@ class ExecutionRulesTest(unittest.TestCase):
         self.assert_terms(self.execution, ("(notify.md)", "(ledger.md#释放与对账契约)"))
 
     def test_reference_scope_and_preserved_safety_knowledge(self):
-        for reference in REFERENCES:
-            content = reference.read_text(encoding="utf-8")
-            self.assert_terms(content, ("仅参考，不随核心分发，不是必须使用的方案", "runtime", "接入时", "../../shared/execution.md"))
-            self.assertNotRegex(content, r"npm\s+install|launchctl\s|desktop\.py\s+(run|preflight)")
-        desktop = REFERENCES[0].read_text(encoding="utf-8")
+        desktop = TOOL_DOCUMENTS[0].read_text(encoding="utf-8")
         self.assert_terms(desktop, ("after_action", "INVALID_ARGS", "UTF-8", "8 MiB", "EPERM",
                                     "steps 缺失", "非空 steps", "data.complete", "subtree_truncated",
-                                    "禁止后台 type", "后台写入尚未实测", "not_delivered 不作为动作成功前提"))
+                                    "禁止所有后台 type", "后台写入尚未验证", "not_delivered 不作为动作成功前提"))
+        self.assert_terms(desktop, ("macOS", "1.0.2 / JSON 2.5", "2026-11-04",
+                                    "https://github.com/vercel-labs/agent-desktop", "#install",
+                                    "主版本为 **1**", "主版本为 **2**", "granted", "可读取窗口",
+                                    "禁止 `launch --cdp`", "所有 CDP", "不开 trace", "不做调试截图导出",
+                                    "contenteditable 禁止 `set-value`", "type --headed", "profile.browser.headedInput",
+                                    "未允许时不输入", "锁屏", "请本人解锁", "不重试绕过",
+                                    "主版本只是必要条件", "2.6", "没有因此成为本项目已验证能力",
+                                    "请求绑定", "data.action", "error.details.steps", "error.details.after_action",
+                                    "超时或输出异常一律 unknown", "仅 retry:safe 不够", "最多重做该动作一次"))
         lark = (ROOT / "shared/im/lark.md").read_text(encoding="utf-8")
         self.assert_terms(lark, ("1.0.96", "doctor", "sync --fetch-only", "sync --send-only",
                                 "顶层数组", "顶层诊断对象", "identities.bot.available/verified",
@@ -255,8 +263,7 @@ class ExecutionRulesTest(unittest.TestCase):
                                 "99992351", "sent、不带时间", "unknown", "不重发",
                                 "整批拒收，游标不动", "固定模板", "shell=False", "30 秒",
                                 "20 页是单次", "checkpoint", "businessCursorMs", "scanThroughMs", "接收凭据不是扫描进度"))
-        self.assertFalse((ROOT / "integrations/lark").exists())
-        self.assertTrue((ROOT / "integrations/agent-desktop/README.md").is_file())
+        self.assertFalse((ROOT / "integrations").exists())
 
     def test_all_skill_entries_check_capability_before_lock(self):
         for name in ("apply", "followup", "setup"):
@@ -311,7 +318,7 @@ class ExecutionRulesTest(unittest.TestCase):
 
     def test_all_repository_document_links_and_anchors_resolve(self):
         documents = sorted({*ROOT.glob("*.md"),
-                            *(p for directory in ("docs", "assets", "integrations", "shared", "skills", "platforms")
+                            *(p for directory in ("docs", "assets", "shared", "skills", "platforms")
                               for p in (ROOT / directory).rglob("*.md"))})
         cached_anchors = {}
         for source in documents:
@@ -333,7 +340,7 @@ class ExecutionRulesTest(unittest.TestCase):
     def test_current_guides_do_not_embed_development_history(self):
         guides = [ROOT / name for name in ("README.md", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md",
                                            "docs/README.md", "docs/design.md")]
-        guides.extend(REFERENCES)
+        guides.extend(TOOL_DOCUMENTS)
         for source in guides:
             with self.subTest(source=source.relative_to(ROOT)):
                 self.assertNotRegex(source.read_text(encoding="utf-8"),
@@ -344,7 +351,7 @@ class ExecutionRulesTest(unittest.TestCase):
 
     def test_document_examples_do_not_expose_account_ids_or_home_paths(self):
         documents = [*ROOT.glob("*.md"),
-                     *(p for directory in ("docs", "assets", "integrations", "shared", "skills", "platforms")
+                     *(p for directory in ("docs", "assets", "shared", "skills", "platforms")
                        for p in (ROOT / directory).rglob("*.md"))]
         for source in documents:
             with self.subTest(source=source.relative_to(ROOT)):
@@ -352,8 +359,7 @@ class ExecutionRulesTest(unittest.TestCase):
                                     r"(?:cli_|ou_|oc_)[A-Za-z0-9]{4,}|/(?:Users|home)/(?![.<])[^/\s<>]+")
 
     def test_removed_executor_and_preserved_workspace_tests(self):
-        for relative in ("scripts/desktop.py", "tests/test_desktop.py",
-                         "shared/browser/agent-desktop.md", "shared/browser/pi.md"):
+        for relative in ("scripts/desktop.py", "tests/test_desktop.py", "shared/browser/pi.md"):
             self.assertFalse((ROOT / relative).exists(), relative)
         # 保留纯配置、禁发锁与运行隔离回归，统一放在工作区测试中。
         maintained = ast.parse((ROOT / "tests/test_workspace.py").read_text(encoding="utf-8"))

@@ -47,7 +47,7 @@ python3 scripts/build.py --install <项目>/.agents/skills
 
 BOSS 只操作你日常已登录的可见浏览器，经辅助功能树或桌面 UI，不使用 CDP / Playwright 或内部接口。选定执行偏好不能满足时不操作平台、不回退；没有结果证据用禁发锁。锁 / guard 不是进程强单实例，自动唤起的互斥和后代清理由 runtime 保证。
 
-可选参考：[agent-desktop](integrations/agent-desktop/README.md)，不随核心分发，不是必须工具。飞书通知按随包适配器配置；不表示真实账号或所有环境已验证。
+浏览器按[工具选择顺序](shared/browser/README.md)判断；选用 agent-desktop 时必读[随包规则](shared/browser/agent-desktop.md)。飞书通知按随包适配器配置；不表示真实账号、浏览器或所有环境已验证。
 
 ## 开发
 

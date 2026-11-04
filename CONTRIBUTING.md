@@ -5,7 +5,7 @@
 1. 阅读 [仓库约定](AGENTS.md) 和 [README](README.md)；修改脚本、技能或产品规则前，阅读 [设计](docs/design.md) 的对应章节。
 2. 根据真实代码路径和配置确认能力，不把历史抽查当作当前完整支持。
 
-job-mate 面向不同 Agent runtime，定义求职流程、授权、安全边界与结果判据；工具调用、调度和执行由 runtime 负责。核心脚本只维护确定性的台账、工作区与通知状态，不执行外部工具、不联网、不等待或常驻。具体接入参考位于 `integrations/`，不随核心技能分发。变更须遵守 [通用执行契约](shared/execution.md)，保持核心与工具适配分离；实际 runtime 接入和 Agent 行为须分别验证，不能放宽安全规则或宣称所有环境兼容。
+job-mate 面向不同 Agent runtime，定义求职流程、授权、安全边界与结果判据。数据脚本维护确定性状态，不执行外部工具；飞书由随包适配器显式同步，浏览器按[随包入口](shared/browser/README.md)及[工具规则](shared/browser/agent-desktop.md)选择。调度与进程管理由 runtime 负责，不安装后台服务或常驻。变更须遵守 [通用执行契约](shared/execution.md)，保持数据与工具适配分离；实际接入和 Agent 行为分别验证，不能放宽安全规则或宣称所有环境兼容。
 
 ## 本地开发与验证
 
