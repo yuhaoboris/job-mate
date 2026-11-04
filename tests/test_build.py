@@ -38,7 +38,7 @@ def run_build(*argv):
 
 
 # 已完整改写的文档进入体量预算；其余在对应任务重写时加入。
-TEXT_BUDGETS = {"shared/notify.md": 16000, "shared/ledger.md": 16000,
+TEXT_BUDGETS = {"shared/notify.md": 16000, "shared/ledger.md": 16000, "shared/derived.md": 16000,
                 "shared/workspace.md": 16000, "skills/setup/SKILL.md": 20000}
 
 
@@ -78,6 +78,7 @@ class BuildTest(unittest.TestCase):
                 self.assertTrue((d / "platforms/boss" / filename).is_file())
             self.assertEqual(json.loads((d / "platforms/boss/platform.json").read_text(encoding="utf-8"))["id"], "boss")
             self.assertTrue((d / "shared" / "ledger.md").exists())
+            self.assertTrue((d / "shared" / "derived.md").is_file())
             self.assertEqual(json.loads((d / "BUILD.json").read_text())["skill"], name)
             for md in d.rglob("*.md"):
                 text = md.read_text(encoding="utf-8")

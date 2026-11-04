@@ -510,8 +510,10 @@ class LedgerTest(unittest.TestCase):
                       decision="D-20261028-02", step="reply1")
         state = lambda: self.ws.run("decision", "--id", "D-20261028-02")[1]["state"]
         self.assertEqual(state(), "not_started")
+        self.ws.append(kind="observe", observed="decision", company=common["company"], recruiter=common["recruiter"],
+                       decision=common["decision"], version=1, steps=[{"step": "reply1", "kind": "reply", "text": "批准回复"}])
         aid = self.ws.greet(final=None, **common)
-        self.assertEqual(state(), "in_progress")
+        self.assertEqual(state(), "needs_review")
         self.ws.append(status="sent", attemptId=aid, **common)
         self.assertEqual(state(), "partial")
         self.ws.append(kind="observe", observed="unpaused", company="决策样例", recruiter="周先生(HR)",
@@ -614,10 +616,12 @@ class LedgerTest(unittest.TestCase):
         common = dict(company="对账样例", recruiter="孙先生(HR)", skill="followup", decision="D-20261028-04")
         self.ws.greet(**dict(common, skill="apply", decision=None))
         self.ws.append(kind="observe", observed="paused", **common)
+        self.ws.append(kind="observe", observed="decision", version=1,
+                       steps=[{"step": "reply1", "kind": "reply", "text": "批准回复"}], **common)
         self.ws.greet(final="sent", kind="reply", step="reply1", **common)
         out = self.ws.run("decision", "--id", "D-20261028-04", "--step", "reply1")[1]
         self.assertEqual(out["state"], "partial")
-        self.assertEqual(out["stepState"], "done")
+        self.assertEqual(out["stepState"], "sent")
         self.assertEqual(len(out["stillPausing"]), 1)
 
     def test_multi_action_decision_not_done_until_all_steps(self):
@@ -627,6 +631,9 @@ class LedgerTest(unittest.TestCase):
         st = lambda *a: self.ws.run("decision", "--id", d, *a)[1]
         self.ws.append(kind="observe", observed="manual", **common)
         self.ws.append(kind="observe", observed="paused", decision=d, **common)
+        self.ws.append(kind="observe", observed="decision", decision=d, version=1,
+                       steps=[{"step": "reply1", "kind": "reply", "text": "批准回复"},
+                              {"step": "resume1", "kind": "resume", "resume": "v1"}], **common)
         self.assertEqual(st()["state"], "not_started")
         self.ws.append(kind="observe", observed="released", decision=d, **common)
         out = st()
@@ -640,7 +647,7 @@ class LedgerTest(unittest.TestCase):
         self.ws.greet(final="sent", kind="resume", step="resume1", decision=d, **common)
         out = st()
         self.assertEqual(out["state"], "partial")
-        self.assertEqual(out["steps"], {"reply1": "done", "resume1": "done"})
+        self.assertEqual(out["steps"], {"reply1": "sent", "resume1": "sent"})
         self.ws.append(kind="observe", observed="unpaused", decision=d, **common)
         self.assertEqual(st()["state"], "done")
 
@@ -674,11 +681,13 @@ class LedgerTest(unittest.TestCase):
         self.ws.append(kind="observe", observed="unpaused", decision=d, skill="user", **c)
         self.assertEqual(self.ws.run("decision", "--id", d)[1]["state"], "done")
 
-    def test_unstepped_pending_is_in_progress(self):
+    def test_unstepped_pending_needs_review(self):
         d = "D-20261029-08"
         c = dict(company="旧待定样例", recruiter="林女士(HR)")
         self.unstepped_attempt(["pending"], decision=d, **c)
-        self.assertEqual(self.ws.run("decision", "--id", d, "--step", "reply1")[1]["state"], "in_progress")
+        out = self.ws.run("decision", "--id", d, "--step", "reply1")[1]
+        self.assertEqual(out["state"], "needs_review")
+        self.assertEqual(out["attempts"][0]["status"], "pending")
 
     def test_partial_combo_needs_review(self):
         d = "D-20261029-09"

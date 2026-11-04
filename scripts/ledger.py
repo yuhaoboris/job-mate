@@ -33,6 +33,8 @@ INFO_GROUPS = {"salary": ("salary.range", "salary.months"),
                "hours": ("hours.schedule", "hours.time"), "location": ("location.address",),
                "leave": ("leave.annual",), "employment": ("employment.type",)}
 INFO_KEYS = frozenset(key for values in INFO_GROUPS.values() for key in values)
+DEFAULT_INQUIRY_PRIORITY = ("salary", "hours", "location", "leave")
+THREAD_STAGES = ("greeted", "replied", "info", "resume", "interview_invited")
 CONVERSATION_KINDS = ACTION_KINDS - {"greet"}
 ACTION_STATUSES = {"pending", "sent", "uncertain", "failed_no_send", "skipped", "already_contacted"}
 STANDALONE_STATUSES = {"pending", "skipped", "already_contacted"}
@@ -957,8 +959,8 @@ def check_transition(prior, ev):
 
 
 # ---------- 会话 ----------
-# 会话以「平台 + 公司 + 招聘者」为键（BOSS 的会话按招聘者划分）。
-# 动作事件的招聘者取同一 attempt 中最后看到的名字，pending 时尚未看到也能归到同一会话。
+# 会话维度来自平台 conversationKey；完整账号隔离由后续任务统一加入。
+# 同一 attempt 补齐的页面身份用于归并，事件原值不改写。
 
 FOLLOWUP_MAX_TOTAL = 3
 FOLLOWUP_MAX_UNANSWERED = 2
@@ -966,23 +968,32 @@ FOLLOWUP_COOLDOWN_DAYS = 7
 
 
 def thread_key(ev):
-    return ev["platform"], norm_company(ev["company"]), norm_text(ev.get("recruiter"))
+    values = [(norm_company if field == "company" else norm_text)(ev.get(field))
+              for field in load_platform(ev["platform"])["conversationKey"]]
+    return (ev["platform"], *values)
 
 
-def build_threads(events, platform=None):
+def thread_identity(ev, attempts):
+    identity = dict(ev)
+    if ev["kind"] in ACTION_KINDS:
+        attempt = attempts[ev["attemptId"]]
+        identity["recruiter"] = attempt["recruiter"]
+        for field in load_platform(ev["platform"])["conversationKey"]:
+            if identity.get(field) is None:
+                identity[field] = next((e[field] for e in attempt["events"] if e.get(field) is not None), None)
+    return identity
+
+
+def _base_threads(events, platform=None):
     atts = attempts_of(events)
     threads = {}
-
-    def recruiter_of(ev):
-        if ev["kind"] in ACTION_KINDS:
-            return atts[ev["attemptId"]]["recruiter"]
-        return ev.get("recruiter")
 
     for ev in events:
         if platform and ev["platform"] != platform:
             continue
-        rec = recruiter_of(ev)
-        key = (ev["platform"], norm_company(ev["company"]), norm_text(rec))
+        identity = thread_identity(ev, atts)
+        rec = identity.get("recruiter")
+        key = thread_key(identity)
         t = threads.setdefault(key, {
             "platform": ev["platform"], "company": ev["company"], "recruiter": rec,
             "title": None, "jobId": None, "lastAt": None,
@@ -1036,11 +1047,129 @@ def build_threads(events, platform=None):
                 t["followupsSent"] += 1
                 t["followupsSinceReply"] += 1
                 t["lastFollowupAt"] = ev["at"]
-    for key, t in threads.items():
-        for a in atts.values():
-            if a["status"] in ("pending", "uncertain") and \
-                    (a["platform"], norm_company(a["company"]), norm_text(a["recruiter"])) == key:
+    for a in atts.values():
+        if a["status"] in ("pending", "uncertain"):
+            t = threads.get(thread_key(thread_identity(a["events"][0], atts)))
+            if t is not None:
                 t["unresolved"].append({"attemptId": a["attemptId"], "kind": a["kind"], "status": a["status"]})
+    return threads
+
+
+def sent_metadata(attempt):
+    """仅确认 sent 后使用准备时元数据；显式终态值优先，异职位不继承。"""
+    sent = next((e for e in attempt["events"] if e["status"] == "sent"), None)
+    if sent is None:
+        return None, None, {}
+    job = sent.get("jobKey") or next((e.get("jobKey") for e in attempt["events"] if e.get("jobKey")), None)
+    metadata = {}
+    for event in attempt["events"]:
+        if event.get("jobKey") in (None, job):
+            for field in ("asks", "tags"):
+                if field in event:
+                    metadata[field] = event[field]
+        if event is sent:
+            break
+    return sent, job, metadata
+
+
+def build_threads(events, platform=None, profile=None):
+    """在既有接管/暂停投影上补只读派生；尾部安全只消费已校验事件。"""
+    all_threads = _base_threads(events)
+    threads = {key: t for key, t in all_threads.items() if platform is None or t["platform"] == platform}
+    atts = attempts_of(events)
+    sent = {aid: sent_metadata(a) for aid, a in atts.items()}
+    inquiry = (profile or {}).get("inquiry", {})
+    if not isinstance(inquiry, dict):
+        raise LedgerError("inquiry 须为对象")
+    priority = inquiry.get("priority", DEFAULT_INQUIRY_PRIORITY)
+    if not isinstance(priority, (list, tuple)) or any(not isinstance(x, str) or x not in INFO_GROUPS for x in priority):
+        raise LedgerError("inquiry.priority 须为信息大类数组")
+    jobs, rounds, counts, tails, related, contexts = {}, {}, {}, {}, {}, {}
+    for key, thread in threads.items():
+        thread.update(threadKey=None, account=None, currentJobKey=None, stage=None, interviewIntentStages=[],
+                      pendingTail=None, lastHandled=None, lastOpenedAt=None, decisions=[])
+        related[key] = set()
+    for ev in events:
+        job = ev.get("jobKey")
+        if job:
+            data = jobs.setdefault(job, {"jd": {}, "facts": {}, "checks": []})
+            data["jd"].update(ev.get("jdFacts") or {})
+            if ev["kind"] == "observe" and ev["observed"] == "info":
+                data["facts"].update(ev["facts"])
+            for check in ev.get("checks", []):
+                if check not in data["checks"]:
+                    data["checks"].append(check)
+        if ev["kind"] == "observe" and ev["observed"] in ("tail", "handled"):
+            tails.setdefault(ev["threadKey"], []).append(ev)
+        identity = thread_identity(ev, atts)
+        key = thread_key(identity)
+        if key not in threads:
+            continue
+        thread = threads[key]
+        thread["threadKey"] = event_keys(identity)[0]
+        thread["account"] = ev["account"]
+        if job:
+            thread["currentJobKey"] = job
+        if ev["kind"] in ACTION_KINDS:
+            contexts.setdefault(ev["attemptId"], thread["currentJobKey"])
+        if ev.get("decision"):
+            related[key].add(ev["decision"])
+        milestone = None
+        if ev["kind"] == "observe":
+            obs = ev["observed"]
+            milestone = {"replied": "replied", "info": "replied", "resume_requested": "replied",
+                         "resume_delivered": "resume", "resume_viewed": "resume",
+                         "interview_invited": "interview_invited"}.get(obs)
+            if obs == "info" and ev["facts"]:
+                milestone = "info"
+            if obs in ("replied", "info", "resume_requested", "interview_invited") and thread["currentJobKey"]:
+                pair = (key, thread["currentJobKey"])
+                total = counts.setdefault(pair, {})
+                # 一个问询尝试只消费首轮后续回复，多条 HR 发言不会重复加数。
+                waiting = []
+                for asked in rounds.pop(pair, []):
+                    if ev.get("hrAt") and parse_at(ev["hrAt"]) < asked["sentAt"]:
+                        waiting.append(asked)
+                        continue
+                    for item in asked["asks"]:
+                        total[item] = total.get(item, 0) + 1
+                if waiting:
+                    rounds[pair] = waiting
+        elif ev["kind"] in ACTION_KINDS and sent[ev["attemptId"]][0] is ev:
+            _, actual_job, metadata = sent[ev["attemptId"]]
+            # 省略职位的允许输入承接首次尝试时上下文；晚确认不能挪到新职位。
+            actual_job = actual_job or contexts[ev["attemptId"]]
+            milestone = "resume" if ev["kind"] == "resume" else "greeted"
+            if actual_job and metadata.get("asks"):
+                rounds.setdefault((key, actual_job), []).append({"asks": metadata["asks"], "sentAt": parse_at(ev["at"])})
+        if milestone and (thread["stage"] is None or THREAD_STAGES.index(milestone) > THREAD_STAGES.index(thread["stage"])):
+            thread["stage"] = milestone
+        if ev["kind"] in ACTION_KINDS and sent[ev["attemptId"]][0] is ev:
+            if "intent:interview" in sent[ev["attemptId"]][2].get("tags", []) and thread["stage"] not in thread["interviewIntentStages"]:
+                thread["interviewIntentStages"].append(thread["stage"])
+    decisions = decisions_of(events, all_threads)
+    for key, thread in threads.items():
+        data = jobs.get(thread["currentJobKey"], {"jd": {}, "facts": {}, "checks": []})
+        known = dict(data["jd"], **data["facts"])
+        unanswered = {item: count for item, count in counts.get((key, thread["currentJobKey"]), {}).items() if item not in known}
+        gave_up = [item for item in INFO_KEYS if unanswered.get(item, 0) >= 2]
+        order = list(data["checks"])
+        for group in priority:
+            order.extend(item for item in INFO_GROUPS[group] if item not in order)
+        thread["info"] = {"known": known, "pending": [item for item in order if item not in known and item not in gave_up],
+                          "askedUnanswered": unanswered, "gaveUp": sorted(gave_up)}
+        state = tail_state(tails.get(thread["threadKey"], []), thread["threadKey"])
+        latest, handled = state["latest"], state["handled"]
+        thread["lastOpenedAt"] = latest["readAt"] if latest else None
+        if state["pending"]:
+            thread["pendingTail"] = {field: latest[field] for field in
+                ("tailId", "baseTailId", "result", "newCount", "readAt", "reason", "settled", "reviewRequired", "complete", "anchorUnique")}
+            thread["pendingTail"]["reviewReasons"] = state["reviewReasons"]
+        if handled:
+            record = state["handledEvent"]
+            thread["lastHandled"] = {"tailId": handled["tailId"], "at": record["at"], "readAt": handled["readAt"],
+                                     "listMark": record.get("listMark"), "complete": handled["complete"]}
+        thread["decisions"] = [decisions[d] for d in sorted(related[key]) if d in decisions]
     return threads
 
 
@@ -1209,69 +1338,173 @@ def cmd_check(args, ws):
 
 # ---------- 命令：decision ----------
 
-def decision_completed(events, decision):
-    """存在完成标记，且没有会话仍被这个决定暂停，才算全部完成。"""
-    marked = any(ev["kind"] == "observe" and ev.get("decision") == decision
-                 and ev["observed"] == DECISION_DONE_OBSERVATION for ev in events)
-    return marked and not any(decision in t["pausedBy"] for t in build_threads(events).values())
-
-
-def unstepped_decision_attempts(events, decision):
-    """同一决定中漏写 step 的外发尝试。决定未完成时，它们与新步骤的对应关系须本人核对。"""
-    if decision_completed(events, decision):
-        return []
-    return [a for a in attempts_of(events).values() if a["decision"] == decision and not a["step"]]
+def decision_attempt(attempt, decision, owners, effective, invitations, positions):
+    """当前尚无 prepare 冻结：只用已登记且唯一的 step 归版，不倒推新授权。"""
+    first = attempt["events"][0]
+    ids = {e["decision"] for e in attempt["events"] if e.get("decision")}
+    steps = {e["step"] for e in attempt["events"] if e.get("step")}
+    owner = owners.get(attempt["step"])
+    claims = [e["decisionVersion"] for e in attempt["events"] if e.get("decisionVersion") is not None]
+    ack = attempt["step"] == "ack" and any(
+        e["threadKey"] == event_keys(attempt)[0] and positions[e["eventId"]] < positions[first["eventId"]]
+        for e in invitations)
+    issue, version = None, None
+    if ids != {decision} or len(steps) != 1:
+        issue = "ambiguous_link"
+    elif first.get("decision") != decision or first.get("step") != attempt["step"]:
+        issue = "late_binding"
+    elif ack:
+        if attempt["kind"] != "reply":
+            issue = "ack_kind_conflict"
+        elif claims:
+            issue = "ack_has_version"
+    elif not owner or positions[owner[1]["eventId"]] > positions[first["eventId"]]:
+        issue = "step_not_registered"
+    else:
+        number, declaration, definition = owner
+        payload_key = "resume" if definition["kind"] == "resume" else "text"
+        payload = next((e[payload_key] for e in reversed(attempt["events"]) if e.get(payload_key) is not None), None)
+        target_conflict = False
+        fields = {"platform", "account", "company", "title", "recruiter", "jobId",
+                  *load_platform(first["platform"])["conversationKey"]}
+        for field in fields:
+            if field in ("platform", "account", "jobId"):
+                normalize = lambda value: value
+            else:
+                normalize = norm_company if field == "company" else norm_text
+            if declaration.get(field) is not None and any(
+                    e.get(field) is not None and normalize(e[field]) != normalize(declaration[field]) for e in attempt["events"]):
+                target_conflict = True
+        if any(type(value) is not int or value != number for value in claims):
+            issue = "version_conflict"
+        elif target_conflict:
+            issue = "step_target_conflict"
+        elif attempt["kind"] != definition["kind"] or (payload is not None and payload != definition[payload_key]):
+            issue = "step_content_conflict"
+        else:
+            version = number
+    out = {k: attempt[k] for k in ("attemptId", "kind", "step", "status", "company", "recruiter", "lastAt")}
+    out.update(decisionVersion=version, versionInvalidated=version is not None and version != effective,
+               mappingIssue=issue)
+    return out, ack
 
 
 def step_state(statuses):
+    # 已发事实不降级；不同 attempt 的未决状态另列并独立阻断整个事项。
     if "sent" in statuses:
-        return "done"
-    if any(x in ("pending", "uncertain") for x in statuses):
-        return "in_progress"
-    return "failed" if statuses else "not_started"
+        return "sent"
+    if "pending" in statuses:
+        return "pending"
+    if "uncertain" in statuses:
+        return "uncertain"
+    return "failed_no_send" if statuses else "not_started"
+
+
+def decisions_of(events, threads=None, only=None):
+    """按事项/版本/step/attempt 分层派生，版本变化不抹去任何旧未决。"""
+    threads = _base_threads(events) if threads is None else threads
+    positions = {event["eventId"]: i for i, event in enumerate(events)}
+    observations, actions = {}, {}
+    for ev in events:
+        if ev["kind"] == "observe" and ev.get("decision") and (only is None or ev["decision"] == only):
+            observations.setdefault(ev["decision"], []).append(ev)
+    for attempt in attempts_of(events).values():
+        for decision in {e["decision"] for e in attempt["events"] if e.get("decision")}:
+            if only is None or decision == only:
+                actions.setdefault(decision, []).append(attempt)
+    result = {}
+    ids = set(observations) | set(actions) | ({only} if only is not None else set())
+    for decision in sorted(ids):
+        obs, linked = observations.get(decision, []), actions.get(decision, [])
+        declarations = [e for e in obs if e["observed"] == "decision"]
+        latest = declarations[-1] if declarations else None
+        effective = latest["version"] if latest else None
+        owners = {step["step"]: (e["version"], e, step) for e in declarations for step in e["steps"]}
+        invitations = [e for e in obs if e["observed"] == "interview_invited"]
+        reviews = {(e["platform"], e["account"], thread_key(e)): e for e in obs
+                   if e["observed"] == DECISION_DONE_OBSERVATION and e["skill"] == "user"}
+        attempts, system, unmapped = [], [], []
+        for attempt in linked:
+            projected, ack = decision_attempt(attempt, decision, owners, effective, invitations, positions)
+            identity = thread_identity(attempt["events"][0], {attempt["attemptId"]: attempt})
+            review = reviews.get((attempt["platform"], attempt["account"], thread_key(identity)))
+            # 本人已核对的终态不因后来登记新版而再次变成未知；保留原记录和依据。
+            projected["reviewResolvedBy"] = (review["eventId"] if review and projected["mappingIssue"]
+                and attempt["status"] not in ("pending", "uncertain")
+                and positions[review["eventId"]] > positions[attempt["events"][-1]["eventId"]] else None)
+            attempts.append(projected)
+            if ack:
+                system.append(projected)
+            if projected["mappingIssue"]:
+                unmapped.append(projected)
+        by_step = {}
+        for projected in attempts:
+            if projected["decisionVersion"] is not None:
+                by_step.setdefault((projected["decisionVersion"], projected["step"]), []).append(projected)
+        versions, flat = [], {}
+        for declaration in declarations:
+            number = declaration["version"]
+            projected_steps = []
+            for definition in declaration["steps"]:
+                matches = by_step.get((number, definition["step"]), [])
+                status = step_state([a["status"] for a in matches])
+                if number != effective and status in ("not_started", "failed_no_send"):
+                    status = "superseded"
+                projected_steps.append(dict(definition, status=status, attempts=matches))
+                flat[definition["step"]] = status
+            versions.append({"version": number, "active": number == effective, "steps": projected_steps})
+        still_pausing = [{"company": t["company"], "recruiter": t["recruiter"]}
+                         for t in threads.values() if decision in t["pausedBy"]]
+        start = positions[latest["eventId"]] if latest else -1
+        end = max((positions[e["eventId"]] for a in linked for e in a["events"]), default=start)
+        marks = [e for e in obs if e["observed"] == DECISION_DONE_OBSERVATION
+                 and positions[e["eventId"]] > max(start, end)]
+        marker = marks[-1] if marks and not still_pausing else None
+        local_done = [e["observed"] for e in obs if positions[e["eventId"]] > start
+                      and e["observed"] in ("released", "adopted", "interview_decided", "declined", "reopened", "manual")]
+        current = versions[-1]["steps"] if versions else []
+        unresolved = any(a["status"] in ("pending", "uncertain") for a in attempts)
+        user_completion = bool(marker and marker["skill"] == "user")
+        if unresolved or any(not a["reviewResolvedBy"] for a in unmapped):
+            state, advice = "needs_review", "有未决或无法归属的尝试；先本人核对，不新增外发"
+        elif marker and (user_completion or all(step["status"] == "sent" for step in current)):
+            state, advice = "done", "已收尾；不重复发送，未能归版的历史记录仍保留供核对"
+        elif any(step["status"] == "failed_no_send" for step in current):
+            state, advice = "failed", "有明确未发送的步骤，本轮不重试，请本人决定"
+        elif local_done or any(step["status"] == "sent" for step in current):
+            state, advice = "partial", "跳过已发步骤；仅继续有效版本的未开始步骤，完成后收尾"
+        else:
+            state, advice = "not_started", "有效版本尚未执行；先确认步骤和本轮授权"
+        result[decision] = {
+            "decision": decision, "effectiveVersion": effective, "versions": versions, "steps": flat,
+            "state": state, "advice": advice, "attempts": attempts, "unmappedAttempts": unmapped,
+            "systemAttempts": system, "completionConfirmedByUser": user_completion and not unresolved,
+            "localActions": local_done, "stillPausing": still_pausing,
+            "pausedRecords": [{k: ev.get(k) for k in ("at", "platform", "company", "recruiter", "title", "reason")}
+                              for ev in obs if ev["observed"] == "paused"],
+        }
+    return result
+
+
+def decision_completed(events, decision):
+    return decisions_of(events, only=decision)[decision]["state"] == "done"
+
+
+def unstepped_decision_attempts(events, decision):
+    """只解除同目标本人已核对终态的既有缺 step 阻断，不隐藏未决。"""
+    summary = decisions_of(events, only=decision)[decision]
+    blocked = {a["attemptId"] for a in summary["unmappedAttempts"] if not a["step"] and not a["reviewResolvedBy"]}
+    return [a for a in attempts_of(events).values() if a["attemptId"] in blocked]
 
 
 def cmd_decision(args, ws):
-    """外发按 step 跟踪；有带 decision 的 unpaused 且没有会话仍被它暂停，才算全部完成。"""
     events, _ = read_events(ws)
-    linked = [a for a in attempts_of(events).values() if a["decision"] == args.id]
-    obs = [ev for ev in events if ev["kind"] == "observe" and ev.get("decision") == args.id]
-    steps = {}
-    for a in linked:
-        steps.setdefault(a["step"] or "default", []).append(a["status"])
-    step_states = {k: step_state(v) for k, v in steps.items()}
-    completed = decision_completed(events, args.id)
-    local_done = [ev["observed"] for ev in obs if ev["observed"] not in
-                  ("paused", "decision", "interview_invited", DECISION_DONE_OBSERVATION)]
-    unstepped = unstepped_decision_attempts(events, args.id)
-    if completed:
-        state, advice = "done", "决定已全部执行；只需确认 inbox 已标「已执行」，不要再发"
-    elif any(a["status"] in ("pending", "uncertain") for a in unstepped):
-        state, advice = "in_progress", "有未确认的外发（无步骤编号）；只核对页面，不新建尝试，结果不明请本人核对"
-    elif unstepped:
-        state, advice = ("needs_review", "有不带步骤编号的外发记录，无法确定它对应决定中的哪个动作；"
-                         "不要新建外发，请本人核对：若决定已全部完成，记带 decision 的 unpaused")
-    elif "in_progress" in step_states.values():
-        state, advice = "in_progress", "有未确认的外发；只核对页面，不新建尝试，结果不明请本人核对"
-    elif "failed" in step_states.values():
-        state, advice = "failed", "有动作明确未发出；本轮不重试，请在汇报中说明"
-    elif step_states or local_done or any(ev["observed"] == DECISION_DONE_OBSERVATION for ev in obs):
-        state, advice = "partial", "部分动作已完成（见 steps、localActions）；跳过已完成的，继续其余动作，全部完成后记 unpaused"
-    else:
-        state, advice = "not_started", "尚未执行：先列出决定要求的动作，本地动作在前、外发在后，逐个执行，全部完成后记 unpaused"
-    out = {
-        "decision": args.id, "state": state, "advice": advice,
-        "steps": step_states,
-        "localActions": local_done,
-        "attempts": [{k: a[k] for k in ("attemptId", "kind", "step", "status", "company", "recruiter", "lastAt")}
-                     for a in linked],
-        "pausedRecords": [{k: ev.get(k) for k in ("at", "platform", "company", "recruiter", "title", "reason")}
-                          for ev in obs if ev["observed"] == "paused"],
-        "stillPausing": [{"company": t["company"], "recruiter": t["recruiter"]}
-                         for t in build_threads(events).values() if args.id in t["pausedBy"]],
-    }
+    out = decisions_of(events, only=args.id)[args.id]
     if args.step:
-        out["stepState"] = "needs_review" if unstepped else step_states.get(args.step, "not_started")
+        state = out["steps"].get(args.step, "not_started")
+        if out["state"] == "needs_review" and state not in ("sent", "superseded", "pending", "uncertain", "failed_no_send"):
+            state = "needs_review"
+        out["stepState"] = state
     return emit(out)
 
 
@@ -1505,8 +1738,8 @@ def sequence_equal(left, right):
 
 def tail_state(events, thread):
     """仅供尾部安全检查；完整 threads 派生在后续任务实现。"""
-    latest, handled, review = None, None, False
-    tails = {}
+    latest, handled, handled_event, review = None, None, None, False
+    tails, review_reasons = {}, []
     for event in events:
         if event["kind"] != "observe" or event.get("threadKey") != thread:
             continue
@@ -1514,11 +1747,15 @@ def tail_state(events, thread):
             latest = event
             tails[event["tailId"]] = event
             review |= event["reviewRequired"]
+            if (event["reviewRequired"] and event["reason"] not in ("same", "extended", "no_base", "bridge_verified")
+                    and event["reason"] not in review_reasons):
+                review_reasons.append(event["reason"])
         elif event["observed"] == "handled":
-            handled = tails[event["tailId"]]
+            handled, handled_event = tails[event["tailId"]], event
             if event["skill"] == "user" and isinstance(event.get("evidence"), str) and event["evidence"].strip():
-                review = False
-    return {"latest": latest, "handled": handled, "review": review, "tails": tails,
+                review, review_reasons = False, []
+    return {"latest": latest, "handled": handled, "handledEvent": handled_event, "review": review,
+            "reviewReasons": review_reasons, "tails": tails,
             "pending": latest is not None and (handled is None or handled["tailId"] != latest["tailId"])}
 
 
@@ -1786,7 +2023,7 @@ def cmd_threads(args, ws):
     tz = tz_of(profile)
     now = fsutil.now(tz)
     events, _ = read_events(ws)
-    threads = build_threads(events, args.platform)
+    threads = build_threads(events, args.platform, profile)
     for t in threads.values():
         t["canFollowup"], t["followupReason"] = followup_eligibility(t, now, tz)
     items = sorted(threads.values(), key=lambda t: t["lastAt"] or "", reverse=True)
@@ -1794,7 +2031,7 @@ def cmd_threads(args, ws):
         items = [t for t in items if match_company(args.company, [t["company"]])[0]]
     if args.recruiter:
         items = [t for t in items if norm_text(t["recruiter"]) == norm_text(args.recruiter)]
-    return emit({"threads": items})
+    return emit({"threads": items, "pendingTails": [t for t in items if t["pendingTail"] is not None]})
 
 
 # ---------- 命令：stats ----------

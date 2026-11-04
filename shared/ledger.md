@@ -22,10 +22,12 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 | `append --json '<事件>'` | 校验、追加；不传 --json 时从 stdin 读 |
 | `tail --run <runId> --thread '<threadKey>' --read-at <ISO> [--base <tailId>] [--json '<输入>']` | 记录尾部指纹，不保存原文；输入也可走 stdin |
 | `guard --run <runId> --attempt <attemptId>` | 每个可能外发的点击前复查 pending 与有效锁，并续期；通过后立即点击 |
-| `decision --id <ID> [--step <编号>]` | 查询外发步骤、localActions、pausedRecords、stillPausing 与 attempts |
-| `threads` | 会话状态、未决尝试、接管与暂停；可按 platform / company / recruiter 筛选，不是页面证据 |
+| `decision --id <ID> [--step <编号>]` | 查询有效版本、各版本步骤及真实 attempts |
+| `threads` | 会话阶段、职位信息、待处理尾部、决定及原有状态；可按 platform / company / recruiter 筛选，不是页面证据 |
 | `quota --platform <平台> [--run <runId>]` / `stats [--since YYYY-MM-DD] [--until YYYY-MM-DD]` | 额度、间隔 / 统计 |
 | `stoplist list` / `stoplist add --name <公司> [--alias <别名>]... --reason <原因> --source <来源>` / `stoplist remove --name <公司>` | 停止名单；remove 按 name 精确匹配 |
+
+threads / decision 的字段与使用分支见[派生说明](derived.md)。
 
 ## 运行锁
 
@@ -72,7 +74,7 @@ kind：
 - sent 须有当前业务成功证据；进入会话、按钮变色、工具成功、空白页或「没看到消息」均不能代替证据。超时或未知记 uncertain，不重放。
 - 本人核对 uncertain 后，Agent 代为回填 sent 或 failed_no_send，skill 记 user、reason 引用本人结论；Agent 自己看页面不能冒充本人。
 - pending / uncertain / sent / already_contacted 阻止重复首次联系。failed_no_send 仅本轮不重试，skipped 不阻断。招呼额度按写过 pending 的 greet 尝试计数，失败与不明不退款；间隔按最近 pending / sent 计。
-- decision 的完成状态为 not_started / partial / in_progress / failed / needs_review / done；无步骤外发须本人核对，期间不新建该决定的外发。只有带同 ID 的 unpaused 且没有会话仍被它暂停才算完成，部分解除不覆盖阻断。
+- 决定以有效版本为准，旧未决仍须核对。步骤状态、收尾及本人核对分支见上述派生说明，不能用完成标记隐藏未决。
 
 ## 观察与决定
 
@@ -120,4 +122,4 @@ observed 可取：tail、handled、replied、decision、info、resume_requested�
 3. **释放收尾**：结束时执行 `lock release --run <runId>`，核对退出码与 `released`，按上一步处理返回的 `reconciled`，不能忽略输出。写核对事项前再对照最新 `threads.unresolved`；已经确认的终态保持不变，不因旧输出重开核对事项。释放后只做本地收尾与通知，不再持原锁重发。
 4. **失败阻断**：释放失败或未确认 `released: true` 时立即停止整轮，保留锁与未完成草稿，按 `lock status` 显式报告持锁者；状态读不出就报告锁未确认释放。不能宣称完全收尾，不能继续外发、续期或沿用原锁绕过收尾。收尾中的锁按「运行锁」一节重试 release 或等过期接管；主体错误与释放错误分别报告。`threads` / `validate` 报损坏或无法读取时，报告对账未完成及损坏行，停止外发，不跳过、不删除、不用空文件覆盖。
 
-恢复时只观察、不重放：不重复上一轮最后一次点击。执行已决定事项前先 `decision --id` 查状态与各步骤，已完成的步骤跳过，`in_progress` 只核对。
+恢复时只观察、不重放：不重复上一轮最后一次点击。执行决定前先查 `decision --id` 的有效版本与步骤；sent 跳过，superseded 不执行，pending / uncertain / needs_review 只核对。

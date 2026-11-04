@@ -81,7 +81,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 **本人已接管（`manual`）的会话，旧决定一律不执行**，在汇报中列出，等本人明确交还后再处理。结论本身就是「交还会话」的除外。
 
-1. **列出结论要求的全部动作，排好顺序**：本地在前、外发在后。先 `append` 一条 `observe/decision`：带事项 `decision`、连续 `version`、`steps`；每步 `{step,kind,text}` 或 `{step,kind:resume,resume}`，本人批准原文不改写。新决定的版本加一、步骤名不得跨版复用；同一版本中断续做沿用原编号。执行决定的外发**必须**带步骤编号，`ledger` 会拒绝不带的。
+1. **列出结论要求的全部动作，排好顺序**：本地在前、外发在后。先查 `decision --id` 的 effectiveVersion / versions，续做已登记版本不重复登记，只处理 active 版本。本人给出新决定时才 `append` 一条 `observe/decision`：带事项 `decision`、连续 `version`、`steps`；每步 `{step,kind,text}` 或 `{step,kind:resume,resume}`，本人批准原文不改写。新决定的版本加一、步骤名不得跨版复用；同一版本中断续做沿用原编号。执行决定的外发**必须**带步骤编号，`ledger` 会拒绝不带的。
 
 | 动作 | 例子 | 执行 |
 |---|---|---|
@@ -94,24 +94,25 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
    **只有外发动作才发消息**，不要为了让事项「完成」而编一条回复。
 
 2. 先看 `ledger decision --id <ID>`：
-   - `state` 为 `needs_review`：这个决定有不带步骤编号的外发记录，无法确定它对应哪个动作。**不要新建任何外发**，在汇报中列出该记录（`attempts`），请本人核对。本人确认决定已全部完成时，由 Agent 记带 `decision` 的 `observe/unpaused`（`skill: user`，`reason` 引用本人原话）；本人要求补做某个动作时，按本人的说明处理。
+   - `state` 为 `needs_review`：任一版本有 pending / uncertain，或存在缺步骤、归属冲突。**不要新建任何外发**，列出 attempts / unmappedAttempts 请本人核对；旧版本失效不能抹去未决。先在原 attempt 回填本人确认的 sent / failed_no_send；本人明确确认全部完成后，才记同 ID 的 `observe/unpaused`（`skill: user`，`reason` 引用本人原话）。缺步骤但已 sent 的历史记录仍展示，不猜成新版本步骤。
    - 其他状态：看 `localActions`，已做过的本地动作可以跳过，再做一次也无害。
 3. 每个外发步骤按顺序处理，先查 `ledger decision --id <ID> --step <编号>` 的 `stepState`：
 
 | `stepState` | 处理 |
 |---|---|
 | `not_started` | 按第 5 节发送；`check` 带 `--decision <ID>`，`pending` 带 `decision` 和 `step` |
-| `in_progress` | 有未确认的外发：只核对页面，不新建尝试；看不清结果就请本人核对，**这个事项到此为止** |
-| `done` | 已发出，跳过，不要再发 |
-| `failed` | 上次明确未发出：本轮不重试，**这个事项到此为止**，在汇报中说明 |
-| `needs_review` | 该决定有不带步骤编号的外发记录，无法确定对应关系：不新建外发，**这个事项到此为止**，按第 2 步请本人核对 |
+| `pending` / `uncertain` | 未确认外发：只核对原 attempt，不新建尝试；看不清请本人核对，**这个事项到此为止** |
+| `sent` | 已发出，跳过，不要再发 |
+| `failed_no_send` | 上次明确未发出：本轮不重试，**这个事项到此为止**，在汇报中说明 |
+| `superseded` | 旧版本未执行步骤已失效，不执行；只看 active 版本 |
+| `needs_review` | 归属不明或有其他阻断：不新建外发，**这个事项到此为止**，按第 2 步请本人核对 |
 
-4. 全部动作完成后，**最后**记 `observe/unpaused`（带 `decision`）。这条记录解除该会话暂停；只有已有带该 ID 的 `unpaused`，且没有会话仍被该 ID 暂停时，`ledger decision` 才返回 `done`。
+4. 全部动作完成后，**最后**记 `observe/unpaused`（带 `decision`）。这条记录解除该会话暂停；须为有效版本执行后的收尾，所有相关目标解除暂停，且没有任何版本的未决尝试，才可返回 `done`。旧版本的完成标记不完成新版本。
 5. 在 inbox 该事项末尾追加「已执行：<时间>，<做了什么>」。
 6. `notify send --kind done --decision <ID>` 只排队结果通知：正文包含**这一结果版本**的实际执行结果，例如实际发送的文字，或失败 / 结果不明 / 暂停的原因和本人要做什么，不拿用户决定原文代替。首次排队前把稳定正文保存到 inbox（例如「结果：…」），同一结果版本补发复用保存的正文；已有该键则以 notify 冻结原文为准。结果改变（如 uncertain → done）时保存新版本再排队，不更改原条目。投递与回执按第 2.0 节；执行时会话有 HR 新消息按第 4 节一并处理。
 7. 该回复是 `ready` 的，执行完后 `notify reply-state --message <ID> --state consumed --decision <ID>`。若本轮被**全局暂停或显式禁发**，不要标 `consumed`，保留 `ready` 到恢复 / 下一轮。若动作被人工接管、`uncertain` / `failed_no_send` / `needs_review` 阻断，不要因状态恢复而自动重新外发：按原规则停下来，在汇报中说明，并把回复标 `consumed`（`--note` 写原因），避免 runtime 反复唤起；ledger 中的决定状态仍以 `ledger decision` 为准。产生 uncertain 时按[结果不明事项](../../shared/notify.md#结果不明事项)在原决定中补记 attemptId 与结果，不另开事项或重复暂停。
 
-中途在任何一步中断，`ledger decision` 返回 `partial` 或 `in_progress`，并列出已完成的步骤；下一轮按上面的步骤接着做，已完成的会被跳过。
+中断后查有效版本及所有 attempts：partial 只续未开始步骤，needs_review 先核对；旧版本已 sent 不重发，旧未决不隐藏。完整字段与尾部派生见[派生说明](../../shared/derived.md)。
 
 ### 2.3 收尾 ready（不重发 HR，不重新解释旧答复）
 
@@ -119,7 +120,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 1. 只按 inbox / ledger 中已经落盘的结论收尾。不要重新解释原始回复，不要执行第 2.2 节的外发步骤，**不向 HR 发任何消息**。
 2. 已决定且 `ledger decision` 为 `done`：若结果通知还没确认送达，使用 inbox 中保存的**最终结果正文**（不是用户决定原文）。缺失时先根据 ledger 事实（steps、attempts 状态、实际发送的文字或失败 / 不明原因）生成最终结果正文并保存到 inbox，再执行 `notify send --kind done --decision <ID>`；同一结果版本复用同一正文，若已有发送尝试以 `notify` 持久化原文为准。然后标 `consumed`。这一步只是补发结果通知，不算实际执行动作，因此**不发 `summary`**（第 9 节）。
-3. 已决定但不是 `done`：先看 `ledger decision` 的 `steps` 和 `stepState`。有 `in_progress`、`uncertain`、`failed`、`needs_review` 时按第 2.2 节第 2、3 步停下并请本人核对（uncertain 的事项记录按[结果不明事项](../../shared/notify.md#结果不明事项)沿用原决定）；确认本轮不能继续时标 `consumed`（`--note` 写阻塞原因），避免 runtime 反复唤起，ledger 的决定状态不变。没有可执行动作但决定未收尾（例如「先不回」「无需动作」）时，在 inbox 写明保持暂停，标 `consumed`（`--note`），不要伪造 `unpaused`。**这种情况不发 `done`**：没有执行结果可报，发一条结果通知只会打扰本人；也**不发 `summary`**。
+3. 已决定但不是 `done`：先看 `ledger decision` 的 `steps` 和 `stepState`。有 pending / uncertain / failed_no_send / needs_review 或 state:failed 时按第 2.2 节第 2、3 步停下并请本人核对（uncertain 的事项记录按[结果不明事项](../../shared/notify.md#结果不明事项)沿用原决定）；确认本轮不能继续时标 `consumed`（`--note` 写阻塞原因），避免 runtime 反复唤起，ledger 的决定状态不变。没有可执行动作但决定未收尾（例如「先不回」「无需动作」）时，在 inbox 写明保持暂停，标 `consumed`（`--note`），不要伪造 `unpaused`。**这种情况不发 `done`**：没有执行结果可报，发一条结果通知只会打扰本人；也**不发 `summary`**。
 4. 「待处理」事项：确认本人已完成（inbox 标题为「已处理」或本人说明），在事项末尾补「已执行」；没有外发动作，用这一结果版本保存的稳定正文发一条 `done` 说明已处理，然后标 `consumed`。
 5. 收尾只做一次：done 已有 sent 回执返回 `already_sent`，仅排队则 `already_queued`，不能当作已送达；consumed 后 runtime 不再因这条回复自动唤起，未投递通知仍由 outbox 保留。
 6. 全局暂停或本轮显式禁发时，第 2–5 步都不做，保留 `ready`；恢复 / 下一轮再收尾。
