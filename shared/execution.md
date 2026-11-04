@@ -52,7 +52,7 @@ browser 当前为空对象或缺失，不要求补设；浏览器能力按 [工�
 
 ## 5. 外发前 guard 与证据三分类
 
-可能外发前先成功写入 `pending`，保留返回的 `attemptId`。每个可能外发的动作之前都执行 `guard --run <runId> --attempt <attemptId>`，通过后立即执行；失败就不点击、不新建尝试。首次沟通、发送文字、工具栏发简历、附件确认、卡片同意等分别 guard，不能用一次 guard 覆盖多个动作。等待、卡顿或工具超时后先重新读页面，再 guard；不能沿用旧放行。
+可能外发前先用 `ledger prepare --run <runId> --json '<意图>'` 成功写入 pending，保留返回的 attemptId；禁止 append 动作 pending。限制、授权与原文规则见[发送准备](sending.md)。每个可能外发的动作之前都执行 `guard --run <runId> --attempt <attemptId>`，通过后立即执行；失败就不点击、不新建尝试。首次沟通、发送文字、工具栏发简历、附件确认、卡片同意等分别 guard，不能用一次 guard 覆盖多个动作。等待、卡顿或工具超时后先重新读页面，再 guard；不能沿用旧放行。
 
 一次工具动作不等于一次业务尝试；一个 attempt 可包含多个动作。runtime 须将请求绑定、完整输出、执行状态与环境状态分开判定，不能用窗口不可访问证明动作未执行。
 

@@ -114,7 +114,9 @@ class ReleaseRecoveryDataTest(unittest.TestCase):
         ev = {"platform": "boss", "runId": "old", "skill": "apply", "kind": "greet",
               "status": "pending", "company": "合成公司", "reason": "测试，未操作平台"}
         ev.update(fields)
-        code, out = self.run_ledger("append", "--json", json.dumps(ev))
+        # 收尾/恢复只审计已有中间态，不用本轮发送权限制造历史。
+        import history_fixture
+        code, out = history_fixture.append_action(self.ws, ev)
         self.assertEqual(code, 0, out)
         return out["event"]
 

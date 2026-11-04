@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import ledger
 import workspace
+import history_fixture
 
 
 class TailTest(unittest.TestCase):
@@ -52,6 +53,14 @@ class TailTest(unittest.TestCase):
         event = dict(self.identity, runId="run-tail", skill="followup", reason="合成测试")
         event.update(fields)
         return self.run_cli("append", "--json", json.dumps(event, ensure_ascii=False))
+
+    def history(self, **fields):
+        """显式构造旧动作记录，供尾部审计使用；不验证本轮发送授权。"""
+        if fields.get("kind") not in ledger.ACTION_KINDS:
+            return self.append(**fields)
+        event = dict(self.identity, runId="run-tail", skill="followup", reason="合成历史夹具")
+        event.update(fields)
+        return history_fixture.append_action(self.ws, event)
 
     def message(self, text="私密HR原文A", label="今天 10:32", **extra):
         return dict(type="text", text=text, label=label, **extra)
@@ -131,10 +140,10 @@ class TailTest(unittest.TestCase):
         return out
 
     def send(self, text="本人批准的 回复", **extra):
-        code, out = self.append(kind="reply", status="pending", text=text, **extra)
+        code, out = self.history(kind="reply", status="pending", text=text, **extra)
         self.assertEqual(code, 0, out)
         aid = out["event"]["attemptId"]
-        code, out = self.append(kind="reply", status="sent", attemptId=aid, text=text, **extra)
+        code, out = self.history(kind="reply", status="sent", attemptId=aid, text=text, **extra)
         self.assertEqual(code, 0, out)
         return aid
 
@@ -307,7 +316,7 @@ class TailTest(unittest.TestCase):
         aid = self.send(company="其他公司")
         result = self.ok_tail(self.bridge_body(aid), base=base["tailId"])
         self.assertFalse(result["settled"])
-        code, pending = self.append(kind="reply", status="pending", text="本人批准的 回复")
+        code, pending = self.history(kind="reply", status="pending", text="本人批准的 回复")
         self.assertEqual(code, 0, pending)
         aid = pending["event"]["attemptId"]
         self.assertEqual(self.append(kind="reply", status="uncertain", attemptId=aid)[0], 0)
@@ -429,7 +438,7 @@ class TailTest(unittest.TestCase):
 
     def test_card_send_can_prove_a_bridge_but_old_or_mismatched_time_cannot(self):
         base = self.ok_tail()
-        code, out = self.append(kind="resume", status="pending", resume="版本A")
+        code, out = self.history(kind="resume", status="pending", resume="版本A")
         self.assertEqual(code, 0, out)
         aid = out["event"]["attemptId"]
         self.assertEqual(self.append(kind="resume", status="sent", attemptId=aid, resume="版本A")[0], 0)
@@ -517,7 +526,7 @@ class TailTest(unittest.TestCase):
 
     def test_bridge_cannot_use_a_retargeted_terminal_as_identity_proof(self):
         base = self.ok_tail()
-        code, out = self.append(kind="reply", status="pending", recruiter="另一个招聘者(HR)", text="本人批准的 回复")
+        code, out = self.history(kind="reply", status="pending", recruiter="另一个招聘者(HR)", text="本人批准的 回复")
         self.assertEqual(code, 0, out)
         aid = out["event"]["attemptId"]
         # append 的完整身份冻结留给 T5.3；此处只检验 bridge 不信冲突记录。
@@ -798,7 +807,7 @@ print(json.dumps({"count": len(events), "errors": errors}), flush=True)
 
     def test_history_cannot_clear_review_while_a_send_is_unresolved(self):
         base = self.ok_tail()
-        self.assertEqual(self.append(kind="reply", status="pending", text="合成待核对发送")[0], 0)
+        self.assertEqual(self.history(kind="reply", status="pending", text="合成待核对发送")[0], 0)
         current = self.ok_tail(base=base["tailId"])
         self.assertFalse(current["settled"])
         self.patch_tail(current, reviewRequired=False, settled=True, reason="same", newCount=0)

@@ -178,7 +178,7 @@ class ExecutionRulesTest(unittest.TestCase):
 
     def test_core_scripts_have_no_external_execution_except_build_git(self):
         scripts = sorted((ROOT / "scripts").glob("*.py"))
-        self.assertEqual({p.name for p in scripts}, {"ledger.py", "workspace.py", "notify.py", "build.py", "fsutil.py", "platforms.py"})
+        self.assertEqual({p.name for p in scripts}, {"ledger.py", "workspace.py", "notify.py", "build.py", "fsutil.py", "platforms.py", "outbound.py"})
         for source in scripts:
             content = source.read_text(encoding="utf-8")
             with self.subTest(source=source):

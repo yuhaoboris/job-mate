@@ -12,6 +12,7 @@ from unittest.mock import patch
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import ledger  # noqa: E402
+import history_fixture
 
 TZ = ledger.fsutil.tz_from_name("Asia/Shanghai")
 
@@ -23,9 +24,28 @@ class Workspace:
         (self.path / "job-mate.json").write_text(json.dumps({
             "schemaVersion": 1, "suiteVersion": "1.0.0", "accounts": {"boss": {"accountKey": "zhipin-test"}},
         }))
-        (self.path / "profile.json").write_text(json.dumps({"schemaVersion": 2}))
+        # 生命周期旧用例固定在可发送配置下；授权缺省/真值表由 test_prepare 单独测试。
+        (self.path / "profile.json").write_text(json.dumps({"schemaVersion": 2,
+            "authorization": {"apply": {"send": True}}, "limits": {"minSendIntervalSeconds": 0},
+            "schedule": {"activeHours": {"weekdays": [1, 2, 3, 4, 5, 6, 7], "start": "00:00", "end": "23:59"}}}))
 
     def run(self, *argv, stdin=None):
+        # 旧业务检查用例补齐完整预检意图，仍走真实的只读同路径 check。
+        if argv and argv[0] == "check":
+            argv = list(argv)
+            current = ledger.read_lock(self.path)
+            if not current:
+                self.ensure_lock("run-1")
+                current = ledger.read_lock(self.path)
+            if "--run" not in argv:
+                argv += ["--run", current["runId"]]
+            resume_kind = "--kind" in argv and argv[argv.index("--kind") + 1] == "resume"
+            if "--text" not in argv and not resume_kind:
+                argv += ["--text", "合成文字"]
+            if "--target-role" not in argv:
+                argv += ["--target-role", "前端开发"]
+            if "--kind" in argv and argv[argv.index("--kind") + 1] == "resume":
+                argv += ["--resume", "合成版本"]
         out = io.StringIO()
         old_stdin = sys.stdin
         if stdin is not None:
@@ -61,14 +81,31 @@ class Workspace:
         base.update(ev)
         if lock and base.get("status") == "pending":
             self.ensure_lock(base["runId"])
+        if base.get("status") == "pending" and "attemptId" not in base:
+            body = {key: value for key, value in base.items() if key in ledger.INTENT_FIELDS}
+            if body["kind"] != "resume":
+                body.setdefault("text", "合成文字")
+            body.setdefault("targetRole", "前端开发")
+            code, out = self.run("prepare", "--run", base["runId"], "--json", json.dumps(body, ensure_ascii=False))
+            if code == 0:
+                out["event"] = next(e for e in ledger.read_events(self.path)[0] if e["eventId"] == out["eventId"])
+            return code, out
         return self.run("append", "--json", json.dumps(base, ensure_ascii=False))
 
+    def history(self, **ev):
+        base = {"platform": "boss", "runId": "run-1", "skill": "apply", "kind": "greet", "company": "示例科技",
+                "title": "前端开发", "location": "东莞", "reason": "合成历史", "evidence": None}
+        base.update(ev)
+        return history_fixture.append_action(self.path, base)
+
     def greet(self, final="sent", **ev):
-        code, out = self.append(status="pending", **ev)
+        """历史联系数据，不声明通过当前发送授权；门禁用例直接调用 prepare。"""
+        self.ensure_lock(ev.get("runId", "run-1"))
+        code, out = self.history(status="pending", **ev)
         assert code == 0, out
         aid = out["event"]["attemptId"]
         if final:
-            code, out = self.append(status=final, attemptId=aid, **ev)
+            code, out = self.history(status=final, attemptId=aid, **ev)
             assert code == 0, out
         return aid
 
@@ -103,17 +140,20 @@ class LedgerTest(unittest.TestCase):
         self.ws.greet(jobId="A1")
         code, out = self.ws.run("check", "--platform", "boss", "--company", "示例科技", "--job-id", "B2")
         self.assertEqual(code, 1)
-        self.assertEqual(out["reasons"][0]["type"], "same_company")
+        self.assertEqual(out["reasons"][0]["code"], "already_contacted")
 
     def test_check_job_scope_allows_other_job_but_flags_repost(self):
         self.ws.greet(jobId="A1")
+        profile = ledger.load_profile(self.ws.path)
+        profile["limits"]["dedupScope"] = "job"
+        ledger.write_atomic(self.ws.path / "profile.json", json.dumps(profile))
         code, _ = self.ws.run("check", "--platform", "boss", "--company", "示例科技",
                               "--title", "后端开发", "--job-id", "B2", "--scope", "job")
         self.assertEqual(code, 0)
         code, out = self.ws.run("check", "--platform", "boss", "--company", "示例科技",
                                 "--title", "前端开发", "--job-id", "B2", "--scope", "job")
         self.assertEqual(code, 1)
-        self.assertEqual(out["reasons"][0]["type"], "reposted_suspect")
+        self.assertEqual(out["reasons"][0]["code"], "reposted_suspect")
 
     def test_pending_and_uncertain_block_skipped_does_not(self):
         self.ws.greet(final=None, company="甲公司")
@@ -129,6 +169,7 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("本人核对", out["error"])
         self.assertEqual(self.ws.append(status="failed_no_send", attemptId=aid, company="乙公司", skill="user")[0], 0)
+        self.ws.ensure_lock("run-2")
         self.assertEqual(self.ws.run("check", "--platform", "boss", "--company", "乙公司", "--run", "run-2")[0], 0)
         aid = self.ws.greet(final="sent", company="丁公司")
         self.assertEqual(self.ws.append(status="failed_no_send", attemptId=aid, company="丁公司", skill="user")[0], 2)
@@ -148,6 +189,7 @@ class LedgerTest(unittest.TestCase):
     def test_failed_no_send_blocks_only_same_run(self):
         self.ws.greet(final="failed_no_send", company="戊公司")
         self.assertEqual(self.ws.run("check", "--platform", "boss", "--company", "戊公司", "--run", "run-1")[0], 1)
+        self.ws.ensure_lock("run-2")
         self.assertEqual(self.ws.run("check", "--platform", "boss", "--company", "戊公司", "--run", "run-2")[0], 0)
 
     def test_stoplist_exact_alias_and_suspect(self):
@@ -156,10 +198,10 @@ class LedgerTest(unittest.TestCase):
                               "--reason", "人员外包", "--source", "本人")
         self.assertEqual(code, 0)
         code, out = self.ws.run("check", "--platform", "boss", "--company", "ISOFTSTONE")
-        self.assertEqual(out["reasons"][0]["type"], "stoplist")
+        self.assertEqual(out["reasons"][0]["code"], "stoplist")
         code, out = self.ws.run("check", "--platform", "boss", "--company", "软通动力东莞分公司")
         self.assertEqual(code, 1)
-        self.assertEqual(out["reasons"][0]["type"], "stoplist_suspect")
+        self.assertEqual(out["reasons"][0]["code"], "stoplist_suspect")
         code, out = self.ws.run("stoplist", "add", "--name", "软通动力", "--reason", "重复", "--source", "本人")
         self.assertFalse(out["added"])
 
@@ -215,7 +257,7 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(out["tookOverFrom"]["runId"], run2)
         self.assertEqual(out["reconciled"][0]["company"], "中断公司")
         _, chk = self.ws.run("check", "--platform", "boss", "--company", "中断公司")
-        self.assertIn("uncertain", chk["reasons"][0]["detail"])
+        self.assertEqual(chk["reasons"][0]["code"], "unresolved")
 
     def test_release_reconciles_pending_before_next_acquire(self):
         aid = self.ws.greet(final=None, company="释放样例")
@@ -286,7 +328,7 @@ class LedgerTest(unittest.TestCase):
         self.assertIn("收尾失败", out["error"])
         self.assertTrue(ledger.read_lock(self.ws.path)["releasing"])
         self.assertEqual(self.ws.run("guard", "--run", "run-1", "--attempt", ids[1])[0], 2)
-        self.assertEqual(self.ws.append(status="pending", company="禁止继续", lock=False)[0], 2)
+        self.assertEqual(self.ws.append(status="pending", company="禁止继续", lock=False)[0], 1)
         self.assertEqual(self.ws.run("lock", "renew", "--run", "run-1")[0], 1)
         self.assertEqual(self.ws.run("lock", "acquire", "--skill", "apply", "--run", "run-1")[0], 1)
         self.assertEqual(self.ws.run("lock", "acquire", "--skill", "followup", "--run", "next")[0], 1)
@@ -411,19 +453,19 @@ class LedgerTest(unittest.TestCase):
                 self.ws.run("lock", "release", "--run", "live")
 
     def test_pending_requires_live_lock(self):
-        self.assertEqual(self.ws.append(status="pending", lock=False)[0], 2)
+        self.assertEqual(self.ws.append(status="pending", lock=False)[0], 1)
         self.ws.ensure_lock("old")
         self.ws.expire_lock()
         code, out = self.ws.append(status="pending", runId="old", lock=False)
-        self.assertEqual(code, 2)
-        self.assertIn("过期", out["error"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out["reasons"][0]["code"], "lock_invalid")
         self.assertEqual(self.ws.run("lock", "renew", "--run", "old")[0], 0)
         self.assertEqual(self.ws.append(status="pending", runId="old", lock=False)[0], 0)
         self.ws.expire_lock()
         self.assertEqual(self.ws.run("lock", "acquire", "--skill", "followup", "--run", "new")[0], 0)
         code, out = self.ws.append(status="pending", runId="old", company="失锁样例", lock=False)
-        self.assertEqual(code, 2)
-        self.assertIn("未持有", out["error"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out["reasons"][0]["code"], "lock_invalid")
         self.assertEqual(self.ws.run("lock", "renew", "--run", "old")[0], 1)
 
     def test_pending_renews_lock(self):
@@ -439,8 +481,8 @@ class LedgerTest(unittest.TestCase):
     def test_no_send_lock_rejects_pending(self):
         self.assertEqual(self.ws.run("lock", "acquire", "--skill", "followup", "--run", "ro", "--no-send")[0], 0)
         code, out = self.ws.append(status="pending", runId="ro", lock=False)
-        self.assertEqual(code, 2)
-        self.assertIn("禁发", out["error"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out["reasons"][0]["code"], "no_send")
         self.assertEqual(self.ws.append(kind="observe", observed="replied", runId="ro", lock=False)[0], 0)
 
     def test_global_pause_blocks_pending_and_guard_until_resumed(self):
@@ -454,8 +496,8 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("暂停", out["error"])
         code, out = self.ws.append(status="pending", runId="run-p", company="暂停样例二", lock=False)
-        self.assertEqual(code, 2)
-        self.assertIn("暂停", out["error"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out["reasons"][0]["code"], "paused")
         # 终态和观察记录已经发生的事实，暂停时照常可写
         self.assertEqual(self.ws.append(status="uncertain", runId="run-p", attemptId=aid,
                                         company="暂停样例", lock=False)[0], 0)
@@ -464,7 +506,7 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(acq["paused"]["by"], "im")
         self.assertEqual(self.ws.run("pause", "off", "--by", "im")[0], 0)
         self.assertIsNone(self.ws.run("pause", "status")[1]["paused"])
-        self.assertEqual(self.ws.append(status="pending", runId="run-q", company="暂停样例三", lock=False)[0], 0)
+        self.assertEqual(self.ws.append(status="pending", runId="run-q", company="恢复后的独立公司", lock=False)[0], 0)
 
     def test_concurrent_takeover_only_one_wins(self):
         for round_ in range(5):
@@ -484,7 +526,7 @@ class LedgerTest(unittest.TestCase):
         self.ws.greet(final=None, kind="reply", skill="followup", company="回复样例", recruiter="王女士(HR)")
         code, out = self.ws.run("check", "--platform", "boss", "--company", "回复样例")
         self.assertEqual(code, 1)
-        self.assertEqual(out["reasons"][0]["type"], "same_company")
+        self.assertEqual(out["reasons"][0]["code"], "unresolved")
 
     def test_conversation_check_blocks_unresolved_manual_paused(self):
         common = dict(company="会话样例", recruiter="李女士(HR)")
@@ -495,15 +537,15 @@ class LedgerTest(unittest.TestCase):
         self.ws.append(kind="observe", observed="paused", decision="D-20261028-01", skill="followup", **common)
         code, out = chk()
         self.assertEqual(code, 1)
-        self.assertEqual(out["reasons"][0]["type"], "paused")
-        self.assertEqual(chk("--decision", "D-20261028-01")[0], 0)
+        self.assertEqual(out["reasons"][0]["code"], "thread_paused")
+        self.assertEqual(chk("--decision", "D-20261028-01", "--step", "reply1")[0], 1)  # 字符串不是决定授权
         self.ws.append(kind="observe", observed="manual", skill="followup", **common)
-        self.assertEqual(chk()[1]["reasons"][0]["type"], "manual")
+        self.assertEqual(chk()[1]["reasons"][0]["code"], "thread_manual")
         self.ws.append(kind="observe", observed="unpaused", decision="D-20261028-01", skill="followup", **common)
         self.ws.append(kind="observe", observed="released", skill="user", **common)
         self.assertEqual(chk()[0], 0)
         self.ws.greet(final=None, kind="reply", skill="followup", **common)
-        self.assertEqual(chk()[1]["reasons"][0]["type"], "unresolved")
+        self.assertEqual(chk()[1]["reasons"][0]["code"], "unresolved")
 
     def test_decision_state(self):
         common = dict(company="决策样例", recruiter="周先生(HR)", kind="reply", skill="followup",
@@ -571,32 +613,34 @@ class LedgerTest(unittest.TestCase):
         self.ws.greet(final="uncertain", company="品牌名称", jobId="same-id")
         code, out = self.ws.run("check", "--platform", "boss", "--company", "登记公司", "--job-id", "same-id")
         self.assertEqual(code, 1)
-        self.assertEqual(out["reasons"][0]["type"], "same_job")
+        self.assertEqual(out["reasons"][0]["code"], "unresolved")
 
     def test_declined_inbound_stays_closed_until_reopened(self):
         common = dict(company="入站样例", recruiter="王女士(HR)", skill="followup")
         chk = lambda kind: self.ws.run("check", "--platform", "boss", "--kind", kind,
                                        "--company", "入站样例", "--recruiter", "王女士(HR)")
         self.ws.append(kind="observe", observed="declined", reason="薪资不符", **common)
-        for kind in ("reply", "resume", "nudge"):
+        for kind in ("reply", "resume"):
             code, out = chk(kind)
             self.assertEqual(code, 1, kind)
-            self.assertEqual(out["reasons"][0]["type"], "closed")
+            self.assertEqual(out["reasons"][0]["code"], "thread_closed")
         self.ws.append(kind="observe", observed="reopened", reason="HR 推荐了新职位，评估符合", **common)
         self.assertEqual(chk("reply")[0], 0)
         self.ws.append(kind="observe", observed="rejected", reason="对方婉拒", **common)
         self.ws.append(kind="observe", observed="reopened", reason="误用", **common)
-        self.assertEqual(chk("reply")[1]["reasons"][0]["type"] in ("closed", "rejected"), True)
+        self.assertEqual(chk("reply")[1]["reasons"][0]["code"] in ("thread_closed", "company_rejected"), True)
 
     def test_manual_blocks_even_with_decision(self):
         common = dict(company="接管样例", recruiter="赵先生(HR)", skill="followup")
         self.ws.greet(**dict(common, skill="apply"))
         self.ws.append(kind="observe", observed="paused", decision="D-20261028-01", **common)
         self.ws.append(kind="observe", observed="manual", **common)
+        self.ws.append(kind="observe", observed="decision", version=1, decision="D-20261028-01",
+                       steps=[{"step": "reply1", "kind": "reply", "text": "合成文字"}], **common)
         code, out = self.ws.run("check", "--platform", "boss", "--kind", "reply", "--company", "接管样例",
-                                "--recruiter", "赵先生(HR)", "--decision", "D-20261028-01")
+                                "--recruiter", "赵先生(HR)", "--decision", "D-20261028-01", "--step", "reply1")
         self.assertEqual(code, 1)
-        self.assertIn("manual", [r["type"] for r in out["reasons"]])
+        self.assertIn("thread_manual", [r["code"] for r in out["reasons"]])
 
     def test_non_send_decision_done_and_still_pausing(self):
         common = dict(company="决定样例", recruiter="钱女士(HR)", skill="followup")
@@ -669,14 +713,17 @@ class LedgerTest(unittest.TestCase):
         out = self.ws.run("decision", "--id", d, "--step", "reply1")[1]
         self.assertEqual(out["state"], "needs_review")
         self.assertEqual(out["stepState"], "needs_review")
+        self.ws.append(kind="observe", observed="decision", decision=d, version=1, title=None,
+                       steps=[{"step": "reply1", "kind": "reply", "text": "合成文字"}], **c)
+        self.ws.ensure_lock("run-1")
         code, chk = self.ws.run("check", "--platform", "boss", "--kind", "reply", "--company", c["company"],
-                                "--recruiter", c["recruiter"], "--decision", d, "--run", "run-1")
+                                "--recruiter", c["recruiter"], "--decision", d, "--step", "reply1", "--run", "run-1")
         self.assertEqual(code, 1)
-        self.assertIn("decision_needs_review", [r["type"] for r in chk["reasons"]])
+        self.assertIn("decision_needs_review", [r["code"] for r in chk["reasons"]])
         code, err = self.ws.append(kind="reply", status="pending", step="reply1", decision=d,
                                    skill="followup", **c)
-        self.assertEqual(code, 2)
-        self.assertIn("核对", err["error"])
+        self.assertEqual(code, 1)
+        self.assertEqual(err["reasons"][0]["code"], "decision_needs_review")
         # 本人核对确认已全部完成 → 记完成标记
         self.ws.append(kind="observe", observed="unpaused", decision=d, skill="user", **c)
         self.assertEqual(self.ws.run("decision", "--id", d)[1]["state"], "done")
@@ -716,7 +763,7 @@ class LedgerTest(unittest.TestCase):
             self.ws.append(kind="observe", observed=obs, company="关闭样例", recruiter="王女士(HR)", skill="followup")
         code, out = chk("关闭样例")
         self.assertEqual(code, 1)
-        self.assertIn("job_closed", out["reasons"][0]["detail"])
+        self.assertEqual(out["reasons"][0]["code"], "thread_closed")
         self.ws.append(kind="observe", observed="job_closed", company="直接样例", recruiter="王女士(HR)", skill="followup")
         self.ws.append(kind="observe", observed="reopened", company="直接样例", recruiter="王女士(HR)", skill="followup")
         self.assertEqual(chk("直接样例")[0], 1)
@@ -738,8 +785,8 @@ class LedgerTest(unittest.TestCase):
         self.ws.greet(kind="reply", skill="followup", company="多次样例", recruiter="甲(HR)")
         code, out = self.ws.run("check", "--platform", "boss", "--company", "多次样例")
         self.assertEqual(code, 1)
-        self.assertEqual([r["type"] for r in out["reasons"]], ["same_company"])
-        self.assertIn("reply", out["reasons"][0]["detail"])
+        self.assertEqual([r["code"] for r in out["reasons"]], ["already_contacted"])
+        self.assertIn("reply", out["reasons"][0]["message"])
 
     def test_guard_requires_lock_and_pending(self):
         self.ws.ensure_lock("run-a")
@@ -816,9 +863,9 @@ class LedgerTest(unittest.TestCase):
 
     def test_observe_rejected_blocks_company(self):
         self.ws.append(kind="observe", observed="rejected", company="己公司", skill="followup")
-        code, out = self.ws.run("check", "--platform", "boss", "--company", "己公司", "--scope", "job")
+        code, out = self.ws.run("check", "--platform", "boss", "--company", "己公司")
         self.assertEqual(code, 1)
-        self.assertEqual(out["reasons"][0]["type"], "rejected")
+        self.assertEqual(out["reasons"][0]["code"], "company_rejected")
 
 class CurrentTakeoverTest(unittest.TestCase):
     """当前会话交还、读取分界与模糊活动确认，不涉及旧数据。"""

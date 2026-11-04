@@ -19,7 +19,8 @@ class DerivationTest(unittest.TestCase):
         self.f.tearDown()
 
     def event(self, **fields):
-        code, out = self.f.append(**fields)
+        # 这里审计历史事实（含旧错绑中间态），发送门禁另由 test_prepare 覆盖。
+        code, out = self.f.history(**fields)
         self.assertEqual(code, 0, out)
         return out["event"]
 

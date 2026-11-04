@@ -86,14 +86,17 @@ class AccountTest(unittest.TestCase):
         self.x.action(kind="greet")
         self.x.event(kind="observe", observed="rejected")
         self.current("second")
-        code, out = self.f.run_cli("check", "--platform", "boss", "--company", "合成公司")
+        ledger.write_atomic(self.f.ws / "profile.json", json.dumps({"authorization": {"apply": {"send": True}}}))
+        code, out = self.f.run_cli("check", "--platform", "boss", "--company", "合成公司", "--run", "run-tail",
+                                   "--text", "合成招呼", "--target-role", "开发")
         self.assertEqual(code, 0, out)
         code, out = self.f.run_cli("quota", "--platform", "boss", "--run", "run-tail")
         self.assertEqual(code, 0, out)
         self.assertEqual(out["account"], "second")
         self.assertEqual(out["greetsToday"], 0)
         self.assertIsNone(out["secondsSinceLastSend"])
-        code, out = self.f.run_cli("check", "--platform", "testplat", "--company", "合成公司")
+        code, out = self.f.run_cli("check", "--platform", "testplat", "--company", "合成公司", "--run", "run-tail",
+                                   "--text", "合成招呼", "--target-role", "开发")
         self.assertEqual(code, 0, out)
 
     def test_info_questions_pending_tail_and_threads_do_not_cross_accounts(self):

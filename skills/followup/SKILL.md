@@ -27,7 +27,7 @@ description: 巡检招聘平台（首批 BOSS 直聘）的 HR 会话：分类新
 3. 确定本轮能否发送，优先级从高到低：
    1. **本轮显式禁发**：本人这轮说「只看看」「这次别发」等，本轮任何消息都不发，**包括此前已批准的事项**。它只作用于本轮，`ready` 回复保留到下一轮，不消费。
    2. **全局暂停**：本人回过「暂停」，或技能遇到风控、安全校验、登录失效后自动暂停。它同样是临时状态：本轮不发，`ledger` 也会拒绝新的外发，但 **`ready` 回复必须保留**，恢复后继续。
-   3. **授权级别**：`authorization.followup.level`，默认 `L2`。
+   3. **授权**：`authorization.followup.reply` 默认 L2；nudge 是独立开关，默认 true。取锁前问清本轮动作、目标与数量，收窄登记 --restrict；权限不足且本人明确追加时另登记 --grant，两者不能代替，详见[发送准备](../../shared/sending.md)。
 4. **获取运行锁之前**，所有 runtime 先按 [加锁前能力自检](../../shared/execution.md#1-加锁前能力自检) 校验工作区 / 核心脚本、所选 `profile.browser`、可见浏览器操作及结果证据能力。配置非法或偏好不支持时不操作平台、不回退；缺外发证据用 `--no-send` 锁。不能读写工作区或运行脚本时不写记录、不外发，仅基于已有可读资料筛选并汇报。平台不可用而仍需本地对账时仅用禁发锁，按 [环境受阻与恢复](../../shared/execution.md#7-环境受阻通知与恢复) 分流 ready。获取运行锁：本轮显式禁发或能力要求禁发时 `ledger lock acquire --skill followup --no-send`，否则 `ledger lock acquire --skill followup`。记下 `runId`。被占用时说明占用者并结束；持锁后先执行第 2.1 节入口对账（含 `reconciled`），再同步 IM 或准备浏览器。禁发锁拒绝新的外发；`paused` 不为空表示已全局暂停：仅同步 IM、改 inbox、不浏览平台，`ready` 不消费。运行锁不是执行器强单实例，runtime 须自己保证旧实例及后代已停止。
 5. 未全局暂停且环境可读取时，按 browser/README.md 准备浏览器，核对账号。全局暂停时不浏览平台、不查找旧会话。
 
@@ -35,7 +35,8 @@ description: 巡检招聘平台（首批 BOSS 直聘）的 HR 会话：分类新
 |---|---|
 | L1 | 只读、分诊、起草；草稿写入 inbox 由本人决定。只执行本人已决定的事项 |
 | L2 | L1 + 按 `qa.yaml` 回答有依据的问题、对方索要时发简历 |
-| L3 | L2 + 按第 6 节主动跟进 |
+
+当前 nudge 策略尚未启用，prepare 一律拒绝；旧 canFollowup 与下文旧跟进节奏都不是外发授权，不执行第 6 节。
 
 **由定时任务运行时**：先同步 IM，执行已落盘的决定，处理相关会话后收尾；定时执行与进程互斥由所用 Agent 或系统负责。
 
@@ -100,7 +101,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 | `stepState` | 处理 |
 |---|---|
-| `not_started` | 按第 5 节发送；`check` 带 `--decision <ID>`，`pending` 带 `decision` 和 `step` |
+| `not_started` | 按第 5 节发送；check / prepare 的完整意图带 decision 与 step，脚本冻结有效 decisionVersion |
 | `pending` / `uncertain` | 未确认外发：只核对原 attempt，不新建尝试；看不清请本人核对，**这个事项到此为止** |
 | `sent` | 已发出，跳过，不要再发 |
 | `failed_no_send` | 上次明确未发出：本轮不重试，**这个事项到此为止**，在汇报中说明 |
@@ -127,7 +128,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 ## 3. 巡检会话
 
-1. 打开消息列表，先处理有未读标记的会话，再处理 `ledger threads --platform boss` 中 `canFollowup` 为 `true` 的会话（仅 L3）。
+1. 打开消息列表，先处理有未读标记的会话，再处理 `ledger threads --platform boss` 中 `canFollowup` 为 `true` 的会话（当前不执行主动跟进）。
 2. 本轮处理的会话数以本人指令为准；未说明时处理全部未读和待跟进会话。列表懒加载时滚动加载，读到已处理过的旧会话为止。
 3. 对每个会话，读完整上下文：从我方第一条消息或最近 20 条消息起，包括 HR 的请求卡片（交换联系方式、简历请求、面试邀约）。不只看列表摘要。
 4. 用 `ledger threads --company <公司> --recruiter <姓名(职务)>` 查本地状态。招聘者写法见平台通用页面要点。
@@ -181,7 +182,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 | HR 提问，`qa.yaml` 有对应口径 | 按第 5.1 节回答 |
 | HR 提问，`qa.yaml` 没有依据 | 不回答；写入 inbox，附上建议口径草稿和所需依据。本人答复后，提议把口径加入 `qa.yaml`，本人确认再写入 |
 | HR 回复了但无需回答（如「好的」「收到」） | 记 `observe/replied`；不必回复 |
-| 我方最后发言，HR 未回 | 仅 L3：第 6 节 |
+| 我方最后发言，HR 未回 | 当前不外发主动跟进 |
 
 **接管分界（所有会话）**：用 `threads.boundaryAt`，取本地 `sent` 时间、登记的 `readAt`、最近交还 `released` 事件时间中的最晚者。登记不用写入时间；交还不能把分界推到未来。
 
@@ -207,9 +208,9 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 回复、发简历、主动跟进、执行已决定事项，**每一次**发送都先过这几步，任何一步不通过就不发：
 
 1. 本轮未禁发。
-2. `ledger check --platform boss --kind <reply|resume|nudge> --company <公司> --recruiter <姓名(职务)> --run <runId>`（执行已决定事项时加 `--decision <ID>`）返回 `allowed: true`。它会检查停止名单、会话是否结束、本人接管、等待决定的暂停、未确认的外发，以及主动跟进的条件。
+2. `ledger check --run <runId> --json '<完整意图>'` 返回 allowed:true。意图含 kind、页面身份、text 或 resume、reason；执行决定还含 decision、step。使用[发送准备](../../shared/sending.md)的同一路径，不能只带事项字符串绕过暂停。
 3. 重读会话末尾：如果出现了新消息，回到第 4 节重新判断。
-4. `ledger append` 一条 `pending`（执行已决定事项时带 `decision`）。返回错误（如已失去运行锁、本轮禁发）时**立即停止整轮**。
+4. `ledger prepare --run <runId> --json '<同一完整意图>'` 原子准备 pending，不传 status 或冻结字段。返回错误（如已失去运行锁、本轮禁发）时**立即停止整轮**。
 5. **每一次**可能把消息发出去的点击（「发送」「同意」「发简历」的确认按钮）之前，执行 `ledger guard --run <runId> --attempt <attemptId>`，返回 `allowed: true` 后**立即**点击，中间不做别的事。返回失败说明已失锁或该尝试已被改记，**立即停止整轮**：不点击，也不为同一条消息新建尝试；结果交给本人核对。中途有过等待、卡顿或工具超时，点击前重新读页面再 `guard`。
 
 ### 5.1 回复
@@ -236,7 +237,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 
 5. 对方查看后记 `observe/resume_viewed`。请求发出不等于附件送达，汇报中分开写。
 
-## 6. 主动跟进（仅 L3）
+## 6. 主动跟进（当前未启用）
 
 1. 只跟进 `ledger threads` 返回 `canFollowup: true` 的会话；第 5.0 节的 `check --kind nudge` 会再核对一次：每天至多 1 次、连续 2 次未回停 7 天、总数至多 3 次、未接管、未暂停、未结束。
 2. 还要满足页面状态：我方最后一条消息「已读」满 1 小时未回，或「送达」满 1 小时仍未读。以消息气泡上的时间起算，不从记录写入时间算。

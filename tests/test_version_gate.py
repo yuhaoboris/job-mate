@@ -26,6 +26,11 @@ ENTRY_CASES = [
     ("ledger", "decision --id D-20260101-01", "read"),
     ("ledger", "guard --run setup-run --attempt att-example", "write"),
     ("ledger", "guard --run setup-run --attempt att-example --platform boss --account main", "write"),
+    ("ledger", "prepare --run setup-run --json {}", "write"),
+    ("ledger", "prepare --run setup-run", "write"),
+    ("ledger", 'check --run setup-run --json {"kind":"reply","platform":"boss","company":"合成","reason":"合成","text":"合成"}', "read"),
+    ("ledger", 'lock acquire --skill followup --restrict {"kinds":["reply"],"scope":{"all":true},"max":0,"quote":"合成"}', "write"),
+    ("ledger", 'lock acquire --skill followup --grant {"item":"reply","scope":{"all":true},"max":1,"quote":"合成"}', "write"),
     ("ledger", "append --json {}", "write"),
     ("ledger", "append", "write"),  # stdin 不能绕过
     ("ledger", "tail --run setup-run --thread boss|main|company|recruiter --read-at 2026-01-01T12:00:00+08:00 --json {}", "write"),

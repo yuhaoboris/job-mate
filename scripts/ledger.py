@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fsutil  # noqa: E402
+import outbound  # noqa: E402
 from platforms import load_platform  # noqa: E402
 
 SUITE_VERSION = "1.0.0"
@@ -1365,53 +1366,95 @@ def first_contact_reasons(args, events, scope):
     return [{k: v for k, v in r.items() if k != "_at"} for r in latest.values()], job_id
 
 
-def conversation_reasons(args, events, now, tz):
-    """会话内外发（回复、跟进、发简历、补发招呼语）的统一检查。"""
-    reasons = []
-    threads = find_threads(build_threads(events, args.platform, account=args.account), args.company, args.recruiter)
-    for t in threads:
-        who = f"{t['company']} / {t['recruiter'] or '招聘者未知'}"
-        if t["closed"]:
-            reasons.append({"type": "closed", "detail": f"会话已结束（{t['closed']}）：{who}"})
-        if t["unresolved"]:
-            ids = "、".join(u["attemptId"] for u in t["unresolved"])
-            reasons.append({"type": "unresolved", "detail": f"有未确认的外发（{ids}），先核对：{who}"})
-        if t["manual"]:
-            reasons.append({"type": "manual", "detail": f"本人已接管，须本人明确交还（observe/released）后才能发送：{who}"})
-        if args.decision and unstepped_decision_attempts(events, args.decision):
-            reasons.append({"type": "decision_needs_review",
-                            "detail": f"决定 {args.decision} 有不带步骤编号的外发记录，须本人核对后再执行：{who}"})
-        other_pauses = [d for d in t["pausedBy"] if d != args.decision]
-        if other_pauses:
-            reasons.append({"type": "paused", "detail": f"等待本人决定（{'、'.join(other_pauses)}）：{who}"})
-        if args.kind == "nudge":
-            ok, why = followup_eligibility(t, now, tz)
-            if not ok:
-                reasons.append({"type": "followup_not_eligible", "detail": f"{why}：{who}"})
-    if args.kind == "nudge" and not threads:
-        reasons.append({"type": "no_thread", "detail": "本地没有该会话的记录；只有本人明确点名交给 Agent 才能登记（observe/adopted）"})
-    return reasons, threads
+# ---------- 原子发送准备与只读同路径预检 ----------
+
+INTENT_FIELDS = {"kind", "platform", "account", "company", "title", "location", "recruiter", "jobUrl",
+                 "text", "resume", "reason", "targetRole", "jdFacts", "checks", "asks", "tags", "decision", "step", "pageState"}
+
+
+def intent_event(ws, body, run, lock, profile, check_job_id=None):
+    if not isinstance(body, dict) or set(body) - INTENT_FIELDS:
+        raise LedgerError("发送意图含无效字段；status、ID、版本、授权来源、摘要及绑定只能由脚本生成")
+    if not isinstance(body.get("kind"), str) or body["kind"] not in ACTION_KINDS or not body.get("platform"):
+        raise LedgerError("发送意图须有合法 kind / platform")
+    if not isinstance(body.get("company"), str) or not norm_company(body["company"]):
+        raise LedgerError("发送意图须有可辨认的公司")
+    if not isinstance(profile, dict) or not isinstance(profile.get("schedule", {}), dict):
+        raise LedgerError("profile / schedule 须为对象")
+    if (body["kind"] == "resume" and "text" in body) or (body["kind"] != "resume" and "resume" in body):
+        raise LedgerError("文字动作与简历动作不能合并成一个尝试")
+    ev = dict(body)
+    if ev.get("decision") and not ev.get("step"):
+        raise LedgerError("执行具体事项须带 step；事项字符串本身不是授权")
+    if check_job_id is not None:
+        if not isinstance(check_job_id, str) or not check_job_id.strip():
+            raise LedgerError("check --job-id 须为非空页面ID")
+        ev["jobId"] = check_job_id
+    if "account" in ev and (not isinstance(ev["account"], str) or not ev["account"].strip()):
+        raise LedgerError("显式 account 须为非空字符串")
+    ev["account"] = resolve_account(ws, ev["platform"], ev.get("account"))
+    for field in ("text", "resume", "jobUrl"):
+        if field in ev and not isinstance(ev[field], str):
+            raise LedgerError(f"{field} 须为字符串")
+    if ev["kind"] == "resume" and not ev.get("resume", "").strip():
+        raise LedgerError("简历动作须有 resume 版本")
+    if ev.get("jobUrl"):
+        ev["jobUrl"] = normalize_job_url(ev["platform"], ev["jobUrl"])
+        actual_id = job_id_from_url(ev["platform"], ev["jobUrl"])
+        if actual_id and ev.get("jobId") not in (None, actual_id):
+            raise LedgerError("jobId 与链接中可读取的 ID 不符")
+        ev["jobId"] = actual_id or ev.get("jobId")
+    ev.update(schemaVersion=SCHEMA_VERSION, status="pending", runId=run or "read-only-check",
+              skill=(lock or {}).get("skill", "followup"), at=now_iso(tz_of(profile)),
+              attemptId="att-" + uuid.uuid4().hex[:12])
+    ev = prepare_event(ev)
+    errors = validate_event(ev)
+    if errors:
+        raise LedgerError("发送意图不合格：" + "；".join(errors))
+    return ev
+
+
+def prepare_or_check(args, ws, write):
+    with lock_mutex(ws, write=write):
+        profile = load_profile(ws)
+        lock = read_lock(ws)
+        if args.json is not None:
+            body = lock_object(args.json)
+        elif write:
+            body = lock_object(sys.stdin.read())
+        else:
+            body = {"platform": args.platform, "company": args.company, "kind": args.kind,
+                    "reason": args.reason or "只读发送预检"}
+            for source, target in (("account", "account"), ("title", "title"), ("recruiter", "recruiter"),
+                                   ("job_url", "jobUrl"), ("decision", "decision"), ("step", "step"),
+                                   ("text", "text"), ("resume", "resume"), ("target_role", "targetRole")):
+                if getattr(args, source, None) is not None:
+                    body[target] = getattr(args, source)
+        if not write and args.scope is not None and args.scope != effective_limits(profile, body.get("platform"))["dedupScope"]:
+            raise LedgerError("check 不能临时覆盖去重配置；逐个放行须登记 dedup_once")
+        ev = intent_event(ws, body, args.run, lock, profile, getattr(args, "job_id", None))
+        events, _ = read_events(ws)
+        result = outbound.evaluate(sys.modules[__name__], ws, ev, args.run, lock, events, profile)
+        if write and result["allowed"]:
+            ev.update(authorizedBy=result["authorizedBy"], profileRev=config_rev(profile), styleRev=config_rev(profile.get("style", {})),
+                      runPolicyRev=run_policy_rev(lock))
+            for field in ("decisionVersion", "dedupGrant"):
+                if field in result:
+                    ev[field] = result[field]
+            validate_history_event(events, ev)
+            append_line(ws, ev)
+            # 续期失败则保留已落盘 pending，由统一收尾处理，绝不重建尝试。
+            require_live_lock(ws, args.run, tz_of(profile), renew=True)
+            result.update(attemptId=ev["attemptId"], eventId=ev["eventId"])
+        return emit(result, 0 if result["allowed"] else 1)
+
+
+def cmd_prepare(args, ws):
+    return prepare_or_check(args, ws, True)
 
 
 def cmd_check(args, ws):
-    load_platform(args.platform)
-    profile = load_profile(ws)
-    tz = tz_of(profile)
-    args.account = resolve_account(ws, args.platform, args.account)
-    limits = effective_limits(profile, args.platform)
-    scope = args.scope or limits["dedupScope"]
-    events, _ = read_events(ws)
-    reasons = stoplist_reasons(ws, args.company) + company_observation_reasons(events, args.platform, args.account, args.company)
-    out = {"kind": args.kind, "company": args.company, "platform": args.platform, "account": args.account}
-    if args.kind == "greet":
-        more, job_id = first_contact_reasons(args, events, scope)
-        out.update({"jobId": job_id, "dedupScope": scope})
-    else:
-        more, threads = conversation_reasons(args, events, fsutil.now(tz), tz)
-        out["threads"] = len(threads)
-    reasons += more
-    out.update({"allowed": not reasons, "reasons": reasons})
-    return emit(out, 0 if not reasons else 1)
+    return prepare_or_check(args, ws, False)
 
 
 # ---------- 命令：decision ----------
@@ -1644,8 +1687,10 @@ def cmd_append(args, ws):
         raise LedgerError("输入须为 JSON 对象")
     if any(key in ev and not isinstance(ev[key], str) for key in ("kind", "skill", "status", "observed")):
         raise LedgerError("kind、skill、status、observed 须为字符串")
-    if "eventId" in ev:
-        raise LedgerError("eventId 由脚本生成，不能指定")
+    if ev.get("kind") in ACTION_KINDS and ev.get("status") == "pending":
+        raise LedgerError("动作 pending 只能用 ledger prepare 原子准备")
+    if any(field in ev for field in ("eventId", "authorizedBy", "decisionVersion", "dedupGrant", "profileRev", "styleRev", "scopeBindings", "runPolicyRev")):
+        raise LedgerError("ID、授权、版本、摘要与绑定由脚本冻结，不能指定或覆盖")
     if ev.get("kind") == "observe" and ev.get("observed") == "tail":
         raise LedgerError("observe/tail 只能用 ledger tail 写入")
     profile = load_profile(ws)
@@ -1696,7 +1741,12 @@ def cmd_append(args, ws):
             if result is not None:
                 return result
         if ev["kind"] in ACTION_KINDS:
-            check_transition([e for e in events if attempt_key(e) == attempt_key(ev)], ev)
+            prior = [e for e in events if attempt_key(e) == attempt_key(ev)]
+            if prior:
+                for field in ("authorizedBy", "decisionVersion", "dedupGrant", "profileRev", "styleRev", "runPolicyRev"):
+                    if field in prior[0]:
+                        ev[field] = prior[0][field]
+            check_transition(prior, ev)
             if ev["status"] == "pending" and ev.get("decision") and unstepped_decision_attempts(events, ev["decision"]):
                 raise LedgerError(f"决定 {ev['decision']} 有不带步骤编号的外发记录，须本人核对后再执行")
         elif any(attempt_key(e) == attempt_key(ev) for e in events):
@@ -2365,7 +2415,134 @@ def require_live_lock(ws, run_id, tz, renew=False, allow_record=False):
     return lock
 
 
-def acquire_lock(ws, tz, skill, run=None, ttl=DEFAULT_LOCK_TTL_MINUTES, no_send=False, recovery=False):
+def lock_object(raw):
+    def unique(pairs):
+        out = {}
+        for key, value in pairs:
+            if key in out:
+                raise LedgerError(f"授权结构含重复字段：{key}")
+            out[key] = value
+        return out
+    value = json.loads(raw, object_pairs_hook=unique)
+    if not isinstance(value, dict):
+        raise LedgerError("限制或例外须为 JSON 对象")
+    return value
+
+
+def validate_scope(scope):
+    if not isinstance(scope, dict) or len(scope) != 1:
+        raise LedgerError("scope 须且只能指定 all / threads / companies / jobs 之一")
+    key, values = next(iter(scope.items()))
+    if key == "all" and values is True:
+        return
+    if key not in ("threads", "companies", "jobs") or not isinstance(values, list) or not values or any(
+            not isinstance(v, str) or not v.strip() for v in values):
+        raise LedgerError("scope 列表须为非空字符串数组，all 只能为 true")
+
+
+def validate_run_rule(rule, restriction=False):
+    fields = {"kinds", "scope", "max", "quote"} if restriction else {"item", "scope", "quote"}
+    if not restriction and rule.get("item") != "hours":
+        fields.add("max")
+    if set(rule) != fields:
+        raise LedgerError("限制或例外字段缺失/多余；编号、绑定与用量只能由脚本生成")
+    validate_scope(rule["scope"])
+    if not isinstance(rule["quote"], str) or not rule["quote"].strip():
+        raise LedgerError("quote 须为本人非空原话")
+    if restriction:
+        kinds = rule["kinds"]
+        if (not isinstance(kinds, list) or not kinds or any(not isinstance(k, str) or k not in ACTION_KINDS for k in kinds)
+                or len(set(kinds)) != len(kinds)):
+            raise LedgerError("restriction.kinds 须为五种外发动作的非空不重复子集")
+    elif rule["item"] not in ("apply_send", "reply", "nudge", "hours", "dedup_once"):
+        raise LedgerError("grant.item 无效")
+    if not restriction and rule["item"] == "dedup_once" and (
+            type(rule["max"]) is not int or rule["max"] != 1 or set(rule["scope"]) != {"jobs"}
+            or len(rule["scope"]["jobs"]) != 1):
+        raise LedgerError("dedup_once 只能绑定单个职位且 max 必须是整数1")
+    if "max" in rule and rule["max"] != "unlimited" and (
+            type(rule["max"]) is not int or rule["max"] < (0 if restriction else 1)):
+        raise LedgerError("max 须为合法整数或 unlimited，布尔不算整数")
+
+
+def scope_identity(ev, axis):
+    """分量分别比较，账号与平台及职位ID均不做 Unicode 合并。"""
+    if axis == "threads":
+        identity = {field: (norm_company if field == "company" else norm_text)(ev.get(field))
+                    for field in load_platform(ev["platform"])["conversationKey"]}
+    elif ev.get("jobId"):
+        identity = {"jobId": ev["jobId"]}
+    else:
+        identity = {"company": norm_company(ev.get("company")), "title": norm_text(ev.get("title"))}
+    if not all(identity.values()):
+        raise LedgerError("具体目标身份不足，请先核对页面并登记")
+    return {"platform": ev["platform"], "account": ev["account"], "identity": identity}
+
+
+def bind_scope(scope, events):
+    axis = next(iter(scope))
+    if axis not in ("threads", "jobs"):
+        return []
+    field = "threadKey" if axis == "threads" else "jobKey"
+    bindings = []
+    for key in dict.fromkeys(scope[axis]):
+        matches = {}
+        for event in events:
+            if event.get(field) == key:
+                identity = scope_identity(event, axis)
+                matches[json.dumps(identity, ensure_ascii=False, sort_keys=True)] = identity
+        if len(matches) != 1:
+            raise LedgerError(f"作用域键未登记或存在多个原始目标/账号：{key}；请先禁发登记身份或本人核对")
+        bindings.append(dict(key=key, **next(iter(matches.values()))))
+    return bindings
+
+
+def scope_covers(rule, bindings, ev):
+    axis = next(iter(rule["scope"]))
+    values = rule["scope"][axis]
+    if axis == "all":
+        return True
+    if axis == "companies":
+        return norm_company(ev.get("company")) in {norm_company(v) for v in values}
+    field = "threadKey" if axis == "threads" else "jobKey"
+    try:
+        target = dict(key=ev.get(field), **scope_identity(ev, axis))
+    except LedgerError:
+        return False
+    return target["key"] in values and target in bindings
+
+
+def pending_uses(events, run, kinds=None, authorized_by=None, dedup_grant=None):
+    return sum(1 for a in attempts_of(events).values() if a["runId"] == run and a["everPending"]
+               and (kinds is None or a["kind"] in kinds)
+               and (authorized_by is None or next(e for e in a["events"] if e["status"] == "pending").get("authorizedBy") == authorized_by)
+               and (dedup_grant is None or next(e for e in a["events"] if e["status"] == "pending").get("dedupGrant") == dedup_grant))
+
+
+def run_policy_rev(lock):
+    frozen = {key: lock.get(key) for key in ("skill", "restriction", "grants", "scopeBindings", "noSend")}
+    return hashlib.sha256(json.dumps(frozen, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def lock_view(lock, events):
+    out = dict(lock)
+    restriction = lock.get("restriction")
+    out["restriction"] = None
+    if restriction is not None:
+        used = pending_uses(events, lock["runId"], restriction["kinds"])
+        maximum = restriction["max"]
+        out["restriction"] = dict(restriction, used=used, remaining=None if maximum == "unlimited" else max(0, maximum - used))
+    out["grants"] = []
+    for grant in lock.get("grants", []):
+        used = pending_uses(events, lock["runId"], **({"dedup_grant": grant["id"]} if grant["item"] == "dedup_once"
+                                                   else {"authorized_by": "grant:" + grant["id"]}))
+        maximum = grant.get("max", "unlimited")
+        out["grants"].append(dict(grant, used=used, remaining=None if maximum == "unlimited" else max(0, maximum - used)))
+    return out
+
+
+def acquire_lock(ws, tz, skill, run=None, ttl=DEFAULT_LOCK_TTL_MINUTES, no_send=False, recovery=False,
+                 restriction=None, grants=None):
     """调用方须已持有 lock_mutex。返回 (退出码, 结果)。同一 runId 重复获取视为沿用。"""
     if recovery and skill != "setup":
         raise LedgerError("恢复锁只能由 setup 获取")
@@ -2386,11 +2563,30 @@ def acquire_lock(ws, tz, skill, run=None, ttl=DEFAULT_LOCK_TTL_MINUTES, no_send=
         if run and current.get("runId") == run and not current.get("releasing") and not lock_expired(current, now):
             if current.get("skill") != skill or (current.get("mode") == "recovery") != bool(recovery):
                 raise LedgerError("不能改变已有运行锁的技能或恢复模式")
+            original_grants = [{k: v for k, v in g.items() if k != "id"} for g in current.get("grants", [])]
+            if ((restriction is not None and restriction != current.get("restriction"))
+                    or (grants is not None and grants != original_grants)
+                    or (no_send and not current.get("noSend"))):
+                raise LedgerError("本轮限制、例外与禁发模式不可中途改写")
             if not recovery:
                 upgrade_suite_version(ws)
             return 0, {"acquired": True, "reused": True, "lock": current, "tookOverFrom": None, "reconciled": []}
         if not lock_expired(current, now):
             return 1, {"acquired": False, "reason": "已有运行中的任务", "lock": current}
+        if run and current.get("runId") == run:
+            raise LedgerError("原运行锁已过期；请续锁保留本轮限制，不以同轮重新取锁改绑")
+    rules = {"restriction": restriction, **{f"g{i}": grant for i, grant in enumerate(grants or [], 1)}}
+    concrete = any(rule and next(iter(rule["scope"])) in ("threads", "jobs") for rule in rules.values())
+    events = read_events(ws)[0] if concrete or skill in ("apply", "followup") else []
+    bindings = {name: bind_scope(rule["scope"], events) for name, rule in rules.items() if rule is not None}
+    waived = set()
+    for name, rule in rules.items():
+        if rule and rule.get("item") == "dedup_once":
+            target = json.dumps({k: v for k, v in bindings[name][0].items() if k != "key"}, sort_keys=True)
+            if target in waived:
+                raise LedgerError("同轮同一原始目标不能重复登记 dedup_once")
+            waived.add(target)
+    if current:
         took_over = current
         reconciled = reconcile_run(ws, current, tz)
     run_id = run or f"run-{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
@@ -2402,7 +2598,14 @@ def acquire_lock(ws, tz, skill, run=None, ttl=DEFAULT_LOCK_TTL_MINUTES, no_send=
         "expiresAt": (now + timedelta(minutes=ttl)).isoformat(timespec="seconds"),
         "ttlMinutes": ttl,
         "noSend": bool(no_send),
+        "restriction": restriction,
+        "grants": [dict(grant, id=f"g{i}") for i, grant in enumerate(grants or [], 1)],
+        "scopeBindings": bindings,
     }
+    lock["policyRev"] = run_policy_rev(lock)
+    if skill in ("apply", "followup") and any(e.get("status") == "pending" and e["runId"] == run_id
+            and e.get("runPolicyRev") not in (None, lock["policyRev"]) for e in events):
+        raise LedgerError("同一 runId 已有发送用量，不能换锁改限制、例外编号或原始绑定")
     if recovery:
         lock["mode"] = "recovery"
     write_lock(ws, lock)
@@ -2446,7 +2649,8 @@ def cmd_lock(args, ws):
             if not current:
                 return emit({"held": False})
             expired = lock_expired(current, now)
-            return emit({"held": not expired, "expired": expired, "lock": current})
+            events = read_events(ws)[0] if current.get("restriction") or current.get("grants") else []
+            return emit({"held": not expired, "expired": expired, "lock": lock_view(current, events)})
 
         if args.action == "release":
             code, out = release_lock(ws, args.run, tz)
@@ -2463,7 +2667,17 @@ def cmd_lock(args, ws):
             write_lock(ws, current)
             return emit({"renewed": True, "lock": current})
 
-        code, out = acquire_lock(ws, tz, args.skill, args.run, args.ttl, args.no_send, args.recovery)
+        if args.restrict and len(args.restrict) != 1:
+            raise LedgerError("--restrict 只接受一次，不合并重复规则")
+        restriction = lock_object(args.restrict[0]) if args.restrict else None
+        grants = [lock_object(raw) for raw in args.grant] if args.grant else None
+        if restriction is not None:
+            validate_run_rule(restriction, restriction=True)
+        for grant in grants or []:
+            validate_run_rule(grant)
+        if grants and args.no_send:
+            raise LedgerError("--grant 不能与 --no-send 共存")
+        code, out = acquire_lock(ws, tz, args.skill, args.run, args.ttl, args.no_send, args.recovery, restriction, grants)
         out["paused"] = read_pause(ws)
         return emit(out, code)
 
@@ -2598,6 +2812,9 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("validate", help="校验事件记录与停止名单")
+    prepare = sub.add_parser("prepare", help="原子检查全部门禁并写入唯一 pending")
+    prepare.add_argument("--run", required=True)
+    prepare.add_argument("--json")
     export = sub.add_parser("export", help="只读导出；文件仅写工作区外新路径")
     export.add_argument("--table", choices=tuple(EXPORT_COLUMNS), required=True)
     export.add_argument("--format", choices=("csv", "jsonl"), required=True)
@@ -2614,8 +2831,14 @@ def build_parser():
     tail.add_argument("--json")
 
     c = sub.add_parser("check", help="外发前检查")
-    c.add_argument("--platform", required=True)
-    c.add_argument("--company", required=True)
+    c.add_argument("--platform")
+    c.add_argument("--company")
+    c.add_argument("--json")
+    c.add_argument("--text")
+    c.add_argument("--resume")
+    c.add_argument("--step")
+    c.add_argument("--target-role")
+    c.add_argument("--reason")
     c.add_argument("--account")
     c.add_argument("--kind", choices=sorted(ACTION_KINDS), default="greet",
                    help="greet：首次联系去重；其余：会话内外发检查")
@@ -2625,7 +2848,7 @@ def build_parser():
     c.add_argument("--job-id")
     c.add_argument("--job-url")
     c.add_argument("--run", help="本轮 runId；同轮 failed_no_send 不重试")
-    c.add_argument("--scope", choices=["company", "job"], help="覆盖 profile 的 dedupScope")
+    c.add_argument("--scope", choices=["company", "job"], help="只可与现有 dedupScope 一致，不能借预检覆盖发送门禁")
 
     d = sub.add_parser("decision", help="查询某个已决定事项的执行状态")
     d.add_argument("--id", required=True)
@@ -2664,6 +2887,8 @@ def build_parser():
     lk.add_argument("--ttl", type=int, default=DEFAULT_LOCK_TTL_MINUTES, help="分钟")
     lk.add_argument("--no-send", action="store_true", help="本轮禁发：持锁期间拒绝写入新的外发")
     lk.add_argument("--recovery", action="store_true", help="仅 setup 获取恢复锁，只允许恢复类写入")
+    lk.add_argument("--restrict", action="append", help="单一本轮动作、目标和总次数限制 JSON")
+    lk.add_argument("--grant", action="append", help="可重复的本轮追加授权 JSON")
 
     pz = sub.add_parser("pause", help="全局暂停：暂停期间任何一轮都不能写入新的外发")
     pz.add_argument("action", choices=["on", "off", "status"])
@@ -2682,7 +2907,7 @@ def build_parser():
 
 COMMANDS = {
     "validate": cmd_validate, "check": cmd_check, "decision": cmd_decision, "guard": cmd_guard,
-    "append": cmd_append, "tail": cmd_tail, "export": cmd_export,
+    "append": cmd_append, "prepare": cmd_prepare, "tail": cmd_tail, "export": cmd_export,
     "quota": cmd_quota, "threads": cmd_threads, "stats": cmd_stats, "lock": cmd_lock,
     "pause": cmd_pause, "stoplist": cmd_stoplist,
 }
@@ -2696,7 +2921,7 @@ def entry_mode(args):
         return {"status": "read", "on": "write", "off": "recover"}[args.action]
     if args.cmd == "stoplist":
         return "read" if args.action == "list" else "write"
-    return "write" if args.cmd in {"append", "guard", "tail"} else "read"
+    return "write" if args.cmd in {"append", "prepare", "guard", "tail"} else "read"
 
 
 def main(argv=None):
@@ -2704,6 +2929,8 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         if args.cmd == "lock":
+            if args.action != "acquire" and (args.restrict or args.grant):
+                raise LedgerError("--restrict / --grant 只能在取锁时登记，不能中途修改")
             if args.recovery and (args.action != "acquire" or args.skill != "setup"):
                 raise LedgerError("--recovery 仅用于 lock acquire --skill setup")
             if args.action == "acquire" and not args.skill:

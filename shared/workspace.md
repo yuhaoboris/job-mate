@@ -105,7 +105,7 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
   "recruiterActivity": {"maxAgeDays": 7},
   "authorization": {
     "apply": {"send": false},
-    "followup": {"level": "L2"}
+    "followup": {"reply": "L2", "nudge": true}
   },
   "greeting": {"mode": "dynamic", "text": "您好，我有 N 年……，期待沟通。"},
   "limits": {

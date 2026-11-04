@@ -38,7 +38,7 @@ def run_build(*argv):
 
 
 # 已完整改写的文档进入体量预算；其余在对应任务重写时加入。
-TEXT_BUDGETS = {"shared/notify.md": 16000, "shared/ledger.md": 16000, "shared/derived.md": 16000, "shared/accounts.md": 16000, "shared/export.md": 16000,
+TEXT_BUDGETS = {"shared/notify.md": 16000, "shared/ledger.md": 16000, "shared/derived.md": 16000, "shared/accounts.md": 16000, "shared/export.md": 16000, "shared/tails.md": 16000, "shared/sending.md": 16000,
                 "shared/workspace.md": 16000, "skills/setup/SKILL.md": 20000}
 
 

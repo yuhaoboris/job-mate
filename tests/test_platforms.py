@@ -175,15 +175,21 @@ class PlatformTest(unittest.TestCase):
         url = "https://jobs.example.invalid/jobs/AB-12?keep=yes#section"
         ev = {"platform": "testplat", "runId": "synthetic", "skill": "apply", "kind": "greet",
               "status": "pending", "company": "合成公司", "title": "合成岗位", "reason": "离线合成测试", "jobUrl": url}
-        code, out = invoke(ledger, ws, "append", "--json", json.dumps(ev))
+        ledger.write_atomic(ws / "profile.json", json.dumps({"authorization": {"apply": {"send": True}},
+            "limits": {"minSendIntervalSeconds": 0}, "schedule": {"activeHours": {
+                "weekdays": [1, 2, 3, 4, 5, 6, 7], "start": "00:00", "end": "23:59"}}}))
+        intent = {k: v for k, v in ev.items() if k in ledger.INTENT_FIELDS}
+        intent.update(text="合成招呼", targetRole="合成岗位")
+        code, out = invoke(ledger, ws, "prepare", "--run", "synthetic", "--json", json.dumps(intent))
         self.assertEqual(code, 0, out)
-        self.assertEqual((out["event"]["jobId"], out["event"]["jobUrl"]), ("AB-12", url))
-        code, out = invoke(ledger, ws, "check", "--platform", "testplat", "--company", "另一公司", "--scope", "job", "--job-url", url)
+        event = ledger.read_events(ws)[0][-1]
+        self.assertEqual((event["jobId"], event["jobUrl"]), ("AB-12", url))
+        code, out = invoke(ledger, ws, "check", "--platform", "testplat", "--company", "另一公司", "--job-url", url,
+                           "--run", "synthetic", "--text", "合成招呼", "--target-role", "合成岗位")
         self.assertEqual(code, 1, out)
-        self.assertEqual(out["jobId"], "AB-12")
-        self.assertIn("same_job", [r["type"] for r in out["reasons"]])
+        self.assertIn("unresolved", [r["code"] for r in out["reasons"]])
         before = ledger.events_path(ws).read_bytes()
-        code, out = invoke(ledger, ws, "append", "--json", json.dumps(dict(ev, platform="missing")))
+        code, out = invoke(ledger, ws, "prepare", "--run", "synthetic", "--json", json.dumps(dict(intent, platform="missing")))
         self.assertEqual(code, 2, out)
         self.assertIn("未知平台", out["error"])
         self.assertEqual(ledger.events_path(ws).read_bytes(), before)

@@ -58,7 +58,7 @@ STEPS = [
 STEP_BY_ID = {s["id"]: s for s in STEPS}
 
 GREETING_MODES = {"dynamic", "static"}
-FOLLOWUP_LEVELS = {"L1", "L2", "L3"}
+FOLLOWUP_LEVELS = {"L1", "L2"}
 MATCH_RULES = {"overlap", "lower_bound", "contained"}
 DEDUP_SCOPES = {"company", "job"}
 LIMIT_KEYS = ["greetsPerRun", "greetsPerDay", "detailsPerRun", "minSendIntervalSeconds"]
@@ -184,8 +184,11 @@ def check_profile(p, problems, warnings):
     auth = p.get("authorization") or {}
     if not isinstance((auth.get("apply") or {}).get("send"), bool):
         bad("authorization.apply.send", "应为 true 或 false")
-    if (auth.get("followup") or {}).get("level") not in FOLLOWUP_LEVELS:
-        bad("authorization.followup.level", f"应为 {sorted(FOLLOWUP_LEVELS)} 之一")
+    followup = auth.get("followup") or {}
+    if "level" in followup or followup.get("reply", "L2") not in FOLLOWUP_LEVELS:
+        bad("authorization.followup.reply", f"应为 {sorted(FOLLOWUP_LEVELS)} 之一；level 已废止")
+    if type(followup.get("nudge", True)) is not bool:
+        bad("authorization.followup.nudge", "应为 true 或 false")
     g = p.get("greeting") or {}
     if g.get("mode", "dynamic") not in GREETING_MODES:
         bad("greeting.mode", f"应为 {sorted(GREETING_MODES)} 之一")

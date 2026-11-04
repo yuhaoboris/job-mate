@@ -43,7 +43,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 | 「找工作」等未说明是否发送 | `authorization.apply.send` 为 `true` 时发起沟通，否则只筛选并在汇报中说明 |
 | 「停止」「先别投了」 | 停止后续发送，记录已发生的动作并汇报 |
 
-`authorization.apply.send` 为 `false` 而本人本轮明确要求发送时，本轮照做，不写回。
+取锁前先问清动作、目标和数量，明确收窄要求登记 `--restrict`；长期权限不足且本人明确追加发送权限时另登记 `--grant`。限制不是授权，grant 也不扩大限制，不写回 profile。绑定、去重豁免及准备协议见[发送准备](../../shared/sending.md)。
 
 **获取运行锁之前**，所有 runtime 先按 [加锁前能力自检](../../shared/execution.md#1-加锁前能力自检) 校验 `profile.browser` 与读写工作区、运行核心脚本、可见浏览器操作及结果证据能力。不支持选定偏好或配置非法时不操作平台、不回退；缺少外发证据用 `--no-send` 锁。不能读写工作区或运行核心脚本时不写记录、不外发，只基于已有可读资料筛选并汇报。不能操作平台而仍需本地对账时仅用禁发锁，按 [环境受阻与恢复](../../shared/execution.md#7-环境受阻通知与恢复) 收尾。
 
@@ -53,7 +53,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 
 - 有工作区，`ledger validate` 通过，已持有非禁发的运行锁。
 - `ledger quota --platform boss --run <runId>` 返回 `canGreet: true`。当日额度用完则本轮只筛选，汇报「今日招呼已达上限」。
-- 当前时间在 `schedule.activeHours` 内；不在时段内只筛选。本人本轮明确要求的单轮可例外。
+- 当前时间在 `schedule.activeHours` 内；不在时段内只筛选。本人明确越过时段时须登记范围明确的 hours grant。
 - 招呼语方式已确定（`greeting.mode`，缺省为 `dynamic`）。
 
 ## 3. 准备浏览器
@@ -85,7 +85,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 ### 5.1 发送前检查
 
 1. 运行超过 30 分钟时先 `ledger lock renew --run <runId>`；失败说明已失去运行锁，立即停止。`ledger quota --platform boss --run <runId>`：`canGreet` 为 `false` 时结束本轮；`waitSeconds` 大于 0 时先等待这么久。这是固定的最小间隔，不另加随机延时。
-2. `ledger check --platform boss --company <公司> --title <职位> --job-url <链接> --run <runId>`：不允许时记 `skipped`（`reason` 写 check 返回的原因），处理下一个。
+2. `ledger check --run <runId> --json '<完整意图>'`（含 kind、页面身份、拟发 text、reason、targetRole）：不允许时记 `skipped`（`reason` 写 check 返回的原因），处理下一个。
 3. 重新确认详情仍符合硬条件、职位开放，目标公司和招聘者正确。
 4. 按平台首次沟通页面要点判断沟通按钮：显示已联系时追加 `already_contacted`，不点击。
 
@@ -104,7 +104,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 
 所有 runtime 都按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护)、[尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 执行。完整读取才下否定结论，核对会话前不读写输入框，未知草稿不清；no-send / L1 只起草时不碰外发输入框。第 4 步放弃发送例外只在入口有明确正常成功结果、环境可用且连续观察到身份一致的目标空会话时适用；调用过后续可能外发动作的，还要求它们全部有结构化 `not_executed` 证据。身份丢失、失败响应、超时后即使读到空会话也不适用。可能外发前逐动作 guard，不将输入与发送合并；写后读回须与最终文字完全一致。
 
-1. 事件格式为 v1，`eventId`、`threadKey`、`jobKey` 由脚本生成，不复制旧事件 ID；匹配方向写 `targetRole`。`ledger append` 一条 `kind: greet, status: pending`，`text` 为拟发文字，`tags` 记 `greeting:<mode>`；记下返回的 `attemptId`。写入失败（包括已失去运行锁、本轮禁发）立即停止整轮，不点击。
+1. 事件格式为 v1，`eventId`、`threadKey`、`jobKey` 由脚本生成，不复制旧事件 ID；匹配方向写 `targetRole`。`ledger prepare --run <runId> --json '<意图>'`，kind 为 greet，text 为拟发文字，tags 记 greeting:<mode>；不传 status 或脚本字段，记下返回的 attemptId。写入失败（包括已失去运行锁、本轮禁发）立即停止整轮，不点击。
 2. `ledger guard --run <runId> --attempt <attemptId>` 返回 `allowed: true` 后**立即**点击首次沟通入口，中间不做别的事；等待并观察结果，不连点。按平台首次沟通页面要点判断出现的是哪种情况：
 
 | 点击后 | 处理 |
@@ -127,7 +127,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 只在第 5.3 步记为 `sent` 且那条是平台自动发出的默认招呼语时补发。
 
 1. 第 5.2 步写好的招呼语不要重复默认招呼语已说过的内容，必要时调整。
-2. 先按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护) 核对会话、接管与空输入框（未知内容不清空、不建新尝试），重做 `ledger check --kind intro`（带目标公司、招聘者与 run），再 `ledger append` 一条 `kind: intro, status: pending`（新的 `attemptId`，`tags` 记 `greeting:dynamic`），在同一会话中输入、读回核对，`guard` 通过后立即发送。
+2. 先按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护) 核对会话、接管与空输入框（未知内容不清空、不建新尝试），以同一份完整 intro 意图重做 check，再用 `ledger prepare --run <runId> --json '<意图>'`（脚本生成新 attemptId，tags 记 greeting:dynamic），在同一会话中输入、读回核对，`guard` 通过后立即发送。
 3. 按第 5.3 步第 3 步确认，追加 `sent`、`uncertain` 或 `failed_no_send`。结果不明时不重发，记 `uncertain`，**停止整轮**并按[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox，与第 5.3 步一致。
 
 补发不另占招呼额度。

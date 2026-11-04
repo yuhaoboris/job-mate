@@ -23,7 +23,7 @@ PROFILE = {
     "salary": {"currency": "CNY", "period": "month", "taxBasis": "pre_tax",
                "min": 15000, "max": None, "matchRule": ["overlap", "lower_bound"]},
     "exclusions": {},
-    "authorization": {"apply": {"send": True}, "followup": {"level": "L2"}},
+    "authorization": {"apply": {"send": True}, "followup": {"reply": "L2", "nudge": True}},
     "greeting": {"mode": "dynamic", "text": "您好，我做了 5 年前端，期待沟通。"},
     "limits": {"greetsPerRun": 10},
     "schedule": {"timezone": "Asia/Shanghai"},
@@ -449,7 +449,7 @@ class WorkspaceTest(unittest.TestCase):
         self.init()
         self.fill()
         bad = dict(PROFILE, greeting={"mode": "agent"}, targetRoles=[],
-                   authorization={"apply": {"send": "yes"}, "followup": {"level": "L9"}})
+                   authorization={"apply": {"send": "yes"}, "followup": {"reply": "L9"}})
         (self.ws / "profile.json").write_text(json.dumps(bad))
         (self.ws / "qa.yaml").write_text("- id: edu\n  ask: [学历]\n  answer: 本科\n")
         (self.ws / "resumes" / "index.yaml").write_text("versions:\n  - id: b\n    file: missing.pdf\n")
@@ -457,7 +457,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(code, 1)
         fields = {p.get("field") for p in out["problems"]}
         self.assertTrue({"greeting.mode", "targetRoles", "authorization.apply.send",
-                         "authorization.followup.level"} <= fields)
+                         "authorization.followup.reply"} <= fields)
         msgs = " ".join(p["problem"] for p in out["problems"])
         self.assertIn("basis", msgs)
         self.assertIn("missing.pdf", msgs)
@@ -684,11 +684,10 @@ class WorkspaceTest(unittest.TestCase):
         def pending(run_id, company):
             event = {"platform": "boss", "runId": run_id, "skill": "setup", "kind": "greet",
                      "status": "pending", "company": company, "reason": "合成测试，未操作平台"}
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                code = ledger.main(["--workspace", str(self.ws), "append", "--json", json.dumps(event)])
-            self.assertEqual(code, 0, buf.getvalue())
-            return json.loads(buf.getvalue())["event"]["attemptId"]
+            import history_fixture
+            code, out = history_fixture.append_action(self.ws, event)
+            self.assertEqual(code, 0, out)
+            return out["event"]["attemptId"]
 
         with ledger.lock_mutex(self.ws):
             ledger.acquire_lock(self.ws, tz, "apply", "old")
@@ -879,7 +878,7 @@ class WorkspaceIsolationTest(unittest.TestCase):
         # 仅拷贝数据脚本，验证脱离 desktop 模块仍能加载、体检和拒绝旧选项。
         scripts = Path(self.tmp.name) / "isolated"
         scripts.mkdir()
-        for name in ("workspace.py", "ledger.py", "notify.py", "fsutil.py", "platforms.py"):
+        for name in ("workspace.py", "ledger.py", "notify.py", "fsutil.py", "platforms.py", "outbound.py"):
             shutil.copy2(source.parent / name, scripts / name)
         for tail, expected in ((["check"], 0), (["check", "--env"], 2)):
             result = subprocess.run([sys.executable, "-I", str(scripts / "workspace.py"),
@@ -909,14 +908,16 @@ class WorkspaceIsolationTest(unittest.TestCase):
         run_id = out["lock"]["runId"]
         event = {"platform": "boss", "skill": "followup", "runId": run_id,
                  "kind": "reply", "status": "pending", "company": "示例公司", "reason": "合成测试"}
-        code, out = self.led("append", "--json", json.dumps(event))
+        intent = {k: v for k, v in event.items() if k in workspace.ledger.INTENT_FIELDS}
+        intent["text"] = "合成回复"
+        code, out = self.led("prepare", "--run", run_id, "--json", json.dumps(intent))
         self.assertEqual(code, 0, out)
-        attempt = out["event"]["attemptId"]
+        attempt = out["attemptId"]
         self.led("lock", "release", "--run", run_id)
         _, out = self.led("lock", "acquire", "--skill", "followup", "--no-send")
         no_send = out["lock"]["runId"]
         event["runId"] = no_send
-        self.assertEqual(self.led("append", "--json", json.dumps(event))[0], 2)
+        self.assertEqual(self.led("prepare", "--run", no_send, "--json", json.dumps(intent))[0], 1)
         code, out = self.led("guard", "--run", no_send, "--attempt", attempt)
         self.assertEqual(code, 2)
         self.assertIn("禁发", out["error"])
@@ -928,9 +929,10 @@ class WorkspaceIsolationTest(unittest.TestCase):
             run_id = out["lock"]["runId"]
             code, out = self.led("lock", "acquire", "--skill", "apply", "--run", run_id,
                                   *([] if no_send else ["--no-send"]))
-            self.assertEqual(code, 0)
-            self.assertTrue(out["reused"])
-            self.assertEqual(out["lock"]["noSend"], no_send)
+            self.assertEqual(code, 0 if no_send else 2)
+            if no_send:
+                self.assertTrue(out["reused"])
+            self.assertEqual(workspace.ledger.read_lock(self.ws)["noSend"], no_send)
             self.led("lock", "release", "--run", run_id)
 
 

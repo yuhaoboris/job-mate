@@ -17,9 +17,9 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 | `lock renew --run <runId>` | 长时间读取时续锁；失败立即停止 |
 | `lock release --run <runId>` / `lock status` | 释放并对账 / 只读持锁者 |
 | `pause on --reason <原因> [--by <谁>]` / `pause off` / `pause status` | 设置 / 解除 / 查询全局暂停 |
-| `check --platform <平台> --company <公司>` | 首次联系预检；可带 title、job-url、run、scope 参数，不写业务记录 |
-| `check --platform <平台> --kind <reply\|resume\|nudge\|intro> --company <公司> --recruiter <招聘者> [--decision <ID>] [--run <runId>]` | 会话预检；nudge 另检查跟进条件 |
-| `append --json '<事件>'` | 校验、追加；不传 --json 时从 stdin 读 |
+| `check --run <runId> --json '<意图>'` | 与 prepare 同路径的只读完整预检，不消费额度 |
+| `prepare --run <runId> --json '<意图>'` | 唯一 pending 入口；全部门禁通过才原子写入，协议见[发送准备](sending.md) |
+| `append --json '<事件>'` | 记录终态、观察及筛选；禁止直接写动作 pending |
 | `tail --run <runId> --thread '<threadKey>' --read-at <ISO> [--base <tailId>] [--json '<输入>']` | 记录尾部指纹，不保存原文；输入也可走 stdin |
 | `guard --run <runId> --attempt <attemptId>` | 每个可能外发的点击前复查 pending 与有效锁，并续期；通过后立即点击 |
 | `decision --id <ID> [--step <编号>]` | 查询有效版本、各版本步骤及真实 attempts |
@@ -70,7 +70,7 @@ kind：
 
 新尝试只可 pending，或独立 skipped / already_contacted。pending → sent / uncertain / failed_no_send；uncertain → sent / failed_no_send、failed_no_send → sent 仅限本人核对（skill: user）。其他终态不再追加；已有 sent 始终视为已发出。同一尝试的 kind、platform、company 不可更改。
 
-- 每次可能发送前先登记 pending，成功后才操作；每个可能外发的动作分别 guard。结果回填同一 attemptId。
+- 每次可能发送前先用 prepare 登记 pending，成功后才操作；每个可能外发的动作分别 guard。结果回填同一 attemptId。
 - sent 须有当前业务成功证据；进入会话、按钮变色、工具成功、空白页或「没看到消息」均不能代替证据。超时或未知记 uncertain，不重放。
 - 本人核对 uncertain 后，Agent 代为回填 sent 或 failed_no_send，skill 记 user、reason 引用本人结论；Agent 自己看页面不能冒充本人。
 - pending / uncertain / sent / already_contacted 阻止重复首次联系。failed_no_send 仅本轮不重试，skipped 不阻断。招呼额度按写过 pending 的 greet 尝试计数，失败与不明不退款；间隔按最近 pending / sent 计。
@@ -90,26 +90,21 @@ observed 可取：tail、handled、replied、decision、info、resume_requested�
 
 ## 尾部读取与处理
 
-先登记完整会话身份，使用返回的 threadKey；公司、招聘者从页面读取，不反推 key。tail 须持有效普通锁，read-at 位于最近读取与当前时间之间。
-
-输入：
-```json
-{"anchor":{"speaker":"us","type":"text","text":"我方最后一条","label":"今天 10:00"},"messages":[{"type":"text","text":"HR尾部","label":"今天 10:32"}],"complete":true,"anchorUnique":true}
-```
-- anchor 为我方最后一条或已读到会话开头时的 `"start"`；messages 为之后全部 HR 消息，按页面顺序。complete / anchorUnique 缺省 false；本地已有 sent 却声明 start 转核对。
-- type 为 text / card，卡片 text 含卡片类型和按钮文字；稳定平台 ID 已开启时可带 id，否则按发言方、类型、NFKC 去首尾空白并折叠空白后的内容摘要、绝对日期和分钟构成指纹。无日期上下文 HH:MM 不猜今天，时间缺失不是通配符。
-- 日期按平台 timeLabels：今天 / 昨天 / 前天，星期取读取日前最近一次，月日取不晚于读取日的最近年份；明确年月日原样换算。只存 SHA-256 前 16 位及时间。
-- 输出 tailId、baseTailId、result、newCount、reason、settled；每次读取唯一 tailId。默认比较最近 handled；处理后显式 --base 指向本次处理快照。待处理期间，旧 base 仅在与最新尾部等同时可复用，否则留下核对状态；不能跳过已观察内容。extended 处理后以其 tailId 复核。
-- same / extended 要求可确认身份逐项相同 / 严格前缀；new_anchor 为无基准或锚点变化，整段分诊；mismatch 包括条数减少、内容/顺序冲突、不完整与时间/锚点歧义。无法确认数量时 newCount:null。
-- 自己发送改变锚点时提交从基准锚点到末尾的完整 bridge（逐项 speaker）与 bridgeComplete:true。基准锚点唯一，HR 恰为已处理序列；新增我方活动的 attemptId 须对应同目标、本轮 sent、相同内容类型，发送时间在两次读取间且落在页面分钟区间前后 2 分钟。resume 卡片须匹配 sent 的简历版本文字，否则核对；编号本身不是证据。
-- 显式基准 same 或完整 bridge 无遗漏的 new_anchor 才可能 settled:true。缺桥、陌生活动、pending / uncertain、发送前新 HR 等不自动 handled。核对状态只能本人带依据收口，换 base 得到 same 不能清除。
-- 脚本内部生成 baseExplicit 与 bridgeEvidence：逐项 speaker，新增我方项再记 attemptId、type、digest、带时区分钟 pageAt，不存原文。validate 按历史前缀重算比较、bridge 和未决语义，不信任结果布尔。JSONL 仅按 LF 分行，批准文字逐字符保留。
-- append 禁写 observe/tail。handled 带 tailId、baseTailId，只引用最新完整、唯一定位快照；须 settled:true 或 skill:user 加非空 evidence。脚本复制指纹。可选 listMark 为 `{label,digest,unread}`：列表时间标签、16 位摘要、非负未读数，不存摘要原文。
-- 中断后先核对待处理快照及历史外发，以待处理快照复核，不从新锚点重开或重复外发。
-
+读取、比较、复核或 handled 前，读[尾部核对协议](tails.md)。账号歧义处理见[账号说明](accounts.md)。
 ## 去重
 
-首次联系检查停止名单、同平台账号历史联系与 rejected / risk。company 范围按公司，job 范围按 ID，缺 ID 比公司 + 职位；同公司同职位而 ID 不同报疑似重新发布。通过 check 后仍以当前页面为准：已联系记 already_contacted，不发送。本人逐个放行可越过历史联系，但不能越过停止名单或 pending / uncertain。
+首次联系检查停止名单、同平台账号历史联系与 rejected / risk。company 范围按公司，job 范围按 ID，缺 ID 比公司 + 职位；同公司同职位而 ID 不同报疑似重新发布。通过 check 后仍以当前页面为准：已联系记 already_contacted，不发送。本人逐个放行仅经绑定单职位的 dedup_once；它不是发送授权，不能越过其他门禁。
+
+## 发送门禁原因码
+
+prepare / check 拒绝时为 `allowed:false,reasons:[{code,message}]`，退出1；参数或损坏数据退出2。间隔拒绝另给 retryAfterSeconds。完整授权、绑定与计数见[发送准备](sending.md)。
+
+- 本轮与授权：not_authorized、grant_out_of_scope、grant_exhausted、lock_invalid、no_send、run_kind_restricted、run_scope_restricted、run_limit_exhausted、recovery_lock_only。
+- 全局与文字：paused、stoplist、stoplist_suspect、interval、empty_text、banned_word、too_long、run_uncertain_limit。
+- 首次联系：already_contacted、company_rejected、company_risk、reposted_suspect、quota_run、quota_day、outside_hours。
+- 会话：thread_closed、thread_manual、thread_paused、unresolved。
+- 决定：decision_not_registered、decision_superseded、decision_unresolved、decision_text_mismatch、decision_step_done、decision_needs_review。
+- 系统回执：ack_invalid_invitation、ack_duplicate、ack_contains_time。
 
 ## 中断恢复
 
