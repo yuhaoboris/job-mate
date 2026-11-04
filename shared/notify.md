@@ -89,10 +89,11 @@ handoff 无回执不自动重投。超过 10 分钟只在只读 `notify outbox -
 每轮开始（入口对账后）、每处理完一个会话、收尾时运行 `im_lark.py sync`。只有读取需求用 `sync --fetch-only`；它不发送，确认仍 queued。`notify poll` 只是本地计划，不代表读过远端。
 
 1. 适配器按当前 poll 路由读取；readable=false 不读历史，先通过出站建立可信私聊和时间起点。none 跳过工具；所有 sync 模式仍须通过 write 准入，恢复锁下不执行。
-2. 原生毫秒、固定秒级重叠窗口、升序连续分页由 [飞书适配器](im/lark.md#读取边界) 校验；消息规范化为 messageId、chatId、createTime、senderId、senderType、text、parentId、deleted，再一次性交给本地 incoming。跨 chat、坏时间/字段、缺或重复 token、页间乱序整批不提交，不推进游标；仅达 20 页上限可提交已验证连续前缀 complete:false。
+2. 原生毫秒、固定窗口与升序分页由 [飞书适配器](im/lark.md#读取边界) 校验；规范化 messageId、chatId、createTime、senderId、senderType、text、parentId、deleted 后整批交 incoming。首次请求前持久化扫描意图；20 页是单次预算，提交已验证前缀 complete:false 后保存 checkpoint，下次恢复同窗 token。跨 chat、坏字段、缺/重复 token、乱序或冲突整批拒收，最多新增意图，不推进业务游标、checkpoint 或完整水位。
 3. 本地状态机再次验证结构与 since，只接受该私聊本人的 user 消息。重复 ID 去重；编辑或版本冲突不任选正文，独立的新暂停照常处理。非本人、已删除、起点前、过于超前、我方消息拒收，不抬游标；incomingRejected 只报告原因与 ID。
-4. 入账、游标与完整性保存后执行指令，崩溃重放补齐未完成指令与确认。sync.incomplete 或 poll.lastIncomplete 为 true 时报告「IM 未读完」，不能说没有新答复；陈旧批次不能清除更新前缀的不完整标记。
-5. 通知、确认和追问统一由 sync 投递同一队列。没有 IM 能力时保留 inbox、队列与回复状态并报告，不另找通道。queued、handoff、failed、unknown、blocked 都不是 sent；退出码 0 也不是送达或读完证明。
+4. 先完成 incoming 的入账、可重放指令与确认，再写 checkpoint；崩溃重读旧页，业务 ID 去重。扫描记录版本、路由/私聊、边界和转移损坏时拒绝猜进度，非本人正文仅存摘要。终页成功后才保存排他上界 scanThroughMs 并关闭扫描；poll.sinceMs 取首次可信时间、businessCursorMs（仅接受本人推进）与经完整证据验证的 scanThroughMs 三者最大值，下一窗仍重叠一秒。普通 incoming 仍拒绝 since 超过 poll.sinceMs。
+5. 未完成扫描使 poll.lastIncomplete 为 true；token 失败保留 checkpoint，不猜未采样错误码、不跳现在。sync.incomplete 或 lastIncomplete 为 true 时报告「IM 未读完」，不能说没有新答复；陈旧批次不能清除更新前缀的不完整标记。
+6. 通知、确认和追问统一由 sync 投递同一队列。没有 IM 能力时保留 inbox、队列与回复状态并报告，不另找通道。queued、handoff、failed、unknown、blocked 都不是 sent；退出码 0 也不是送达或读完证明。
 
 ## 读取本人的回复
 

@@ -191,7 +191,7 @@ class ExecutionRulesTest(unittest.TestCase):
 
     def test_core_scripts_have_no_external_execution_except_build_git(self):
         scripts = sorted((ROOT / "scripts").glob("*.py"))
-        self.assertEqual({p.name for p in scripts}, {"ledger.py", "workspace.py", "notify.py", "build.py", "fsutil.py", "platforms.py", "outbound.py", "config_txn.py", "config_schema.py", "im_lark.py"})
+        self.assertEqual({p.name for p in scripts}, {"ledger.py", "workspace.py", "notify.py", "build.py", "fsutil.py", "platforms.py", "outbound.py", "config_txn.py", "config_schema.py", "im_lark.py", "im_scan.py"})
         for source in scripts:
             content = source.read_text(encoding="utf-8")
             with self.subTest(source=source):
@@ -253,7 +253,8 @@ class ExecutionRulesTest(unittest.TestCase):
                                 "contact +get-user --as user", "contact +search-user --query",
                                 "message_id/chat_id", "parent_id", "连续前缀 complete:false",
                                 "99992351", "sent、不带时间", "unknown", "不重发",
-                                "整批拒收，游标不动", "固定模板", "shell=False", "30 秒"))
+                                "整批拒收，游标不动", "固定模板", "shell=False", "30 秒",
+                                "20 页是单次", "checkpoint", "businessCursorMs", "scanThroughMs", "接收凭据不是扫描进度"))
         self.assertFalse((ROOT / "integrations/lark").exists())
         self.assertTrue((ROOT / "integrations/agent-desktop/README.md").is_file())
 

@@ -89,6 +89,16 @@ class ImLarkTest(unittest.TestCase):
             args += ["--reply-to", reply]
         self.invoke(notify, *args)
 
+    def assert_no_scan_progress(self, before):
+        current = (self.ws / "ledger/im.jsonl").read_bytes()
+        self.assertTrue(current.startswith(before), "已有业务记录必须逐字保留")
+        added = [json.loads(line) for line in current[len(before):].splitlines()]
+        self.assertLessEqual(len(added), 1)
+        for record in added:
+            self.assertEqual((record["type"], record["phase"], record["scanVersion"]), ("scan", "intent", 1))
+        # 仅可新增首次查询意图：没有 incoming、cursor、checkpoint 或完成水位。
+        self.assertFalse(any(r.get("phase") in ("checkpoint", "complete") for r in added))
+
     def poll(self):
         return notify.poll(self.ws, notify.context(self.ws))
 
@@ -335,7 +345,8 @@ class ImLarkTest(unittest.TestCase):
         self.add_messages(first, second)
         out = self.sync()
         self.assertEqual(out["sent"], 2)
-        self.assertEqual(self.poll()["sinceMs"], ANCHOR + 3)
+        self.assertEqual(self.poll()["businessCursorMs"], ANCHOR + 3)
+        self.assertEqual(self.poll()["sinceMs"], self.poll()["scanThroughMs"])
         self.assertEqual(len(self.rows()["in"]), 2)
         self.sync()
         self.assertEqual(len(self.rows()["in"]), 2)
@@ -372,11 +383,11 @@ class ImLarkTest(unittest.TestCase):
             with self.subTest(bad=bad):
                 out, _ = self.fetch_pages([good, bad])
                 self.assertTrue(out["incomplete"])
-                self.assertEqual((self.ws / "ledger/im.jsonl").read_bytes(), before)
+                self.assert_no_scan_progress(before)
         earlier = self.message(3, created=ANCHOR + 1)
         out, _ = self.fetch_pages([good, self.page([earlier])])
         self.assertIn("page_order_gap", out["errors"])
-        self.assertEqual((self.ws / "ledger/im.jsonl").read_bytes(), before)
+        self.assert_no_scan_progress(before)
 
     def test_invalid_message_fields_reject_batch_instead_of_repairing_them(self):
         self.establish()
@@ -396,7 +407,7 @@ class ImLarkTest(unittest.TestCase):
                 item[key] = value
                 out, _ = self.fetch_pages([self.page([self.message(), item])])
                 self.assertTrue(out["incomplete"])
-                self.assertEqual((self.ws / "ledger/im.jsonl").read_bytes(), before)
+                self.assert_no_scan_progress(before)
 
     def test_duplicate_json_keys_nan_and_conflicting_versions_reject_whole_batch(self):
         self.establish()
@@ -406,10 +417,10 @@ class ImLarkTest(unittest.TestCase):
         for raw in raws:
             out, _ = self.fetch_pages([subprocess.CompletedProcess([], 0, raw, "")])
             self.assertTrue(out["incomplete"])
-            self.assertEqual((self.ws / "ledger/im.jsonl").read_bytes(), before)
+            self.assert_no_scan_progress(before)
         out, _ = self.fetch_pages([self.page([self.message(), self.message(text="不同版本")])])
         self.assertIn("conflicting_message_version", out["errors"])
-        self.assertEqual((self.ws / "ledger/im.jsonl").read_bytes(), before)
+        self.assert_no_scan_progress(before)
 
     def test_bot_other_user_and_non_open_id_cannot_claim_owner_and_deleted_body_not_parsed(self):
         self.establish()
@@ -424,7 +435,8 @@ class ImLarkTest(unittest.TestCase):
         self.assertFalse(out["incomplete"])
         self.assertEqual(out["incoming"]["rejected"], {"deleted": 1})
         self.assertEqual(self.rows()["in"], {})
-        self.assertEqual(self.poll()["sinceMs"], ANCHOR)
+        self.assertEqual(self.poll()["businessCursorMs"], 0)
+        self.assertEqual(self.poll()["sinceMs"], self.poll()["scanThroughMs"])
 
     def test_errors_do_not_contain_remote_text_tokens_or_argv_and_are_bounded(self):
         self.queue(text="合成绝密正文 secret-body")
@@ -517,7 +529,8 @@ class ImLarkTest(unittest.TestCase):
             self.assertEqual(p.returncode, 0, stdout + stderr)
         self.assertEqual(sum(len(json.loads(out)["incoming"]["new"]) for out, _ in results), 1)
         self.assertEqual(len(self.rows()["in"]), 1)
-        self.assertEqual(self.poll()["sinceMs"], int(message["create_time"]))
+        self.assertEqual(self.poll()["businessCursorMs"], int(message["create_time"]))
+        self.assertEqual(self.poll()["sinceMs"], self.poll()["scanThroughMs"])
         self.assertEqual(len([o for o in self.rows()["out"].values() if o.get("replyTo") == message["message_id"]]), 1)
 
     def test_each_built_package_runs_independent_doctor_send_fetch_and_ack_outside_repo(self):

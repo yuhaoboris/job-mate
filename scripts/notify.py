@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fsutil  # noqa: E402
+import im_scan  # noqa: E402
 import ledger  # noqa: E402
 
 CHANNELS = {"lark", "none"}
@@ -114,7 +115,7 @@ def read_records(ws):
     if not path.exists():
         return []
     rows = []
-    for no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for no, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
         if not line.strip():
             continue
         try:
@@ -439,9 +440,11 @@ def receipt(ws, ctx, key, token, result, message_id=None, chat_id=None, create_t
 
 
 def sync_view(ws, cfg):
-    st = load_state(ws, cfg)
+    records = read_records(ws)
+    scans = im_scan.project(records, now_ms())
+    st = fold(records, cfg)
     # 按回执落盘顺序，而非排队顺序确定第一次私聊；迟到回执不能改写它。
-    for rec in read_records(ws):
+    for rec in records:
         if (rec.get("type") != "out" or rec.get("status") != "sent"
                 or not nonempty(rec.get("chatId")) or not valid_ms(rec.get("createTime"))):
             continue
@@ -454,6 +457,12 @@ def sync_view(ws, cfg):
         elif st["chatId"] and rec["chatId"] != st["chatId"]:
             st["chatConflicts"].append(rec["chatId"])
     st["outByMessage"] = {mid: o for mid, o in st["outByMessage"].items() if o.get("route") == cfg["route"]}
+    key = (cfg["route"], st["chatId"])
+    st["activeScan"] = scans["active"].get(key)
+    st["scanThroughMs"] = scans["through"].get(key, 0)
+    last_cursor = max((i for i, r in enumerate(records) if r.get("type") == "cursor" and r.get("route") == cfg["route"]), default=-1)
+    if scans["completedAt"].get(key, -1) > last_cursor:
+        st["lastIncomplete"] = False
     return st
 
 
@@ -462,10 +471,68 @@ def poll(ws, ctx):
     st = sync_view(ws, cfg)
     first = first_sent_ms(st, cfg)
     return {**{k: cfg[k] for k in ("channel", "ownerId", "larkProfile")}, "chatId": st["chatId"],
-            "sinceMs": max(st["cursor"], first or 0), "readable": cfg["channel"] != "none" and bool(st["chatId"]) and first is not None,
+            "sinceMs": max(st["cursor"], first or 0, st["scanThroughMs"]),
+            "businessCursorMs": st["cursor"], "scanThroughMs": st["scanThroughMs"], "readable": cfg["channel"] != "none" and bool(st["chatId"]) and first is not None,
             "outboxPending": sum(o["status"] != "sent" for o in outbox_rows(ws, ctx)),
             "replies": [public_reply(r) for r in pending_replies(st)], "paused": ledger.read_pause(ws),
-            "lastIncomplete": st["lastIncomplete"]}
+            "lastIncomplete": st["lastIncomplete"] or st["activeScan"] is not None}
+
+
+def scan_crash(point):
+    if os.environ.get("JOB_MATE_TESTING") == "1" and os.environ.get("JOB_MATE_TEST_CRASH_AT") == point:
+        os._exit(70)
+
+
+def scan_open(ws, ctx, started_ms):
+    """首次请求前保存意图；续读仅取同路由、同私聊的已验证 checkpoint。"""
+    with poll_mutex(ws):
+        with im_mutex(ws):
+            ledger.version_gate(ws, "write")
+            plan = poll(ws, ctx)
+            st = sync_view(ws, ctx["cfg"])
+            if st["activeScan"] is not None:
+                scan = st["activeScan"]
+                observed = im_scan.project(read_records(ws), now_ms())["observed"].get(scan["scanId"], {})
+                return {**scan, "observedVersions": observed}
+            if not plan["readable"]:
+                return None
+            lower = max(0, plan["sinceMs"] // 1000 - 1) * 1000
+            upper = (started_ms + 999) // 1000 * 1000
+            if lower >= upper:
+                return None
+            record = {"type": "scan", "scanVersion": im_scan.VERSION, "phase": "intent", "scanId": uuid.uuid4().hex,
+                      "route": ctx["cfg"]["route"], "chatId": plan["chatId"], "startMs": lower, "endMs": upper,
+                      "startedMs": started_ms, "revision": 0}
+            im_scan.project([*read_records(ws), record], now_ms())
+            append_record(ws, record, ctx["tz"])
+            scan_crash("scan_after_intent")
+            return im_scan.initial(record)
+
+
+def scan_accept(ws, ctx, scan, progress, batch):
+    """唯一推进 seam：复用 incoming 完成全部可重放副作用后，才持久化下一页或终页水位。"""
+    with ledger.gated(ws, "write"):
+        with poll_mutex(ws):
+            with im_mutex(ws):
+                records = read_records(ws)
+                projection = im_scan.project(records, now_ms())
+                key = (ctx["cfg"]["route"], scan["chatId"])
+                live = projection["active"].get(key)
+                im_scan.need(live is not None and live["recordDigest"] == scan["recordDigest"])
+                im_scan.transition(live, progress)
+                proof = im_scan.proof(progress)
+                im_scan.need(batch["since"] == scan["startMs"] and batch["complete"] is (progress["phase"] == "complete"))
+        scan_crash("scan_before_incoming")
+        result = incoming(ws, ctx, batch, _scan_proof=proof)
+        scan_crash("scan_after_incoming")
+        with poll_mutex(ws):
+            with im_mutex(ws):
+                ledger.version_gate(ws, "write")
+                im_scan.project([*read_records(ws), progress], now_ms())
+                scan_crash("scan_before_checkpoint")
+                append_record(ws, progress, ctx["tz"])
+                scan_crash("scan_after_checkpoint")
+        return {**result, **poll(ws, ctx)}
 
 
 def normalize_cmd(text):
@@ -529,7 +596,7 @@ def run_command(ws, ctx, rec):
         return "已恢复。" + (f"有 {n} 条答复待执行，马上处理。" if n else "")
 
 
-def dispatch_commands(ws, ctx):
+def dispatch_commands(ws, ctx, scan=False):
     applied = []
     for rec in pending_commands(load_state(ws, ctx["cfg"])):
         with im_mutex(ws):
@@ -537,6 +604,8 @@ def dispatch_commands(ws, ctx):
             if not previous or previous.get("status") != "pending":
                 append_record(ws, {"type": "command", "messageId": rec["messageId"], "status": "pending"}, ctx["tz"])
         text = run_command(ws, ctx, rec)
+        if scan:
+            scan_crash("scan_command_after_effect")
         with im_mutex(ws):
             append_record(ws, {"type": "command", "messageId": rec["messageId"], "status": "applied", "text": text}, ctx["tz"])
         applied.append(rec["command"])
@@ -560,7 +629,7 @@ def validate_batch(batch):
             raise NotifyError("parentId 应为非空 ID 或 null")
 
 
-def incoming(ws, ctx, batch):
+def incoming(ws, ctx, batch, _scan_proof=None):
     validate_batch(batch)
     cfg, tz = ctx["cfg"], ctx["tz"]
     with poll_mutex(ws):
@@ -638,15 +707,25 @@ def incoming(ws, ctx, batch):
                         rec.update(state="ignored", note="没有待答复的事项")
                     else:
                         rec["state"] = "received"
+                if _scan_proof is not None:
+                    rec["scanMessage"] = {"scanId": _scan_proof["scanId"], "revision": _scan_proof["revision"],
+                                          "digest": _scan_proof["versions"][mid]}
                 append_record(ws, rec, tz)
+                if _scan_proof is not None:
+                    scan_crash("scan_incoming_after_message")
                 st["in"][mid] = rec
                 new.append(rec)
             cursor = max([st["cursor"], *[m["createTime"] for m in accepted]])
             # complete 只确认从本次请求起的连续前缀；陈旧批次不能清除后来的 incomplete。
             covered_until = max([batch["since"], *[m["createTime"] for m in accepted]])
             incomplete = not batch["complete"] or (st["lastIncomplete"] and covered_until < plan["sinceMs"])
-            append_record(ws, {"type": "cursor", "route": cfg["route"], "createTime": cursor, "lastIncomplete": incomplete}, tz)
-        commands = dispatch_commands(ws, ctx)
+            cursor_record = {"type": "cursor", "route": cfg["route"], "createTime": cursor, "lastIncomplete": incomplete}
+            if _scan_proof is not None:
+                cursor_record["scanBatch"] = _scan_proof
+            append_record(ws, cursor_record, tz)
+            if _scan_proof is not None:
+                scan_crash("scan_incoming_after_cursor")
+        commands = dispatch_commands(ws, ctx, scan=_scan_proof is not None)
         # 重放补齐已入账消息的缺失回执；唯一键确保写入中断也不丢、不重复。
         st = load_state(ws, cfg)
         for rec in st["in"].values():

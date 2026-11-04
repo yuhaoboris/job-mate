@@ -15,6 +15,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fsutil
+import im_scan
 import ledger
 import notify
 
@@ -331,14 +332,16 @@ def fetch(ws, ctx, command, start_ms):
     plan = notify.poll(ws, ctx)
     if not plan["readable"]:
         return {"skipped": "not_readable"}, False
-    lower = max(0, plan["sinceMs"] // 1000 - 1)
-    upper = (start_ms + 999) // 1000
-    if lower >= upper:
+    scan = notify.scan_open(ws, ctx, start_ms)
+    if scan is None:
         return {"skipped": "boundary_after_sync_start"}, False
-    params = {"container_id_type": "chat", "container_id": plan["chatId"], "start_time": str(lower),
-              "end_time": str(upper), "sort_type": "ByCreateTimeAsc", "page_size": 50}
-    messages, tokens, versions = [], set(), {}
-    previous = -1
+    lower, upper = scan["startMs"], scan["endMs"]
+    params = {"container_id_type": "chat", "container_id": scan["chatId"], "start_time": str(lower // 1000),
+              "end_time": str(upper // 1000), "sort_type": "ByCreateTimeAsc", "page_size": 50}
+    if scan["nextToken"] is not None:
+        params["page_token"] = scan["nextToken"]
+    messages, tokens, versions = [], list(scan["seenTokens"]), dict(scan["versions"])
+    previous, pages = scan["lastMs"], scan["pageCount"]
     complete = False
     for _ in range(MAX_PAGES):
         response = cli_call(ws, "write", command, plan["larkProfile"],
@@ -352,22 +355,26 @@ def fetch(ws, ctx, command, start_ms):
             require(bool(token) and token not in tokens and bool(data["items"]), "missing_or_repeated_page_token")
         else:
             require(token == "", "unexpected_terminal_token")
+        pages += 1
         for item in data["items"]:
-            created, message = native_message(item, plan, lower * 1000, upper * 1000)
+            created, message = native_message(item, plan, lower, upper)
             require(created >= previous, "page_order_gap")
             previous = created
-            mid, version = item["message_id"], notify.canonical(item)
+            mid, version = item["message_id"], im_scan.digest(item)
             require(mid not in versions or versions[mid] == version, "conflicting_message_version")
+            observed = scan.get("observedVersions", {})
+            require(mid not in observed or observed[mid] == version, "conflicting_message_version")
             if mid not in versions and message is not None:
                 messages.append(message)
             versions[mid] = version
         if not data["has_more"]:
             complete = True
             break
-        tokens.add(token)
+        tokens.append(token)
         params["page_token"] = token
-    batch = {"since": lower * 1000, "complete": complete, "messages": messages}
-    return notify.incoming(ws, ctx, batch), not complete
+    batch = {"since": lower, "complete": complete, "messages": messages}
+    progress = im_scan.progress(scan, None if complete else tokens[-1], tokens, previous, versions, pages, complete)
+    return notify.scan_accept(ws, ctx, scan, progress, batch), not complete
 
 
 def sync(ws, send_only=False, fetch_only=False):
@@ -388,7 +395,7 @@ def sync_locked(ws, send_only, fetch_only):
     if not send_only:
         try:
             result["incoming"], result["incomplete"] = fetch(ws, ctx, command, start)
-        except LarkError as error:
+        except (LarkError, im_scan.ScanError) as error:
             result["incomplete"] = True
             add_error(result, str(error))
         if not fetch_only:
