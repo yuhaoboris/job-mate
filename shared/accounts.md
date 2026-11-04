@@ -37,6 +37,6 @@ jobKey 保持原格式（平台加职位 ID，或公司/职位名），实际职
 
 check 的去重范围、quota 的额度与间隔使用此结果；quota.limits 展示最终值。计数按平台账号隔离，写过 greet/pending 即占额度，失败或不明不退回；停止名单仍是整个工作区的限制，不因账号不同失效。
 
-`effective_nudge(profile, platform)` 合并内置缺省、profile.nudge 全局项及其 platforms.<平台>：afterReadHours=24、afterUnreadHours=24、intervalHours=48、maxPerSilence=3、maxPerThread=6、perDay=20。maxPerSilence 取1–3，maxPerThread 取 maxPerSilence–9，次数为整数，小时非负。错误类型、非法范围不静默忽略。
+`effective_nudge(profile, platform)` 合并内置缺省、profile.nudge 全局项及其 platforms.<平台>：afterReadHours=24、afterUnreadHours=24、intervalHours=48、maxPerSilence=3、maxPerThread=6、perDay=20。maxPerSilence 取1–3，maxPerThread 取 maxPerSilence–9，全部数值为正整数（次数另受上述上限约束）。错误类型、非法范围不静默忽略。
 
-这只是参数计算接口；完整跟进调度与发送准备尚未启用。旧 canFollowup 不能当作已实现新 nudge 策略或外发授权。跨平台不去重，配额也不跨平台累计。
+跟进候选与 prepare/guard 见[发送准备](sending.md#主动跟进的最终门禁)；配置计算不授予外发权限。跨平台不去重，配额按原始平台/账号隔离。

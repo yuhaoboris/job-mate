@@ -46,7 +46,7 @@ kinds 是 greet / intro / reply / resume / nudge 的非空不重复子集；max 
 
 - greet / intro：长期 authorization.apply.send 为 true，缺省 false；否则需 apply_send grant。
 - reply / resume：长期 authorization.followup.reply 为 L2，缺省 L2；L1 只起草，发送需覆盖的 reply grant 或有效本人决定步骤。
-- followup.nudge 是独立布尔，缺省 true；不再使用 level/L3。**当前 nudge 策略尚未启用，prepare 拒绝 nudge**，不得根据旧 canFollowup 字段外发。
+- followup.nudge 是独立布尔，缺省 true；L1+nudge:true 可按策略跟进，L2+nudge:false 仍需独立 nudge grant。不能借给 greet、普通 reply 或本人决定的来源。候选不构成发送授权。
 - 非 ack 的本人决定必须明确 decision + step，按有效版本匹配，不能失败后回退为长期授权。
 
 追加授权用可重复 --grant，原话仅审计，不解析原话授予权限：
@@ -63,6 +63,22 @@ item 为 apply_send / reply / nudge / hours / dedup_once。scope 必须且仅为
 仅 dedup_once 可豁免 greet 的本地 already_contacted / reposted_suspect：scope 必须是 jobs 的单个已唯一绑定职位，max 必须为整数1。同轮同一原始目标重复登记报错。它不提供发送授权，仍须 long_term 或 apply_send，且所有其他门禁通过。
 
 实际遇去重命中且准备成功时，pending 冻结 dedupGrant 编号；独立按同 run 唯一 pending 计数，失败/不明不退款。没有命中、其他门禁失败或只读 check 均不消费。未决外发、公司拒绝/风险、停止名单、暂停/接管、时段、间隔与配额一概不豁免。页面已经联系必须记 already_contacted，不点首次沟通；greet 的可选 pageState.contacted 是采集到的布尔页面事实，true 一律拒绝。BOSS 的「继续沟通」按此处理。
+
+## 主动跟进的最终门禁
+
+`threads.canNudge` 只是本地候选，true 同时有 nudgeNeedsPageState:true；不证明页面已读/送达、没有新HR或本轮已授权。prepare 必须带 pageState；每次 nudge guard 必传 `--page-state '<JSON>'`，无参数不沿用旧证据。其他 kind 原接口不变，不能用此参数改身份、正文、权限或标签。
+
+页面对象仅允许且必须有以下五项：
+```json
+{"lastSpeaker":"us","lastOurStatus":"read","lastOurAt":"2026-11-04T10:00:00+08:00","precision":"second","readAt":"2026-11-05T11:00:00+08:00"}
+```
+lastSpeaker 为 us/hr；us 须已按接管规则核对是本地已确认我方活动，不把无法归属的人工作为 Agent 发言。lastOurStatus 为 read/delivered；lastOurAt、readAt 均为真实读取的带时区绝对时间。precision 为 second/minute，分钟须整分钟并按下一分钟上界计等待；日期、未知精度或状态一律拒绝。guard 的 readAt 须在 pending.at 至 now 内；时间戳只是调用者证据，不证明工具实际读到页面，等待后仍须逐动作重读。页面不得比本地最后 sent 或 prepare 已确认的页面时间更早超过2分钟。本地 sent 后2分钟以外或没有 Agent sent 的活动，仅可认可同会话 user/adopted.readAt 或 user/released.at 分界前的历史，分钟上界不得跨过本人交接分界；不伪造 sent，不重置计数。分界后的陌生活动、新HR尾部或歧义先处理，不靠换时间放行。
+
+按最后页面时间分别等待 afterReadHours/afterUnreadHours；两次跟进还须间隔 intervalHours（从上次首次 pending 与确认 sent 较晚者算）。次数按原始平台/账号/会话的唯一首次 pending，failed_no_send/uncertain 不退。guard 排除自身再按同一配额检查，等价于含自身不超额。maxPerSilence 连续1–3，maxPerThread 累计，perDay 每平台原始账号自然日；hours 例外不越过 nudge 时段。silent/暂停/接管/关闭/停止名单/风险/未决与本轮限制仍阻断。
+
+nudgeSeq 是本段沉默中的下一序号；tags 须恰有一个 nudge:<序号> 与一个 intent:<意图>。maxPerSilence 为1时 ask_answer；2时 confirm_open→ask_answer；3时 confirm_open→propose_interview→ask_answer，最后总请对方明确答复。每次据JD、事实和style重新组织，不是模板；propose_interview 只表达面试意愿，任何具体面试时间均交本人。仅 nudge 增加禁词进度/跟进/催，仍合并精通与本人禁词。仅 nudge 与本会话所有 greet/intro/nudge 的文字比较（含已占次数的失败尝试），NFKC、去空白、转小写后相等或 SequenceMatcher 比率≥0.85 返回 repeated_text；不跨原始账号，不只比最后一条；身份缺失的兼容会话保守阻断，不能拿来证明授权。
+
+跟进原因码：nudge_too_early、nudge_interval、nudge_silence_limit、nudge_thread_limit、nudge_day_limit、nudge_intent_mismatch、not_our_turn、thread_silent、page_state_mismatch、repeated_text；通用门禁原因码仍适用，拒绝不写 pending。序号重开必须有[确认新HR回复凭据](tails.md#确认新hr回复)，不能凭 hrAt、同尾重读或 released 清零。次数用尽只建议登记 observe/silent，不再发、不自动清计数。
 
 ## 本人决定与系统回执
 

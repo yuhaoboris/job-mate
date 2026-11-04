@@ -90,6 +90,7 @@ class Workspace:
             if code == 0:
                 out["event"] = next(e for e in ledger.read_events(self.path)[0] if e["eventId"] == out["eventId"])
             return code, out
+        base = history_fixture.reply_input(self.path, base)
         return self.run("append", "--json", json.dumps(base, ensure_ascii=False))
 
     def history(self, **ev):
@@ -483,7 +484,7 @@ class LedgerTest(unittest.TestCase):
         code, out = self.ws.append(status="pending", runId="ro", lock=False)
         self.assertEqual(code, 1)
         self.assertEqual(out["reasons"][0]["code"], "no_send")
-        self.assertEqual(self.ws.append(kind="observe", observed="replied", runId="ro", lock=False)[0], 0)
+        self.assertEqual(self.ws.append(kind="observe", observed="resume_requested", runId="ro", lock=False)[0], 0)
 
     def test_global_pause_blocks_pending_and_guard_until_resumed(self):
         self.ws.ensure_lock("run-p")
@@ -821,7 +822,8 @@ class LedgerTest(unittest.TestCase):
         t = out["threads"][0]
         self.assertEqual(t["recruiter"], "张先生")
         self.assertEqual(t["outboundTexts"][0]["text"], "您好")
-        self.assertTrue(t["canFollowup"])
+        self.assertFalse(t["canNudge"])
+        self.assertEqual(t["nudgeReason"], "nudge_too_early")
 
     def test_threads_manual_and_release(self):
         common = dict(company="甲", recruiter="张先生")
@@ -829,39 +831,40 @@ class LedgerTest(unittest.TestCase):
         self.ws.append(kind="observe", observed="manual", skill="followup", **common)
         _, out = self.ws.run("threads")
         self.assertTrue(out["threads"][0]["manual"])
-        self.assertFalse(out["threads"][0]["canFollowup"])
+        self.assertFalse(out["threads"][0]["canNudge"])
         self.ws.append(kind="observe", observed="released", skill="user", **common)
         _, out = self.ws.run("threads")
         self.assertFalse(out["threads"][0]["manual"])
 
-    def test_followup_eligibility_rules(self):
+    def test_nudge_limits_count_pending_and_reset_only_with_reply_proof(self):
+        """设计9.2：连续3/累计6替代旧2次冷却7天，人工回复带合成位置凭据。"""
         common = dict(company="甲", recruiter="张先生")
         days_ago = lambda n: (datetime.now(TZ) - timedelta(days=n)).isoformat(timespec="seconds")
         self.ws.greet(at=days_ago(10), **common)
-        self.ws.greet(kind="nudge", skill="followup", at=days_ago(3), **common)
-        _, out = self.ws.run("threads")
-        self.assertTrue(out["threads"][0]["canFollowup"])
-        self.ws.greet(kind="nudge", skill="followup", at=days_ago(2), **common)
+        for days in (7, 5, 3):
+            self.ws.greet(kind="nudge", skill="followup", at=days_ago(days), **common)
         _, out = self.ws.run("threads")
         t = out["threads"][0]
-        self.assertEqual(t["followupsSinceReply"], 2)
-        self.assertFalse(t["canFollowup"])
-        self.assertIn("连续", t["followupReason"])
-        self.ws.append(kind="observe", observed="replied", skill="followup", **common)
-        _, out = self.ws.run("threads")
-        self.assertTrue(out["threads"][0]["canFollowup"])
-        self.ws.greet(kind="nudge", skill="followup", **common)
+        self.assertEqual((t["nudgesSinceReply"], t["nudgesTotal"]), (3, 3))
+        self.assertFalse(t["canNudge"])
+        self.assertTrue(t["suggestSilent"])
+        self.assertEqual(self.ws.append(kind="observe", observed="replied", skill="followup", **common)[0], 0)
         _, out = self.ws.run("threads")
         t = out["threads"][0]
-        self.assertFalse(t["canFollowup"])
-        self.assertIn("3", t["followupReason"])
+        self.assertEqual((t["nudgesSinceReply"], t["nudgesTotal"]), (0, 3))
+        self.assertFalse(t["canNudge"])
+        for _ in range(3):
+            self.ws.greet(kind="nudge", skill="followup", **common)
+        _, out = self.ws.run("threads")
+        self.assertEqual(out["threads"][0]["nudgesTotal"], 6)
+        self.assertTrue(out["threads"][0]["suggestSilent"])
 
-    def test_followup_once_per_day(self):
+    def test_nudge_uses_48_hour_interval_instead_of_one_per_day(self):
         common = dict(company="乙", recruiter="李女士")
         self.ws.greet(**common)
         self.ws.greet(kind="nudge", skill="followup", **common)
         _, out = self.ws.run("threads", "--company", "乙")
-        self.assertIn("今天", out["threads"][0]["followupReason"])
+        self.assertEqual(out["threads"][0]["nudgeReason"], "nudge_interval")
 
     def test_observe_rejected_blocks_company(self):
         self.ws.append(kind="observe", observed="rejected", company="己公司", skill="followup")
@@ -969,7 +972,7 @@ class CurrentTakeoverTest(unittest.TestCase):
         self.observe("released", skill="user")
         after = self.thread()
         self.assertFalse(after["manual"])
-        for key in ("followupsSent", "followupsSinceReply", "readAt"):
+        for key in ("nudgesTotal", "nudgesSinceReply", "readAt"):
             self.assertEqual(after[key], before[key])
 
     def test_all_local_sent_available_including_boundary_and_resume(self):

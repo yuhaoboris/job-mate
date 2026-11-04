@@ -36,7 +36,7 @@ description: 巡检招聘平台（首批 BOSS 直聘）的 HR 会话：分类新
 | L1 | 只读、分诊、起草；草稿写入 inbox 由本人决定。只执行本人已决定的事项 |
 | L2 | L1 + 按 `qa.yaml` 回答有依据的问题、对方索要时发简历 |
 
-当前 nudge 策略尚未启用，prepare 一律拒绝；旧 canFollowup 与下文旧跟进节奏都不是外发授权，不执行第 6 节。
+nudge 与 reply 独立：L1+nudge:true 可按第6节跟进，L2+nudge:false 无独立 nudge 例外则不跟进。候选不授权，最终门禁与新页面字段读[发送准备](../../shared/sending.md#主动跟进的最终门禁)。
 
 **由定时任务运行时**：先同步 IM，执行已落盘的决定，处理相关会话后收尾；定时执行与进程互斥由所用 Agent 或系统负责。
 
@@ -128,7 +128,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 ## 3. 巡检会话
 
-1. 打开消息列表，先处理有未读标记的会话，再处理 `ledger threads --platform boss` 中 `canFollowup` 为 `true` 的会话（当前不执行主动跟进）。
+1. 打开消息列表，先处理有未读标记的会话，再处理 `ledger threads --platform boss` 中 `canNudge` 为 `true` 的会话；它只是待页面核验候选，不是发送许可。
 2. 本轮处理的会话数以本人指令为准；未说明时处理全部未读和待跟进会话。列表懒加载时滚动加载，读到已处理过的旧会话为止。
 3. 对每个会话，读完整上下文：从我方第一条消息或最近 20 条消息起，包括 HR 的请求卡片（交换联系方式、简历请求、面试邀约）。不只看列表摘要。
 4. 用 `ledger threads --company <公司> --recruiter <姓名(职务)>` 查本地状态。招聘者写法见平台通用页面要点。
@@ -181,7 +181,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 | 索要简历（文字或平台简历请求卡片） | 按第 5.2 节发送 |
 | HR 提问，`qa.yaml` 有对应口径 | 按第 5.1 节回答 |
 | HR 提问，`qa.yaml` 没有依据 | 不回答；写入 inbox，附上建议口径草稿和所需依据。本人答复后，提议把口径加入 `qa.yaml`，本人确认再写入 |
-| HR 回复了但无需回答（如「好的」「收到」） | 记 `observe/replied`；不必回复 |
+| HR 回复了但无需回答（如「好的」「收到」） | 带本次 tailId 按[新HR凭据](../../shared/tails.md#确认新hr回复)记 `observe/replied`；不必回复 |
 | 我方最后发言，HR 未回 | 当前不外发主动跟进 |
 
 **接管分界（所有会话）**：用 `threads.boundaryAt`，取本地 `sent` 时间、登记的 `readAt`、最近交还 `released` 事件时间中的最晚者。登记不用写入时间；交还不能把分界推到未来。
@@ -193,25 +193,25 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 3. 跨分界（同一分钟或同一天日期标签）：本轮不发，先 `paused` 再写「这条是你发的吗？」；选项「是我，我来处理」（manual）/「交给 Agent 继续」（released）。选交还时 `released.acknowledged` 按换算后的绝对日期（有分钟带分钟）分组；相对标签带上当时的 readAt 交脚本按平台词表换算，不以答复当天代替读取日，孤立时分不猜今天。记录 `shown`、`precision: day|minute`、`kind: text|resume|contact|interview`、正整数 `count`，不记原文。分界仍取事件时间。
 4. 后续跨界活动中，同标签同类型按页面从早到晚的前 count 条视为已确认历史，超出条数仍判断为无法判断；整个晚于分界的新活动仍是接管。上午确认当天 1 条，下午新发「14:00」是接管；若也只显示日期，则是第 2 条、再次暂停，不能算历史。
 
-HR 有新的实质性回复时，先记 `observe/replied`（`reason` 写一句摘要，不抄全文），再处理。
+任何确认的新 HR 回复（含无需回答的收到/好的）均先按[新HR凭据](../../shared/tails.md#确认新hr回复)带 tailId 记 observe/replied，reason 只摘要；同尾、旧 base、裸 hrAt 不重置。人工分支只据本人明确核对的位置和条数记 user/newHr/evidence，不能自己猜。
 
 **需要本人决定的会话事项：先记 `observe/paused`（带 `decision`），再写入 inbox**。此后整个会话暂停，直到该事项执行完毕或本人明确解除（`observe/unpaused`）。两步之间中断时，下轮由第 2.1 节的对账补齐。
 
-L1 下，需要发送的一律改为起草，写入 inbox。
+L1 下的 HR 回复/简历先起草等本人决定；独立 nudge 授权按第6节，不借给普通回复。
 
 ## 5. 发送
 
 ### 5.0 每次发送前的统一检查
 
-所有 runtime 按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护)、[证据与 guard](../../shared/execution.md#5-外发前-guard-与证据三分类) 执行。文字回复 / 跟进 / 已批准文字，先核对会话未被接管、最终文字非空，再完整读取 chat-input；这些检查在第 4 步 pending 之前完成。核对身份前不读写输入框；未知内容不清空，跳过、不写 pending 并汇报。no-send / L1 只起草时不碰聊天输入框（包括清草稿），搜索 / 筛选仅可改变显示。恢复后发前重新做去重和状态检查，不能用恢复规避 uncertain。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
+所有 runtime 按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护)、[证据与 guard](../../shared/execution.md#5-外发前-guard-与证据三分类) 执行。文字回复 / 跟进 / 已批准文字，先核对会话未被接管、最终文字非空，再完整读取 chat-input；这些检查在第 4 步 pending 之前完成。核对身份前不读写输入框；未知内容不清空，跳过、不写 pending 并汇报。no-send / L1 只起草的回复不碰聊天输入框（包括清草稿）；L1 不禁止另行授权的 nudge，搜索 / 筛选仅可改变显示。恢复后发前重新做去重和状态检查，不能用恢复规避 uncertain。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
 
 回复、发简历、主动跟进、执行已决定事项，**每一次**发送都先过这几步，任何一步不通过就不发：
 
 1. 本轮未禁发。
-2. `ledger check --run <runId> --json '<完整意图>'` 返回 allowed:true。意图含 kind、页面身份、text 或 resume、reason；执行决定还含 decision、step。使用[发送准备](../../shared/sending.md)的同一路径，不能只带事项字符串绕过暂停。
+2. `ledger check --run <runId> --json '<完整意图>'` 返回 allowed:true。意图含 kind、页面身份、text 或 resume、reason；执行决定还含 decision、step，nudge 另含 pageState 与精确序号/意图 tags。使用[发送准备](../../shared/sending.md)的同一路径，不能只带事项字符串绕过暂停。
 3. 重读会话末尾：如果出现了新消息，回到第 4 节重新判断。
 4. `ledger prepare --run <runId> --json '<同一完整意图>'` 原子准备 pending，不传 status 或冻结字段。返回错误（如已失去运行锁、本轮禁发）时**立即停止整轮**。
-5. **每一次**可能把消息发出去的点击（「发送」「同意」「发简历」的确认按钮）之前，执行 `ledger guard --run <runId> --attempt <attemptId>`，返回 `allowed: true` 后**立即**点击，中间不做别的事。返回失败说明已失锁或该尝试已被改记，**立即停止整轮**：不点击，也不为同一条消息新建尝试；结果交给本人核对。普通等待后重读页面再 guard；工具超时按[停止范围](../../shared/execution.md#结果不明时的停止范围)收尾，不自动续发。
+5. **每一次**可能把消息发出去的点击（「发送」「同意」「发简历」的确认按钮）之前，执行 `ledger guard --run <runId> --attempt <attemptId>`（nudge 必须另带当次重新读取的 `--page-state '<JSON>'`，字段见发送准备；读取时间须在 pending 至 now 内，不能沿用旧值或改写冻结正文/权限），返回 `allowed: true` 后**立即**点击，中间不做别的事。返回失败可能是失锁、页面/配额/授权变化或该尝试已被改记，**立即停止整轮**：不点击，也不为同一条消息新建尝试；结果交给本人核对。普通等待后重读页面再 guard；工具超时按[停止范围](../../shared/execution.md#结果不明时的停止范围)收尾，不自动续发。
 
 ### 5.1 回复
 
@@ -237,13 +237,12 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 
 5. 对方查看后记 `observe/resume_viewed`。请求发出不等于附件送达，汇报中分开写。
 
-## 6. 主动跟进（当前未启用）
+## 6. 主动跟进
 
-1. 只跟进 `ledger threads` 返回 `canFollowup: true` 的会话；第 5.0 节的 `check --kind nudge` 会再核对一次：每天至多 1 次、连续 2 次未回停 7 天、总数至多 3 次、未接管、未暂停、未结束。
-2. 还要满足页面状态：我方最后一条消息「已读」满 1 小时未回，或「送达」满 1 小时仍未读。以消息气泡上的时间起算，不从记录写入时间算。
-3. 只在 `profile.json` 的 `schedule.activeHours` 内跟进。
-5. 内容：一条与 JD 相关、`candidate.md` 有依据的真实经历，或一个具体问题；不催促，不重复上一条，不写「再跟进一下」。
-6. 过第 5.0 节的检查，`pending` 为 `kind: nudge`，发送确认同第 5.1 节。
+1. threads.canNudge:true 是本地候选，同时 nudgeNeedsPageState:true；仍须完整核对页面的最新发言方、可归属的我方消息、送达状态与时间，按[最终门禁](../../shared/sending.md#主动跟进的最终门禁)填写 pageState。看见新HR、陌生我方活动、仅日期或歧义就先分诊/核对，不猜已读或补时间。
+2. 按有效配置执行等待、两次跟进间隔、连续/累计/原始账号每日次数及 activeHours。默认已读/送达各24小时，跟进之间48小时，连续3次/累计6次/每账号每天20次。失败/不明也占次数；收到确证新HR后只重开连续序号，不清累计。suggestSilent 时登记 silent，不再发；released 不退款。
+3. 从本职位JD、candidate事实和style重写，不用固定模板。tags 恰带 nudge:<nudgeSeq> 与 intent:<nudgeIntent>；maxPerSilence=1/2/3 的最后一次总 ask_answer，三次默认 confirm_open→propose_interview→ask_answer。只表达面试意愿，任何具体面试时间仍上报本人。禁词进度/跟进/催及相似度被拒时另行重写，不删标签或绕门禁。
+4. 以完整意图 prepare，发送前逐动作重读，再 guard --page-state 新证据；不从 frozen pageState 回退。结果仍按第5.1节和统一停止范围收尾，nudge 权限不借给普通 reply/greet 或本人决定。
 
 ## 7. 上报
 

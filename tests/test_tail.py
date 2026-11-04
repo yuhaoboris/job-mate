@@ -32,7 +32,7 @@ class TailTest(unittest.TestCase):
         ledger.write_atomic(self.ws / ledger.MARKER, json.dumps(meta))
         self.assertEqual(self.run_cli("lock", "acquire", "--skill", "followup", "--run", "run-tail")[0], 0)
         self.identity = {"platform": "boss", "company": "合成公司", "title": "开发", "recruiter": "招聘者(HR)"}
-        code, out = self.append(kind="observe", observed="replied")
+        code, out = self.append(kind="observe", observed="resume_requested")
         self.assertEqual(code, 0, out)
         self.thread = "boss|boss-main|合成公司|招聘者(hr)"
 
@@ -52,6 +52,7 @@ class TailTest(unittest.TestCase):
     def append(self, **fields):
         event = dict(self.identity, runId="run-tail", skill="followup", reason="合成测试")
         event.update(fields)
+        event = history_fixture.reply_input(self.ws, event)
         return self.run_cli("append", "--json", json.dumps(event, ensure_ascii=False))
 
     def history(self, **fields):
@@ -212,7 +213,7 @@ class TailTest(unittest.TestCase):
                 self.assertEqual(ledger.events_path(self.ws).read_bytes(), before)
         self.assertEqual(self.tail(base="tail-000000000000")[0], 2)
         self.assertEqual(ledger.events_path(self.ws).read_bytes(), before)
-        self.assertEqual(self.append(kind="observe", observed="replied", company="另一公司")[0], 0)
+        self.assertEqual(self.append(kind="observe", observed="resume_requested", company="另一公司")[0], 0)
         foreign = self.ok_tail(thread="boss|boss-main|另一公司|招聘者(hr)")
         before = ledger.events_path(self.ws).read_bytes()
         self.assertEqual(self.tail(base=foreign["tailId"])[0], 2)
@@ -327,7 +328,7 @@ class TailTest(unittest.TestCase):
 
     def test_stable_platform_id_is_identity_even_if_display_text_and_time_change(self):
         self.identity["platform"] = "testplat"
-        self.assertEqual(self.append(kind="observe", observed="replied")[0], 0)
+        self.assertEqual(self.append(kind="observe", observed="resume_requested")[0], 0)
         thread = "testplat|test-main|合成公司|招聘者(hr)"
         body = self.snapshot([self.message("仅用于输入的秘密", None, id="hr-1")],
                              anchor=self.message("另一个秘密", None, speaker="us", id="us-1"))
@@ -374,7 +375,7 @@ class TailTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(out["event"]["threadKey"], "boss|boss-main|a｜公司|王｜hr")
         self.assertEqual(out["event"]["jobKey"], "boss|a｜公司|开发｜岗位")
-        code, out = self.append(kind="observe", observed="replied", company=None, title=None, recruiter=None)
+        code, out = self.append(kind="observe", observed="resume_requested", company=None, title=None, recruiter=None)
         self.assertEqual(code, 0, out)
         self.assertIsNone(out["event"]["threadKey"])
         self.assertIsNone(out["event"]["jobKey"])
@@ -519,7 +520,7 @@ class TailTest(unittest.TestCase):
         same = self.ok_tail(self.snapshot([self.message("A B")]), base=first["tailId"])
         self.assertTrue(same["settled"])
         self.assertEqual(ledger.content_digest("Ａ  \n B"), ledger.content_digest("A B"))
-        code, out = self.append(kind="observe", observed="replied", company="   ")
+        code, out = self.append(kind="observe", observed="resume_requested", company="   ")
         self.assertEqual(code, 0, out)
         self.assertIsNone(out["event"]["threadKey"])
         self.assertIsNone(out["event"]["jobKey"])
@@ -571,7 +572,7 @@ class TailTest(unittest.TestCase):
 
     def test_reader_never_treats_an_inflight_locked_append_as_corruption(self):
         event = ledger.prepare_event(dict(self.identity, schemaVersion=1, account="boss-main", runId="run-tail",
-                    skill="followup", kind="observe", observed="replied", at=os.environ["JOB_MATE_NOW"],
+                    skill="followup", kind="observe", observed="resume_requested", at=os.environ["JOB_MATE_NOW"],
                     attemptId="att-reader-test", reason="合成追加", evidence=None))
         writer_code = '''import sys
 from pathlib import Path
@@ -756,7 +757,7 @@ print(json.dumps({"count": len(events), "errors": errors}), flush=True)
 
     def test_history_rechecks_bridge_with_stable_ids_without_hr_raw_text(self):
         self.identity["platform"] = "testplat"
-        self.assertEqual(self.append(kind="observe", observed="replied")[0], 0)
+        self.assertEqual(self.append(kind="observe", observed="resume_requested")[0], 0)
         thread = "testplat|test-main|合成公司|招聘者(hr)"
         anchor = self.message("仅输入的旧我方内容", "today 10:00", speaker="us", id="us-old")
         hr = self.message("仅输入的HR内容", "today 10:32", id="hr-A")

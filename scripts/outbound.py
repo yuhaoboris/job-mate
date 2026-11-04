@@ -1,5 +1,6 @@
 """发送门禁的单一判定路径；CLI 传入其 ledger 实例，避免重复加载 __main__ 状态。"""
 import argparse
+from difflib import SequenceMatcher
 import re
 import unicodedata
 
@@ -70,7 +71,107 @@ def uncertainty_stop(L, events, run, ev):
     return None
 
 
-def evaluate(L, ws, ev, run, lock, events, profile, current=None):
+def nudge_page(L, page, now, pending=None):
+    fields = {"lastSpeaker", "lastOurStatus", "lastOurAt", "precision", "readAt"}
+    if not isinstance(page, dict) or set(page) != fields:
+        return None
+    try:
+        at, read = L.parse_at(page["lastOurAt"]), L.parse_at(page["readAt"])
+    except (ValueError, TypeError):
+        return None
+    if (page["precision"] not in ("minute", "second") or page["lastOurStatus"] not in ("read", "delivered")
+            or page["lastSpeaker"] not in ("us", "hr") or at > read or read > now
+            or pending is not None and read < L.parse_at(pending["at"])):
+        return None
+    if page["precision"] == "minute":
+        if at.second or at.microsecond:
+            return None
+        try:
+            upper = at + L.timedelta(minutes=1)
+        except OverflowError:
+            return None
+    else:
+        if not re.search(r"T\d{2}:\d{2}:\d{2}", page["lastOurAt"]):
+            return None
+        upper = at
+    return at, upper, read
+
+
+def nudge_budget(L, ev, events, profile, now):
+    key = L.thread_key(ev)
+    state, policy = L.nudge_state(events, key, profile), profile["nudge"]
+    if state["silent"]:
+        return deny("thread_silent", "连续沉默已登记，须确认新 HR 回复才重开")
+    if state["nudgesSinceReply"] >= policy["maxPerSilence"]:
+        return deny("nudge_silence_limit", "连续跟进次数已满")
+    if state["nudgesTotal"] >= policy["maxPerThread"]:
+        return deny("nudge_thread_limit", "会话累计跟进次数已满")
+    attempts = L.attempts_of(events)
+    firsts = [(a, next(e for e in a["events"] if e["status"] == "pending")) for a in attempts.values()
+              if a["kind"] == "nudge" and a["everPending"]]
+    today = sum(a["platform"] == ev["platform"] and a["account"] == ev["account"]
+                and L.parse_at(p["at"]).astimezone(now.tzinfo).date() == now.date() for a, p in firsts)
+    if today >= policy["perDay"]:
+        return deny("nudge_day_limit", "当前平台原始账号当日跟进次数已满")
+    times = [max([L.parse_at(p["at"])] + [L.parse_at(e["at"]) for e in a["events"] if e["status"] == "sent"])
+             for a, p in firsts if L.compatible_thread_keys(L.thread_key(L.thread_identity(p, attempts)), key)]
+    if times and (now - max(times)).total_seconds() < policy["intervalHours"] * 3600:
+        return deny("nudge_interval", "距本会话上次跟进未满间隔")
+    hours = profile["schedule"]["activeHours"]
+    if not (now.isoweekday() in hours["weekdays"] and hours["start"] <= now.strftime("%H:%M") < hours["end"]):
+        return deny("outside_hours", "不在本人设置的主动跟进时段")
+    return None
+
+
+def nudge_policy(L, ev, events, profile, now, page, pending=None):
+    key = L.thread_key(ev)
+    parsed = nudge_page(L, page, now, pending)
+    if parsed is None:
+        return deny("page_state_mismatch", "须明确重新读取的我方状态、绝对时间、精度与读取时间")
+    if page["lastSpeaker"] != "us":
+        return deny("not_our_turn", "最后发言方为 HR，先处理来信")
+    at, upper, read = parsed
+    attempts = L.attempts_of(events)
+    last, blocked = L.nudge_turn(events, key)
+    if blocked:
+        return deny(blocked, "仍有 HR 来信、尾部歧义或缺少可归属的我方活动/本人交接依据")
+    last_at = L.parse_at(last["at"]) if last is not None else None
+    known_at = last_at
+    if pending is not None:
+        prepared = nudge_page(L, pending.get("pageState"), now)
+        if prepared is None:
+            return deny("page_state_mismatch", "原准备缺少可信页面快照，先核对收尾")
+        known_at = max([prepared[0]] + ([last_at] if last_at is not None else []))
+    if known_at is not None and (known_at - at).total_seconds() > 120:
+        return deny("page_state_mismatch", "页面早于本地最后发送，先核对旧页面")
+    if last_at is None or (at - last_at).total_seconds() > 120:
+        owner = L.nudge_owner_boundary(events, key)
+        if owner is None or upper > owner[1]:
+            return deny("page_state_mismatch", "陌生我方活动不在本人交接的已知历史内，先核对接管")
+    problem = nudge_budget(L, ev, events, profile, now)
+    if problem:
+        return problem
+    policy, state = profile["nudge"], L.nudge_state(events, key, profile)
+    delay = policy["afterReadHours"] if page["lastOurStatus"] == "read" else policy["afterUnreadHours"]
+    if (now - upper).total_seconds() < delay * 3600:
+        return deny("nudge_too_early", "页面时间区间上界起算尚未满足等待小时数")
+    tags = ev.get("tags", [])
+    if ([t for t in tags if t.startswith("nudge:")] != ["nudge:" + str(state["nudgeSeq"])]
+            or [t for t in tags if t.startswith("intent:")] != ["intent:" + state["nudgeIntent"]]):
+        return deny("nudge_intent_mismatch", "连续序号与意图标签须精确一致且各只有一个")
+    normalize = lambda s: re.sub(r"\s+", "", unicodedata.normalize("NFKC", s)).lower()
+    text = normalize(ev["text"])
+    for a in attempts.values():
+        if a["kind"] not in ("greet", "intro", "nudge") or not L.compatible_thread_keys(L.thread_key(L.thread_identity(a["events"][0], attempts)), key):
+            continue
+        for e in a["events"]:
+            old = normalize(e.get("text") or "")
+            if old and (old == text or SequenceMatcher(None, old, text).ratio() >= .85):
+                return deny("repeated_text", "与本会话之前的招呼或跟进文字相同或过于相似")
+    return None
+
+
+def evaluate(L, ws, ev, run, lock, events, profile, current=None, page_state=None):
     """只计算结果，不写事件、不续锁；prepare 在同一协调区内使用此结果。"""
     now, tz = L.fsutil.now(L.tz_of(profile)), L.tz_of(profile)
     checking = current is not None
@@ -100,8 +201,6 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
     dedup_grant = None
     ack = step == "ack"
     approved = bool(decision and not ack)
-    if kind == "nudge":
-        return deny("not_authorized", "跟进策略尚未启用")
     authorization = profile["authorization"]
     apply, followup = authorization["apply"], authorization["followup"]
     source, version = None, None
@@ -124,14 +223,14 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
             return problem
         source = f"decision:{decision}@v{version}"
     if source is None:
-        long_term = apply["send"] if kind in ("greet", "intro") else followup["reply"] == "L2"
+        long_term = (apply["send"] if kind in ("greet", "intro") else followup["nudge"] if kind == "nudge" else followup["reply"] == "L2")
         frozen_source = current.get("authorizedBy") if checking else None
         if checking and frozen_source == "long_term" and not long_term:
             return deny("not_authorized", "原长期授权已失效，不更换授权来源")
         if long_term and (not checking or frozen_source == "long_term"):
             source = "long_term"
         else:
-            item = "apply_send" if kind in ("greet", "intro") else "reply"
+            item = "apply_send" if kind in ("greet", "intro") else "nudge" if kind == "nudge" else "reply"
             grants = [g for g in lock.get("grants", []) if g["item"] == item
                       and (not checking or frozen_source == "grant:" + g["id"])]
             covered = [g for g in grants if L.scope_covers(g, bindings.get(g["id"], []), ev)]
@@ -164,7 +263,8 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
             style = profile["style"]
             banned = style["bannedWords"]
             normalize = lambda s: re.sub(r"\s+", "", unicodedata.normalize("NFKC", s)).lower()
-            if any(normalize(word) in normalize(text) for word in ["精通", *banned]):
+            system = ["精通", *(["进度", "跟进", "催"] if kind == "nudge" else [])]
+            if any(normalize(word) in normalize(text) for word in [*system, *banned]):
                 return deny("banned_word", "自拟文字含系统或本人禁用词")
             maximum = 150 if kind == "reply" else 100 if style["length"] == "medium" else 60
             if len(text) > maximum:
@@ -176,7 +276,7 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
         if wait > 0:
             return deny("interval", "同一平台账号的全部外发共用最小间隔", int(wait) + (wait != int(wait)))
     attempts = list(L.attempts_of(events).values())
-    if kind == "greet":
+    if kind in ("greet", "nudge"):
         for reason in L.company_observation_reasons(events, ev["platform"], ev["account"], ev["company"]):
             return deny("company_risk" if reason["type"] == "risk" else "company_rejected", reason["detail"])
     threads = L.build_threads(other_events, ev["platform"], profile, ev["account"])
@@ -192,6 +292,11 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
         if any(d != decision or not (approved or ack) or not L.same_complete_thread_keys(key, requested_key)
                for d in thread["pausedBy"]):
             return deny("thread_paused", "存在不属于当前有效决定/邀约的暂停")
+    if kind == "nudge":
+        problem = nudge_policy(L, ev, other_events, profile, now,
+                               page_state if checking else ev.get("pageState"), current)
+        if problem:
+            return problem
     if kind == "intro":
         if not any(a["kind"] == "greet" and a["status"] == "sent" and a["runId"] == run and not a["identityConflicts"]
                    and L.same_complete_thread_keys(L.thread_key(L.thread_identity(L.sent_metadata(a)[0], {L.attempt_key(a): a})),

@@ -144,7 +144,7 @@ salary 合问区间、税前/税后、月薪/年薪及 matchRule；resumes 问�
 - nudge：说明「对方已读不回或未读时，至少隔一天才跟进；后续间隔默认 48 小时，最多连续 3 次，最后一次请对方给明确答复」，再问是否开启，缺省开启。默认每会话总共 6 次、每天 20 次；只在本人要求时调整数值，新建用脚本默认，重设仅改开关时保留原数值。record 的 default 同时给出授权开关与 nudge 参数，写回时分别合并到对应字段。
 - pacing：按脚本展示限额、平台覆盖、固定发送间隔与时段；典型采用默认，自定义逐项确认，不加随机抖动或模拟人工。
 
-四种 reply/nudge 组合都有效；不得重写 authorization.followup 整段而丢失兄弟开关。nudge:true 不能越过尚未启用的发送策略或 prepare/guard。
+四种 reply/nudge 组合都有效；不得重写 authorization.followup 整段而丢失兄弟开关。nudge:true 不能越过策略条件或 prepare/guard。
 
 ## 7. 生成文件
 

@@ -140,7 +140,7 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
 - `greeting.mode`：`dynamic`（默认）读完详情后针对职位生成招呼语；`static` 每次发 `text` 原文。招呼语由 Agent 作为第一条消息发送，需在平台关闭自动打招呼，见 `apply` 技能。`text` 是 `setup` 设计、本人认可的通用招呼语，`dynamic` 时作为找不到对应点时的基础。
 - `style`：tone 为 polite/friendly/concise，length 为 short/medium，address 为 neutral/surname，emoji 为布尔，bannedWords 为字符串数组（成员非空）。上例为政策默认；`selfIntro` 无事实默认，setup 据 candidate.md 提炼、本人确认后写 1–3 条非空短语。缺少只告警，不生成空数组或事实。
 - `inquiry.priority` 是 salary/hours/location/leave/employment 的不重复子集；`maxPerMessage` 为整数 1 或 2，指子项数。缺省见上例。
-- `limits` 为非负整数（dedupScope 仅 company/job）；生效顺序为内置 → 平台 defaultLimits → 全局 → platforms 平台覆盖。`nudge` 同样支持平台覆盖；各数值为正整数，maxPerSilence 为 1–3，maxPerThread 为 maxPerSilence–9。跟进缺省 true 与 reply 缺省 L2 独立；跟进发送策略尚未启用。
+- `limits` 为非负整数（dedupScope 仅 company/job）；生效顺序为内置 → 平台 defaultLimits → 全局 → platforms 平台覆盖。`nudge` 同样支持平台覆盖；各数值为正整数，maxPerSilence 为 1–3，maxPerThread 为 maxPerSilence–9。跟进缺省 true 与 reply 缺省 L2 独立；实际发送仍须 prepare/guard。
 - `schedule.activeHours` 约束 `apply` 和主动跟进；回复 HR 不受限。
 - `im` 见 [notify.md](notify.md)：channel 为 none（只写 inbox，缺省）或 lark。waitMinutes 是 runtime 等待本人答复的最长分钟数，整数 0–240（非布尔），缺省 60；0 不等待。
 - 飞书需要非空 ownerId 与 larkProfile；可选 larkCommand 为非空字符串数组。体检与 notify 共用校验，不按 ID 前缀猜身份。无需通知写 `{"channel":"none"}`，缺少 im 等同 none。

@@ -84,7 +84,7 @@ class ExportTest(unittest.TestCase):
 
     def test_date_filters_are_inclusive_workspace_dates_for_all_tables(self):
         os.environ["JOB_MATE_NOW"] = "2026-11-05T00:30:00+08:00"
-        self.x.event(kind="observe", observed="replied", company="次日公司", at="2026-11-04T16:30:00+00:00")
+        self.x.event(kind="observe", observed="resume_viewed", company="次日公司", at="2026-11-04T16:30:00+00:00")
         for table in ("events", "threads", "jobs"):
             rows = self.rows(table, "--since", "2026-11-05", "--until", "2026-11-05")
             self.assertEqual(len(rows), 1)
@@ -99,7 +99,7 @@ class ExportTest(unittest.TestCase):
         verified = self.f.ok_tail(base=first["tailId"])
         self.assertEqual(self.f.handled(verified)[0], 0)
         os.environ["JOB_MATE_NOW"] = "2026-11-05T12:00:00+08:00"
-        self.x.event(kind="observe", observed="replied", title=None)
+        self.x.event(kind="observe", observed="resume_viewed", title=None)
         row = self.rows("threads", "--since", "2026-11-05")[0]
         self.assertEqual(row["info"]["known"], {"hours.schedule": "双休"})
         self.assertEqual(row["lastHandled"]["tailId"], verified["tailId"])
@@ -107,7 +107,7 @@ class ExportTest(unittest.TestCase):
 
     def test_csv_formula_prefix_is_display_only_jsonl_and_ledger_stay_exact(self):
         for value in ("=1+2", "+SUM(1)", "-1+2", "@SUM(1)", "\t=1+2", " \r=1", "＝1+2", "\u2028=1", "\u200b@SUM(1)"):
-            self.x.event(kind="observe", observed="replied", reason=value)
+            self.x.event(kind="observe", observed="resume_viewed", reason=value)
         before = ledger.events_path(self.f.ws).read_bytes()
         values = [row["reason"] for row in self.rows()]
         code, out = self.export("events", "csv")

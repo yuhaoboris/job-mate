@@ -22,7 +22,7 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 | `prepare --run <runId> --json '<意图>'` | 唯一 pending 入口；全部门禁通过才原子写入，协议见[发送准备](sending.md) |
 | `append --json '<事件>'` | 记录终态、观察及筛选；禁止直接写动作 pending |
 | `tail --run <runId> --thread '<threadKey>' --read-at <ISO> [--base <tailId>] [--json '<输入>']` | 记录尾部指纹，不保存原文；输入也可走 stdin |
-| `guard --run <runId> --attempt <attemptId>` | 每个可能外发的点击前复查 pending 与有效锁，并续期；通过后立即点击 |
+| `guard --run <runId> --attempt <attemptId>` | 逐动作复查并续锁，通过后立即点击；nudge 另必传新读取的 --page-state JSON，见[发送准备](sending.md#主动跟进的最终门禁) |
 | `decision --id <ID> [--step <编号>]` | 查询有效版本、各版本步骤及真实 attempts |
 | `threads` | 会话阶段、职位信息、待处理尾部、决定及原有状态；可按 platform / company / recruiter 筛选，不是页面证据 |
 | `quota --platform <平台> [--run <runId>]` / `stats` / `export` | 配额、统计、[导出](export.md) |
@@ -81,6 +81,7 @@ kind：
 
 observed 可取：tail、handled、replied、decision、info、resume_requested、resume_delivered、resume_viewed、interview_invited、interview_decided、silent、declined、reopened、rejected、job_closed、paused、unpaused、manual、released、adopted、risk、limit_hit。
 
+- replied 必须 tailId；脚本核验新增 HR 位置并生成 replyProof，人工分支须 user、依据和 newHr 位置。重读、旧 base、迟到登记不能退款，详见[回复凭据](tails.md#确认新hr回复)。
 - info 必须 facts 与可派生的 jobKey；信息归属职位，不能套用另一职位结论。
 - decision 必须事项 ID、连续正整数 version（现有最大值加一）、steps 数组。每步 `{step,kind,text}` 或 `{step,kind:resume,resume}`，内容非空，二者恰一；步骤名在本版本及历史版本中均不重复，批准原文原样保存。
 - interview_invited 必须 decision 与完整 threadKey，后续 paused / ack 共用事项 ID；它不是本人决定。

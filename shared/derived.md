@@ -20,6 +20,15 @@
 
 阶段依据事实：确认外发达到 greeted，HR 回复达到 replied，得到结构化信息达到 info，发送/送达/查看简历达到 resume，登记邀约达到 interview_invited。失败或未确认外发不会提升阶段；后来的低阶段事件、新职位、关闭或交还不会降低历史阶段。面试意愿按首次 sent 记录时的阶段去重；仅准备或结果不明不算表达过。
 
+### 主动跟进候选
+
+输出 canNudge、nudgeReason、nudgeNeedsPageState、nudgeSeq、nudgeIntent、nudgesSinceReply、nudgesTotal、silent、suggestSilent。旧 canFollowup 及旧冷却/次数字段不再作为接口。
+
+- canNudge:true 同时有 nudgeNeedsPageState:true，nudgeReason 为 candidate_needs_page_state；只是本地候选，不证明页面已读/送达、工具实际读取、没有新消息或取得本轮授权。页面和本轮限制/例外仍须 prepare、带新 pageState 的 guard。关闭 nudge 但有本轮例外的目标可直接预检，候选 false 不是例外授权判断。
+- 本地过滤暂停/接管/关闭/未决、已知HR尾部及核对、等待下界、时段、连续/累计/当日次数；threads 与 export 还检查工作区暂停、停止名单。候选不伪造当前页面时间/状态；本人已 adopted/released 而无 Agent sent 时仍可待页面核验，只认可本人交接分界前历史，不把交接冒充 sent 或重置。
+- nudgesTotal 与 nudgesSinceReply 按唯一首次 pending，不按 sent 事件条数；失败、不明不退。连续分界按[新HR回复凭据](tails.md#确认新hr回复)的首次观察位置，hrAt 仅统计；迟到登记不退还分界后已发生的尝试，manual/released 不清零。
+- nudgeSeq 为下一连续序号，意图由 maxPerSilence 映射，超连续上限时 nudgeIntent:null，最后一次总 ask_answer，详见[最终门禁](sending.md#主动跟进的最终门禁)。silent 是登记的沉默；连续或累计用完 suggestSilent:true，仅提示登记 silent，不自动写入、不自动清计数或再发。
+
 ### 信息
 
 按平台、账号、jobKey 汇总 JD 与回答；不同命名空间不共用事实或问询次数。screen 尚未看到招聘者时记录的 JD 仍归属于该职位。

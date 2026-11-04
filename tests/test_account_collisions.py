@@ -23,13 +23,14 @@ class AccountCollisionTest(unittest.TestCase):
 
     def old_tail(self):
         self.current("a|b")
-        identity = self.x.event(kind="observe", observed="replied")
+        # 仅登记账号/会话身份；这里没有宣称发现新HR消息。
+        identity = self.x.event(kind="observe", observed="resume_requested")
         self.f.thread = identity["threadKey"]
         return self.f.baseline()
 
     def collide(self):
         self.current("a｜b")
-        identity = self.x.event(kind="observe", observed="replied")
+        identity = self.x.event(kind="observe", observed="resume_requested")
         self.assertEqual(identity["threadKey"], self.f.thread)
 
     def tail_record(self, tail):
@@ -105,7 +106,7 @@ class AccountCollisionTest(unittest.TestCase):
     def assert_other_attempt_does_not_affect_tail(self, final):
         template = self.tail_record(self.f.ok_tail())
         self.current("a|b")
-        identity = self.x.event(kind="observe", observed="replied")
+        identity = self.x.event(kind="observe", observed="resume_requested")
         self.f.thread = identity["threadKey"]
         self.x.action(final=final)
         self.collide()

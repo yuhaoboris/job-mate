@@ -206,7 +206,10 @@ class PrepareTest(unittest.TestCase):
                         rc, out = self.prepare(kind=kind, **({"resume": "合成版本"} if kind == "resume" else {}))
                         allowed = reply == "L2" and kind != "nudge"
                         self.assertEqual(rc, 0 if allowed else 1, out)
-                        if not allowed: self.assertEqual(out["reasons"][0]["code"], "not_authorized")
+                        if not allowed:
+                            # nudge 授权已开仍缺页面证据；完整可发真值表由 test_nudge 验证。
+                            expected = "page_state_mismatch" if kind == "nudge" and nudge else "not_authorized"
+                            self.assertEqual(out["reasons"][0]["code"], expected)
         self.reset_case()
         self.f.run_cli("lock", "release", "--run", "run-prepare")
         self.assertEqual(self.f.run_cli("lock", "acquire", "--skill", "setup", "--recovery", "--run", "run-prepare")[0], 0)

@@ -655,6 +655,27 @@ def validate_v1(ev):
         errors.append("asks 只用于外发动作")
     if "facts" in ev and not (kind == "observe" and observed == "info"):
         errors.append("facts 只用于 observe/info")
+    if any(k in ev for k in ("replyProof", "newHr")) and not (kind == "observe" and observed == "replied"):
+        errors.append("replyProof / newHr 只用于 replied")
+    if set(ev) & {"replyBoundary", "resetAt", "resetIndex", "nudgesTotal", "nudgesSinceReply", "nudgeSeq", "nudgeIntent", "suggestSilent", "canNudge", "nudgeNeedsPageState"}:
+        errors.append("跟进派生计数与重置分界不能由调用方指定")
+    if kind == "observe" and observed == "replied" and "replyProof" in ev:
+        proof = ev["replyProof"]
+        if (not isinstance(proof, dict) or set(proof) != {"version", "items"}
+                or type(proof.get("version")) is not int or proof["version"] != 1
+                or not isinstance(proof.get("items"), list) or not proof["items"]):
+            errors.append("replyProof 格式无效")
+        else:
+            seen = set()
+            for item in proof["items"]:
+                if (not isinstance(item, dict) or set(item) != {"eventId", "part", "index"}
+                        or not isinstance(item.get("eventId"), str) or not re.fullmatch(r"evt-[0-9a-f]{12}", item["eventId"])
+                        or item.get("part") not in ("tail", "bridge") or type(item.get("index")) is not int or item["index"] < 0):
+                    errors.append("replyProof 位置无效")
+                elif (item["eventId"], item["part"], item["index"]) in seen:
+                    errors.append("replyProof 位置重复")
+                else:
+                    seen.add((item["eventId"], item["part"], item["index"]))
     if kind == "observe" and observed == "info" and ("facts" not in ev or not ev.get("jobKey")):
         errors.append("info 须带 facts 和可派生的 jobKey")
     if kind == "observe" and observed == "interview_invited" and (not ev.get("decision") or not ev.get("threadKey")):
@@ -717,6 +738,9 @@ def validate_history_event(events, ev):
                     or pending["runId"] != proof["runId"] or ev["runId"] != pending["runId"]):
                 raise LedgerError("reconcileProof 未对应同轮同平台账号的原 pending")
         return
+    if ev["observed"] == "replied":
+        if ev.get("replyProof") != replied_proof(events, ev):
+            raise LedgerError("replied 缺少或伪造脚本回复凭据")
     if ev["observed"] == "tail":
         if any(e["kind"] == "observe" and e["observed"] == "tail" and e["tailId"] == ev["tailId"] for e in events):
             raise LedgerError("tailId 重复")
@@ -1096,11 +1120,6 @@ def check_transition(prior, ev):
 # 会话按平台、账号及 conversationKey 隔离。
 # 同一 attempt 补齐的页面身份用于归并，事件原值不改写。
 
-FOLLOWUP_MAX_TOTAL = 3
-FOLLOWUP_MAX_UNANSWERED = 2
-FOLLOWUP_COOLDOWN_DAYS = 7
-
-
 def thread_key(ev):
     values = [(norm_company if field == "company" else norm_text)(ev.get(field))
               for field in load_platform(ev["platform"])["conversationKey"]]
@@ -1129,6 +1148,141 @@ def thread_identity(ev, attempts):
     return identity
 
 
+def reply_catalog(events, key):
+    """HR身份由指纹及可见顺序 occurrence 构成；首次观察位置不随重读/登记改变。"""
+    origins, locations, consumed = [], {}, set()
+
+    def compatible(left, right):
+        if "id" in left and "id" in right:
+            return left["id"] == right["id"]
+        if ("id" in left) != ("id" in right):
+            return True  # 表示法改变不能证明另一条新消息，须更多同时可见位置。
+        return (all(left[k] == right[k] for k in ("speaker", "type", "digest"))
+                and all(left[k] is None or right[k] is None or left[k] == right[k] for k in ("date", "minute")))
+
+    for position, event in enumerate(events):
+        if event["kind"] != "observe" or thread_key(event) != key:
+            continue
+        if event["observed"] == "replied":
+            consumed.update((p["eventId"], p["part"], p["index"]) for p in event["replyProof"]["items"])
+        if event["observed"] != "tail":
+            continue
+        parts = {"tail": event["fingerprints"]}
+        roles = {"tail": ["hr"] * len(parts["tail"])}
+        if event.get("bridgeComplete") and event.get("bridge"):
+            parts["bridge"] = event["bridge"]
+            roles["bridge"] = [p["speaker"] for p in event["bridgeEvidence"]]
+        bridge_entries = []
+        for part in ("bridge", "tail"):
+            if part not in parts:
+                continue
+            if part == "tail" and bridge_entries and event.get("reason") in ("bridge_verified", "bridge_new_hr"):
+                after = max(i for i, r in enumerate(roles["bridge"]) if r == "us") + 1
+                entries = bridge_entries[after:]
+            else:
+                entries, used = [], set()
+                for index, (fp, role) in enumerate(zip(parts[part], roles[part])):
+                    if role != "hr":
+                        entries.append(None)
+                        continue
+                    candidates = [i for i, old in enumerate(origins) if compatible(old["fp"], fp)
+                                  and (i not in used or "id" in fp and old["fp"] == fp)]
+                    candidates.sort(key=lambda i: (origins[i]["fp"] != fp, i))
+                    if candidates:
+                        chosen = candidates[0]
+                        old = origins[chosen]["fp"]
+                        if "id" not in old and "id" not in fp:
+                            # 保守补全原来未知的时间，不新造身份、不挪首次观察分界。
+                            for field in ("date", "minute"):
+                                if old[field] is None:
+                                    old[field] = fp[field]
+                    else:
+                        chosen = len(origins)
+                        origins.append({"fp": dict(fp), "origin": {"eventId": event["eventId"], "part": part, "index": index},
+                                        "position": position})
+                    used.add(chosen)
+                    entries.append((origins[chosen]["origin"], origins[chosen]["position"]))
+            if part == "bridge":
+                bridge_entries = entries
+            locations[(event["tailId"], part)] = entries
+    return locations, consumed
+
+
+def replied_proof(events, ev):
+    """写入和历史重读共用；调用者不能指定 reset 分界或新消息身份。"""
+    key = thread_key(ev)
+    tail = next((e for e in events if e["kind"] == "observe" and e["observed"] == "tail"
+                 and e["tailId"] == ev.get("tailId") and same_complete_thread_keys(thread_key(e), key)), None)
+    if tail is None:
+        raise LedgerError("replied 须引用同一完整原始会话的已有 tailId")
+    manual = ev.get("newHr")
+    part, start, count = "tail", 0, len(tail["fingerprints"])
+    if manual is not None:
+        if (ev["skill"] != "user" or not isinstance(ev.get("evidence"), str) or not ev["evidence"].strip()
+                or not isinstance(manual, dict) or set(manual) != {"part", "start", "count"}
+                or manual.get("part") not in ("tail", "bridge") or type(manual.get("start")) is not int
+                or type(manual.get("count")) is not int or manual["start"] < 0 or manual["count"] < 1):
+            raise LedgerError("人工新回复须 skill:user、依据及 newHr:{part,start,count} 明确位置")
+        part, start, count = manual["part"], manual["start"], manual["count"]
+    elif (not tail["complete"] or not tail["anchorUnique"] or tail["reviewRequired"]
+          or tail["result"] not in ("extended", "new_anchor") or not tail.get("newCount")
+          or not all(definite_fingerprint(fp) for fp in tail["fingerprints"])):
+        raise LedgerError("该 tail 不能自动确认新增 HR，须本人核对明确位置")
+    elif tail["result"] == "extended":
+        start, count = len(tail["fingerprints"]) - tail["newCount"], tail["newCount"]
+    locations, consumed = reply_catalog(events, key)
+    entries = locations.get((tail["tailId"], part), [])
+    if not count or start + count > len(entries) or any(x is None for x in entries[start:start + count]):
+        raise LedgerError("newHr 没有对应的可见 HR 位置")
+    items = []
+    for origin, _ in entries[start:start + count]:
+        identity = (origin["eventId"], origin["part"], origin["index"])
+        if identity not in consumed and origin not in items:
+            items.append(origin)
+    if not items:
+        raise LedgerError("HR 回复位置已消费，换 tailId 或比较基准不能再次重置")
+    return {"version": 1, "items": items}
+
+
+def reply_boundary(events, item):
+    """观察位置固定；桥中已证明在后续我方外发前的 HR 不能退还该尝试。"""
+    positions = {e["eventId"]: i for i, e in enumerate(events)}
+    source = next(e for e in events if e["eventId"] == item["eventId"])
+    boundary = positions[source["eventId"]]
+    if item["part"] == "bridge":
+        attempts = attempts_of(events)
+        for step in source["bridgeEvidence"][item["index"] + 1:]:
+            attempt = attempts.get((source["platform"], source["account"], step.get("attemptId")))
+            if (step["speaker"] != "us" or attempt is None or attempt["status"] != "sent" or attempt["identityConflicts"]
+                    or not same_complete_thread_keys(thread_key(thread_identity(attempt["events"][0], attempts)), thread_key(source))):
+                continue
+            pending = next((e for e in attempt["events"] if e["status"] == "pending"), None)
+            if pending is not None:
+                boundary = min(boundary, positions[pending["eventId"]] - 1)
+                break
+    return boundary
+
+
+def nudge_state(events, key, profile):
+    """计数按唯一首次 pending；回复分界按证明的首次观察位置，非 replied 的 append 时间。"""
+    positions = {e["eventId"]: i for i, e in enumerate(events)}
+    replies = [e for e in events if e["kind"] == "observe" and e["observed"] == "replied" and thread_key(e) == key]
+    boundary = max((reply_boundary(events, p) for e in replies for p in e["replyProof"]["items"]), default=-1)
+    attempts = attempts_of(events)
+    pending = [next(e for e in a["events"] if e["status"] == "pending") for a in attempts.values()
+               if a["kind"] == "nudge" and a["everPending"] and compatible_thread_keys(thread_key(thread_identity(a["events"][0], attempts)), key)]
+    total = len(pending)
+    since = sum(positions[e["eventId"]] > boundary for e in pending)
+    policy = effective_nudge(profile, key[0])
+    seq = since + 1
+    intent = (None if seq > policy["maxPerSilence"] else "ask_answer" if seq == policy["maxPerSilence"]
+              else "confirm_open" if seq == 1 else "propose_interview")
+    silent = any(e["kind"] == "observe" and e["observed"] == "silent" and thread_key(e) == key
+                 and positions[e["eventId"]] > boundary for e in events)
+    return {"nudgesTotal": total, "nudgesSinceReply": since, "nudgeSeq": seq, "nudgeIntent": intent,
+            "silent": silent, "suggestSilent": since >= policy["maxPerSilence"] or total >= policy["maxPerThread"]}
+
+
 def _base_threads(events, platform=None):
     atts = attempts_of(events)
     threads = {}
@@ -1143,7 +1297,6 @@ def _base_threads(events, platform=None):
             "platform": ev["platform"], "account": ev["account"], "company": ev["company"], "recruiter": rec,
             "title": None, "jobId": None, "lastAt": None,
             "lastOutbound": None, "lastObserved": None, "lastReplyAt": None,
-            "followupsSent": 0, "followupsSinceReply": 0, "lastFollowupAt": None,
             "manual": False, "pausedBy": [], "closed": None, "closedBy": [], "unresolved": [], "outboundTexts": [],
             "readAt": None, "boundaryAt": None, "acknowledged": [],
         })
@@ -1154,8 +1307,7 @@ def _base_threads(events, platform=None):
             obs = ev["observed"]
             t["lastObserved"] = {"observed": obs, "at": ev["at"]}
             if obs == "replied":
-                t["followupsSinceReply"] = 0
-                t["lastReplyAt"] = ev["at"]
+                t["lastReplyAt"] = ev.get("hrAt") or ev["at"]
             elif obs == "manual":
                 t["manual"] = True
             elif obs == "released":
@@ -1188,10 +1340,6 @@ def _base_threads(events, platform=None):
             t["lastOutbound"] = {"kind": ev["kind"], "at": ev["at"]}
             if ev.get("text") or ev["kind"] == "resume":
                 t["outboundTexts"].append({"kind": ev["kind"], "at": ev["at"], "text": ev.get("text")})
-            if ev["kind"] == "nudge":
-                t["followupsSent"] += 1
-                t["followupsSinceReply"] += 1
-                t["lastFollowupAt"] = ev["at"]
     for a in atts.values():
         if a["status"] in ("pending", "uncertain"):
             t = threads.get(thread_key(thread_identity(a["events"][0], atts)))
@@ -1312,29 +1460,83 @@ def build_threads(events, platform=None, profile=None, account=None):
             thread["lastHandled"] = {"tailId": handled["tailId"], "at": record["at"], "readAt": handled["readAt"],
                                      "listMark": record.get("listMark"), "complete": handled["complete"]}
         thread["decisions"] = [decisions[d] for d in sorted(related[key]) if d in decisions]
+        thread.update(nudge_state(events, key, {} if profile is None else profile))
+        thread["canNudge"], thread["nudgeReason"] = nudge_candidate(thread, events, {} if profile is None else profile)
+        thread["nudgeNeedsPageState"] = thread["canNudge"]
     return threads
 
 
-def followup_eligibility(t, now, tz):
-    if t["closed"]:
-        return False, f"会话已结束（{t['closed']}）"
-    if t["manual"]:
-        return False, "本人已接管"
-    if t["pausedBy"]:
-        return False, f"等待本人决定（{'、'.join(t['pausedBy'])}）"
-    if t["unresolved"]:
-        return False, "有未确认的外发"
-    if not t["lastOutbound"]:
-        return False, "我方尚未发出过消息"
-    if t["followupsSent"] >= FOLLOWUP_MAX_TOTAL:
-        return False, f"主动跟进已达 {FOLLOWUP_MAX_TOTAL} 次"
-    last = parse_at(t["lastFollowupAt"]) if t["lastFollowupAt"] else None
-    if last and last.astimezone(tz).date() == now.date():
-        return False, "今天已主动跟进过"
-    if last and t["followupsSinceReply"] >= FOLLOWUP_MAX_UNANSWERED \
-            and now - last < timedelta(days=FOLLOWUP_COOLDOWN_DAYS):
-        return False, f"连续 {FOLLOWUP_MAX_UNANSWERED} 次跟进未回，{FOLLOWUP_COOLDOWN_DAYS} 天内不再跟进"
-    return True, "可按页面状态（已读不回或送达未读满 1 小时）决定是否跟进"
+def nudge_owner_boundary(events, key):
+    """本人交接可证明之前的活动属历史，不伪造一条我方 sent 或新 HR。"""
+    choices = [(e, parse_at(e["readAt"] if e["observed"] == "adopted" else e["at"]))
+               for e in events if e["kind"] == "observe" and e["observed"] in ("adopted", "released")
+               and e["skill"] == "user" and same_complete_thread_keys(thread_key(e), key)]
+    choices = [(e, at) for e, at in choices if at <= fsutil.now(at.tzinfo)]
+    return max(reversed(choices), key=lambda item: item[1], default=None)
+
+
+def nudge_turn(events, key):
+    """只读重放当前评估历史；guard 排除自己 pending 后，不让它伪装成额外未决。"""
+    attempts = attempts_of(events)
+    sent = [e for a in attempts.values() if a["status"] == "sent" and not a["identityConflicts"]
+            for e in [sent_metadata(a)[0]] if same_complete_thread_keys(thread_key(thread_identity(e, attempts)), key)]
+    owner = nudge_owner_boundary(events, key)
+    if not sent and owner is None:
+        return None, "not_our_turn"
+    last = max(reversed(sent), key=lambda e: parse_at(e["at"])) if sent else None
+    cut, cut_at = (last, parse_at(last["at"])) if last else owner
+    positions = {e["eventId"]: i for i, e in enumerate(events)}
+    if owner is not None and (owner[1], positions[owner[0]["eventId"]]) > (cut_at, positions[cut["eventId"]]):
+        cut, cut_at = owner
+    prefix, latest, hr = [], None, False
+    sources = {e["eventId"]: e for e in events}
+
+    def after(source):
+        read = parse_at(source.get("readAt", source["at"]))
+        return read > cut_at or read == cut_at and positions[source["eventId"]] > positions[cut["eventId"]]
+
+    for e in events:
+        current = e
+        if e["kind"] == "observe" and same_complete_thread_keys(thread_key(e), key):
+            if e["observed"] == "tail":
+                current = dict(e, **tail_outcome(prefix, e))
+                if after(e):
+                    latest = current
+            if e["observed"] == "replied":
+                for item in e["replyProof"]["items"]:
+                    bound = reply_boundary(events, item)
+                    source = sources[item["eventId"]]
+                    if (bound >= positions[cut["eventId"]] if bound < positions[source["eventId"]] else after(source)):
+                        hr = True
+        prefix.append(current)
+    tails = [e for e in prefix if e["kind"] == "observe" and e["observed"] == "tail"
+             and same_complete_thread_keys(thread_key(e), key)]
+    state = tail_state(prefix, thread_scope(tails[-1])) if tails else None
+    if state and state["review"]:
+        return last, "unresolved"
+    if hr or latest and latest["fingerprints"] or state and state["pending"] and state["latest"]["fingerprints"]:
+        return last, "not_our_turn"
+    return last, None
+
+
+def nudge_candidate(t, events, profile):
+    effective = effective_profile(profile, t["platform"])
+    now = fsutil.now(tz_of(effective))
+    for field, code in (("closed", "thread_closed"), ("manual", "thread_manual"),
+                        ("pausedBy", "thread_paused"), ("unresolved", "unresolved")):
+        if t[field]:
+            return False, code
+    if not effective["authorization"]["followup"]["nudge"]:
+        return False, "not_authorized"
+    last, blocked = nudge_turn(events, thread_key(t))
+    if blocked:
+        return False, blocked
+    problem = outbound.nudge_budget(sys.modules[__name__], t, events, effective, now)
+    if problem:
+        return False, problem["reasons"][0]["code"]
+    if last is not None and (now - parse_at(last["at"])).total_seconds() < min(effective["nudge"]["afterReadHours"], effective["nudge"]["afterUnreadHours"]) * 3600:
+        return False, "nudge_too_early"
+    return True, "candidate_needs_page_state"
 
 
 def find_threads(threads, company, recruiter=None):
@@ -1773,7 +1975,11 @@ def cmd_guard(args, ws):
         first = next(e for e in attempt["events"] if e["status"] == "pending")
         if lock and first.get("runPolicyRev") not in (None, run_policy_rev(lock)):
             return emit(outbound.deny("lock_invalid", "原 pending 的本轮冻结策略已改变"), 1)
-        result = outbound.evaluate(sys.modules[__name__], ws, first, args.run, lock, events, profile, current=first)
+        page_state = lock_object(args.page_state) if args.page_state is not None else None
+        if first["kind"] != "nudge" and page_state is not None:
+            raise LedgerError("--page-state 仅用于 nudge 复查，不替换其他动作字段")
+        result = outbound.evaluate(sys.modules[__name__], ws, first, args.run, lock, events, profile,
+                                   current=first, page_state=page_state)
         if result["allowed"]:
             require_live_lock(ws, args.run, tz, renew=True)
             result.update(attempt=args.attempt, platform=attempt["platform"], account=attempt["account"])
@@ -1810,7 +2016,7 @@ def cmd_append(args, ws):
         raise LedgerError("锁收尾来源仅由脚本生成，不能伪造")
     if ev.get("kind") in ACTION_KINDS and ev.get("status") == "uncertain":
         ev.setdefault("uncertaintyClass", "tool")  # 未说明分类时不假定工具正常，保守停整轮。
-    if any(field in ev for field in ("eventId", "authorizedBy", "decisionVersion", "dedupGrant", "profileRev", "styleRev", "scopeBindings", "runPolicyRev")):
+    if any(field in ev for field in ("eventId", "authorizedBy", "decisionVersion", "dedupGrant", "profileRev", "styleRev", "scopeBindings", "runPolicyRev", "replyProof")):
         raise LedgerError("ID、授权、版本、摘要与绑定由脚本冻结，不能指定或覆盖")
     if ev.get("kind") == "observe" and ev.get("observed") == "tail":
         raise LedgerError("observe/tail 只能用 ledger tail 写入")
@@ -1859,6 +2065,8 @@ def cmd_append(args, ws):
         events, _ = read_events(ws)
         history = events if not (ev["kind"] in ACTION_KINDS and ev["status"] in STANDALONE_STATUSES) else ()
         resolve_account(ws, ev["platform"], ev["account"], history)
+        if ev["kind"] == "observe" and ev["observed"] == "replied":
+            ev["replyProof"] = replied_proof(events, ev)
         validate_history_event(events, ev)
         if adopting:
             result = adoption_result(events, ev)
@@ -2312,6 +2520,14 @@ def cmd_quota(args, ws):
 
 # ---------- 命令：threads ----------
 
+def nudge_workspace_stop(ws, row, events):
+    if read_pause(ws):
+        return "paused"
+    reasons = stoplist_reasons(ws, row["company"]) or company_observation_reasons(events, row["platform"], row["account"], row["company"])
+    code = reasons[0]["type"] if reasons else None
+    return {"risk": "company_risk", "rejected": "company_rejected"}.get(code, code)
+
+
 def cmd_threads(args, ws):
     profile = load_profile(ws)
     tz = tz_of(profile)
@@ -2320,7 +2536,9 @@ def cmd_threads(args, ws):
     account = account_filter(ws, args, events)
     threads = build_threads(events, args.platform, profile, account)
     for t in threads.values():
-        t["canFollowup"], t["followupReason"] = followup_eligibility(t, now, tz)
+        reason = nudge_workspace_stop(ws, t, events)
+        if reason:
+            t.update(canNudge=False, nudgeReason=reason, nudgeNeedsPageState=False)
     items = sorted(threads.values(), key=lambda t: t["lastAt"] or "", reverse=True)
     if args.company:
         items = [t for t in items if match_company(args.company, [t["company"]])[0]]
@@ -2370,12 +2588,12 @@ EXPORT_COLUMNS = {
         "decisionVersion", "version", "steps", "tags", "jdFacts", "checks", "facts", "asks", "result", "reasons",
         "salaryText", "profileRev", "styleRev", "hrAt", "readAt", "tailId", "baseTailId", "baseExplicit", "anchor",
         "fingerprints", "complete", "anchorUnique", "settled", "reviewRequired", "bridge", "bridgeComplete",
-        "bridgeEvidence", "listMark", "acknowledged", "extra"),
+        "bridgeEvidence", "listMark", "acknowledged", "replyProof", "newHr", "extra"),
     "threads": ("platform", "account", "threadKey", "company", "recruiter", "title", "jobId", "currentJobKey", "stage",
         "lastAt", "lastOutbound", "lastObserved", "lastReplyAt", "info", "interviewIntentStages", "pendingTail",
-        "lastHandled", "lastOpenedAt", "unresolved", "manual", "pausedBy", "closed", "closedBy", "followupsSent",
-        "followupsSinceReply", "lastFollowupAt", "readAt", "boundaryAt", "acknowledged", "outboundTexts",
-        "decisions", "canFollowup", "followupReason", "extra"),
+        "lastHandled", "lastOpenedAt", "unresolved", "manual", "pausedBy", "closed", "closedBy",
+        "nudgesTotal", "nudgesSinceReply", "nudgeSeq", "nudgeIntent", "silent", "suggestSilent", "readAt", "boundaryAt", "acknowledged", "outboundTexts",
+        "decisions", "canNudge", "nudgeReason", "nudgeNeedsPageState", "extra"),
     "jobs": ("platform", "account", "jobKey", "company", "title", "jobId", "lastAt", "screenEventId", "screenAt",
         "result", "reasons", "jdFacts", "checks", "salaryText", "hasContactAttempt", "contacted", "unresolved", "extra"),
 }
@@ -2481,7 +2699,9 @@ def cmd_export(args, ws):
         rows = list(build_threads(events, profile=profile).values())
         now = fsutil.now(tz)
         for row in rows:
-            row["canFollowup"], row["followupReason"] = followup_eligibility(row, now, tz)
+            reason = nudge_workspace_stop(ws, row, events)
+            if reason:
+                row.update(canNudge=False, nudgeReason=reason, nudgeNeedsPageState=False)
     else:
         rows = export_jobs(events)
     selected = []
@@ -3009,6 +3229,7 @@ def build_parser():
     g.add_argument("--attempt", required=True)
     g.add_argument("--platform")
     g.add_argument("--account")
+    g.add_argument("--page-state", help="nudge 必传：pending 后重新读取的封闭页面证据 JSON")
 
     a = sub.add_parser("append", help="原子追加一条事件（JSON 从 --json 或 stdin 读入）")
     a.add_argument("--json")

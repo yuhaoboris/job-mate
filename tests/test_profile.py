@@ -217,7 +217,7 @@ class ProfileCliTest(unittest.TestCase):
         finally:
             f.tearDown()
 
-    def test_real_ledger_defaults_do_not_enable_apply_or_unimplemented_nudge(self):
+    def test_real_ledger_defaults_do_not_enable_apply_or_bypass_nudge_page_evidence(self):
         f = test_prepare.PrepareTest()
         f.setUp()
         try:
@@ -226,7 +226,8 @@ class ProfileCliTest(unittest.TestCase):
             before = L.events_path(f.f.ws).read_bytes()
             for kind in ("greet", "nudge"):
                 rc, out = f.prepare(kind=kind)
-                self.assertEqual((rc, out["reasons"][0]["code"]), (1, "not_authorized"), out)
+                expected = "not_authorized" if kind == "greet" else "page_state_mismatch"
+                self.assertEqual((rc, out["reasons"][0]["code"]), (1, expected), out)
                 self.assertEqual(L.events_path(f.f.ws).read_bytes(), before)
             # L1+nudge=true 仍不允许代答；两个开关互不借权。
             p = changed("authorization.followup.reply", "L1")
