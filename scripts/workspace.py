@@ -86,13 +86,24 @@ def now_stamp():
 
 # ---------- init ----------
 
-def init_workspace(path, boss_account=None, boss_name=None):
+def init_path(path):
     ws = Path(path).expanduser().resolve()
     home = Path.home().resolve()
-    if ws == home or ws == Path("/"):
+    if ws == home or ws == Path(ws.anchor):
         raise WorkspaceError(f"不在 {ws} 根部建立工作区，请另选一个目录")
     if (ws / "scripts" / "ledger.py").is_file() and (ws / "skills" / "apply" / "SKILL.md").is_file():
         raise WorkspaceError("这是 job-mate 自身目录，不在此建立工作区")
+    return ws
+
+
+def init_workspace(path, boss_account=None, boss_name=None):
+    ws = init_path(path)
+    with ledger.gated(ws, "write", allow_create=True):
+        return create_skeleton(ws, boss_account, boss_name)
+
+
+def create_skeleton(ws, boss_account, boss_name):
+    """调用方已持有创建准入临界区。"""
     ws.mkdir(parents=True, exist_ok=True)
     created = []
     marker = ws / MARKER
@@ -680,11 +691,11 @@ def main(argv=None):
         creating = args.cmd == "init" or new_progress
         path = args.path if args.cmd == "init" else args.workspace
         if creating and path:
-            ws = Path(path).expanduser().resolve()
-            if not (ws / MARKER).exists():
-                if new_progress:
-                    if not args.variant:
-                        raise WorkspaceError("new 需要 --variant")
+            ws = init_path(path)  # 拒绝危险目录时尚未创建互斥文件。
+            if new_progress and not args.variant:
+                raise WorkspaceError("new 需要 --variant")
+            with ledger.gated(ws, "write", allow_create=True):
+                if new_progress and not (ws / MARKER).exists():
                     init_workspace(ws)
                 return COMMANDS[args.cmd](args)
         ws = ledger.find_workspace(path)

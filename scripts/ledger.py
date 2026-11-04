@@ -13,6 +13,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import unicodedata
 import uuid
 from datetime import datetime, timedelta
@@ -74,6 +75,41 @@ class VersionGateError(LedgerError):
 
 
 _GATE_WARNINGS = ContextVar("suite_warnings", default=())
+_MUTATION_OWNER = threading.local()
+
+
+def mutation_held(ws):
+    return (os.getpid(), Path(ws).resolve()) in getattr(_MUTATION_OWNER, "held", set())
+
+
+@contextlib.contextmanager
+def mutation_mutex(ws):
+    """中央写入协调锁；只在同进程同线程同工作区内重入。
+
+    顺序：mutation → poll → im / lock / stoplist → events。
+    lock 与 stoplist 不互相嵌套；IM 指令在释放 im 后才取 lock。
+    所有写入/恢复/创建入口先取中央锁，业务锁不可反向调用新入口。
+    """
+    ws = Path(ws).resolve()
+    key = (os.getpid(), ws)
+    held = getattr(_MUTATION_OWNER, "held", set())
+    if key in held:
+        yield
+        return
+    with file_mutex(ws / "ledger" / ".mutation.mutex"):
+        _MUTATION_OWNER.held = held | {key}
+        try:
+            yield
+        finally:
+            _MUTATION_OWNER.held = held
+
+
+@contextlib.contextmanager
+def operation_mutex(ws, name, write=True):
+    """业务锁的统一顺序；只读不取中央锁，也不做写入准入。"""
+    with mutation_mutex(ws) if write else contextlib.nullcontext():
+        with file_mutex(ws / "ledger" / name):
+            yield
 
 
 def error_result(error):
@@ -117,16 +153,22 @@ def version_gate(ws, mode):
 
 
 @contextlib.contextmanager
-def gated(ws, mode):
-    token = _GATE_WARNINGS.set(tuple(version_gate(ws, mode)))
-    try:
-        yield
-    except Exception as error:
-        if _GATE_WARNINGS.get():
-            error.suite_warnings = list(_GATE_WARNINGS.get())
-        raise
-    finally:
-        _GATE_WARNINGS.reset(token)
+def gated(ws, mode, allow_create=False):
+    if allow_create and mode != "write":
+        raise ValueError("创建豁免只用于写入入口")
+    # 准入和全部副作用共用临界区，包括等待业务锁和跨脚本调用。
+    with mutation_mutex(ws) if mode != "read" else contextlib.nullcontext():
+        # 创建也先取锁再看标记；互斥文件不是工作区标记。
+        warnings = [] if allow_create and not (ws / MARKER).exists() else version_gate(ws, mode)
+        token = _GATE_WARNINGS.set(tuple(warnings))
+        try:
+            yield
+        except Exception as error:
+            if _GATE_WARNINGS.get():
+                error.suite_warnings = list(_GATE_WARNINGS.get())
+            raise
+        finally:
+            _GATE_WARNINGS.reset(token)
 
 
 def upgrade_suite_version(ws):
@@ -496,7 +538,7 @@ def stoplist_path(ws):
 
 
 def stoplist_mutex(ws):
-    return file_mutex(ws / "ledger" / ".stoplist.mutex")
+    return operation_mutex(ws, ".stoplist.mutex")
 
 
 def load_stoplist(ws):
@@ -1127,8 +1169,8 @@ def lock_path(ws):
     return ws / "ledger" / "lock.json"
 
 
-def lock_mutex(ws):
-    return file_mutex(ws / "ledger" / ".lock.mutex")
+def lock_mutex(ws, write=True):
+    return operation_mutex(ws, ".lock.mutex", write=write)
 
 
 def read_lock(ws):
@@ -1241,7 +1283,7 @@ def release_lock(ws, run, tz=None):
 
 def cmd_lock(args, ws):
     tz = recovery_tz(ws)
-    with lock_mutex(ws):
+    with lock_mutex(ws, write=args.action != "status"):
         now = fsutil.now(tz)
         current = read_lock(ws)
 

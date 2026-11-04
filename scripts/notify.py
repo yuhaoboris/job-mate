@@ -101,12 +101,12 @@ def im_path(ws):
     return ws / "ledger" / "im.jsonl"
 
 
-def im_mutex(ws):
-    return ledger.file_mutex(ws / "ledger" / ".im.mutex")
+def im_mutex(ws, write=True):
+    return ledger.operation_mutex(ws, ".im.mutex", write=write)
 
 
 def poll_mutex(ws):
-    return ledger.file_mutex(ws / "ledger" / ".poll.mutex")
+    return ledger.operation_mutex(ws, ".poll.mutex")
 
 
 def read_records(ws):
@@ -363,7 +363,7 @@ def cmd_outbox(args, ws):
     ctx = context(ws)
     if args.limit <= 0:
         raise NotifyError("limit 必须为正数")
-    with im_mutex(ws):
+    with im_mutex(ws, write=args.claim):
         rows = outbox_rows(ws, ctx)
         if args.stale:
             rows = [o for o in rows if o.get("stale")]
