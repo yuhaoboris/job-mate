@@ -4,6 +4,8 @@
 
 下文 `notify` 指 `python3 <job-mate 技能目录>/scripts/notify.py`，先解析绝对路径。退出码：0 已记录、1 被阻断、2 参数或数据错误。脚本只维护本地状态，不联网、不等待、不常驻。
 
+排队、认领、回执、入站及回复状态修改均受[套件版本准入](workspace.md#套件版本准入)的写入门禁约束；`poll`、`status`、`replies`、不带 `--claim` 的 `outbox` 只读。
+
 ## inbox/decisions.md
 
 每个事项一节，追加在文件末尾：

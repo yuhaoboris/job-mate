@@ -43,8 +43,7 @@ class NotifyError(Exception):
 
 
 def emit(obj, code=0):
-    print(json.dumps(obj, ensure_ascii=False, indent=2))
-    return code
+    return ledger.emit(obj, code)
 
 
 def nonempty(value):
@@ -773,13 +772,21 @@ HANDLERS = {"send": cmd_send, "poll": cmd_poll, "incoming": cmd_incoming, "outbo
             "test": cmd_test, "status": cmd_status}
 
 
+def entry_mode(args):
+    if args.cmd == "outbox":
+        return "write" if args.claim else "read"
+    return "read" if args.cmd in {"poll", "replies", "status"} else "write"
+
+
 def main(argv=None):
     fsutil.utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
-        return HANDLERS[args.cmd](args, ledger.find_workspace(args.workspace))
+        ws = ledger.find_workspace(args.workspace)
+        with ledger.gated(ws, entry_mode(args)):
+            return HANDLERS[args.cmd](args, ws)
     except (NotifyError, ledger.LedgerError, OSError, UnicodeError, ValueError, TypeError, KeyError, OverflowError) as e:
-        return emit({"error": str(e)}, 2)
+        return emit(ledger.error_result(e), 2)
 
 
 if __name__ == "__main__":

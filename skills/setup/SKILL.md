@@ -63,7 +63,7 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 - 部分重新设置：`workspace backup --label partial` → 告诉本人备份名与恢复方法 → 展示阶段/步骤菜单，请本人选择 → `workspace progress start --mode partial --select <阶段或步骤id,…> --base-backup <备份名>`。
 - 有草稿：先询问本人。继续则用 `progress show` 的当前步骤与已有回答接续；从头开始则经本人确认后 `progress clear`，重新进入原模式：新建重新 `workspace init`、选择典型或自定义、`progress start`；重置重新备份，部分重置重新选步骤。放弃则确认后 `progress clear`，按 `markerRemoved` 汇报是否撤销工作区标记；有事件时标记保留，说明原因，不宣称该目录已停用。草稿损坏时报告问题，请本人决定是否放弃，不自行覆盖。
 
-`workspace restore <备份名>` 可恢复重置前配置，保留备份之后新增的停止项。恢复期间持有运行锁，有其他任务运行时拒绝（setup 自己持锁时传 `--run <runId>` 沿用）。草稿不进备份，恢复也不动草稿。返回结果中的 `restoreSucceeded` / `restoreError` 表示恢复主体，`release` / `releaseError` 表示释放是否尝试、是否成功及错误；二者任一失败都返回退出码 2，并保留原 `restored`（已恢复文件）、`previousSavedAs` 等字段，不能把释放失败说成配置未变。沿用 setup 锁时 `release.attempted` 为 false，由本技能最后释放；独立恢复的输出 `reconciled` 汇总获取与释放两端，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 处理。成功恢复也仍可能因释放失败而未完全收尾；两项错误分别汇报，不擅自删除锁。
+版本不匹配时按[套件版本准入](../../shared/workspace.md#套件版本准入)更新技能或取 setup 恢复锁；恢复锁只做恢复与释放，不改进度、不发通知、不续期。`workspace restore <备份名>` 未传 `--run` 时自动取恢复锁，保留恢复前的套件版本；可恢复重置前配置，保留备份之后新增的停止项。恢复期间持有运行锁，有其他任务运行时拒绝（setup 自己持锁时传 `--run <runId>` 沿用）。草稿不进备份，恢复也不动草稿。返回结果中的 `restoreSucceeded` / `restoreError` 表示恢复主体，`release` / `releaseError` 表示释放是否尝试、是否成功及错误；二者任一失败都返回退出码 2，并保留原 `restored`（已恢复文件）、`previousSavedAs` 等字段，不能把释放失败说成配置未变。沿用 setup 锁时 `release.attempted` 为 false，由本技能最后释放；独立恢复的输出 `reconciled` 汇总获取与释放两端，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 处理。成功恢复也仍可能因释放失败而未完全收尾；两项错误分别汇报，不擅自删除锁。
 
 ### 3.2 一次问一步
 

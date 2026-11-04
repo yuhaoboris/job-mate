@@ -6,6 +6,8 @@
 """
 
 import argparse
+import contextlib
+from contextvars import ContextVar
 import json
 import os
 import re
@@ -65,9 +67,80 @@ class LedgerError(Exception):
     pass
 
 
+class VersionGateError(LedgerError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+_GATE_WARNINGS = ContextVar("suite_warnings", default=())
+
+
+def error_result(error):
+    out = {"error": str(error)}
+    if isinstance(error, VersionGateError):
+        out["code"] = error.code
+    if getattr(error, "suite_warnings", None):
+        out["warnings"] = error.suite_warnings
+    return out
+
+
+def suite_version(value):
+    if not isinstance(value, str) or not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value):
+        raise LedgerError("suiteVersion 须为主.次.修订版本号，请核对标记或更新 job-mate")
+    return tuple(map(int, value.split(".")))
+
+
+def version_gate(ws, mode):
+    """仅判断，不取互斥锁；持锁调用者也可复查，避免嵌套同锁。"""
+    if mode not in {"read", "write", "recover"}:
+        raise ValueError(f"未知准入模式：{mode}")
+    try:
+        meta = read_json(ws / MARKER)
+        stored = suite_version(meta.get("suiteVersion") if isinstance(meta, dict) else None)
+        running = suite_version(SUITE_VERSION)
+    except (LedgerError, ValueError, OSError):
+        if mode == "read":
+            return []  # 仍允许体检损坏的工作区。
+        raise
+    if mode == "read":
+        return ["suite_older_than_workspace"] if stored > running else []
+    if stored[0] != running[0]:
+        raise VersionGateError("suite_major_mismatch", "套件与工作区主版本不同，请更新 job-mate")
+    if mode == "write":
+        lock = read_lock(ws)
+        if lock and lock.get("mode") == "recovery" and not lock_expired(lock, fsutil.now().astimezone()):
+            raise VersionGateError("recovery_lock_only", "恢复锁只允许恢复类写入，请先完成恢复并释放锁")
+        if stored[:2] > running[:2]:
+            raise VersionGateError("suite_too_old", "工作区版本较新，请更新 job-mate 后再写入")
+    return []
+
+
+@contextlib.contextmanager
+def gated(ws, mode):
+    token = _GATE_WARNINGS.set(tuple(version_gate(ws, mode)))
+    try:
+        yield
+    except Exception as error:
+        if _GATE_WARNINGS.get():
+            error.suite_warnings = list(_GATE_WARNINGS.get())
+        raise
+    finally:
+        _GATE_WARNINGS.reset(token)
+
+
+def upgrade_suite_version(ws):
+    meta = read_json(ws / MARKER)
+    if suite_version(meta["suiteVersion"]) < suite_version(SUITE_VERSION):
+        meta["suiteVersion"] = SUITE_VERSION
+        write_atomic(ws / MARKER, json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
+
+
 # ---------- 输出 ----------
 
 def emit(obj, code=0):
+    if _GATE_WARNINGS.get():
+        obj = dict(obj, warnings=list(obj.get("warnings", [])) + list(_GATE_WARNINGS.get()))
     print(json.dumps(obj, ensure_ascii=False, indent=2))
     return code
 
@@ -104,6 +177,13 @@ def limits_of(profile):
     merged = dict(DEFAULT_LIMITS)
     merged.update((profile.get("limits") or {}))
     return merged
+
+
+def recovery_tz(ws):
+    try:
+        return tz_of(load_profile(ws))
+    except (LedgerError, OSError, ValueError, TypeError, AttributeError):
+        return fsutil.tz_from_name(DEFAULT_TZ)
 
 
 def tz_of(profile):
@@ -944,6 +1024,7 @@ def cmd_append(args, ws):
 
     # 本人交出会话与 pending 共用有效锁检查。
     with lock_mutex(ws):
+        version_gate(ws, "write")
         if adopting or (ev["kind"] in ACTION_KINDS and ev["status"] == "pending"):
             require_live_lock(ws, ev["runId"], tz, renew=True)
         out, code = write()
@@ -1064,6 +1145,7 @@ def lock_expired(lock, now):
 
 def require_live_lock(ws, run_id, tz, renew=False):
     """调用方须已持有 lock_mutex。run_id 必须是当前未过期的持锁者，且本轮未禁发。"""
+    version_gate(ws, "write")
     now = fsutil.now(tz)
     lock = read_lock(ws)
     if not lock or lock.get("runId") != run_id:
@@ -1086,8 +1168,11 @@ def require_live_lock(ws, run_id, tz, renew=False):
     return lock
 
 
-def acquire_lock(ws, tz, skill, run=None, ttl=DEFAULT_LOCK_TTL_MINUTES, no_send=False):
+def acquire_lock(ws, tz, skill, run=None, ttl=DEFAULT_LOCK_TTL_MINUTES, no_send=False, recovery=False):
     """调用方须已持有 lock_mutex。返回 (退出码, 结果)。同一 runId 重复获取视为沿用。"""
+    if recovery and skill != "setup":
+        raise LedgerError("恢复锁只能由 setup 获取")
+    version_gate(ws, "recover" if recovery else "write")
     # 只检查 mode，不依赖 workspace.py 的步骤格式，避免两个脚本循环导入。
     progress = ws / "setup-progress.json"
     if skill in {"apply", "followup"} and progress.exists():
@@ -1102,6 +1187,10 @@ def acquire_lock(ws, tz, skill, run=None, ttl=DEFAULT_LOCK_TTL_MINUTES, no_send=
     took_over, reconciled = None, []
     if current:
         if run and current.get("runId") == run and not current.get("releasing") and not lock_expired(current, now):
+            if current.get("skill") != skill or (current.get("mode") == "recovery") != bool(recovery):
+                raise LedgerError("不能改变已有运行锁的技能或恢复模式")
+            if not recovery:
+                upgrade_suite_version(ws)
             return 0, {"acquired": True, "reused": True, "lock": current, "tookOverFrom": None, "reconciled": []}
         if not lock_expired(current, now):
             return 1, {"acquired": False, "reason": "已有运行中的任务", "lock": current}
@@ -1117,18 +1206,23 @@ def acquire_lock(ws, tz, skill, run=None, ttl=DEFAULT_LOCK_TTL_MINUTES, no_send=
         "ttlMinutes": ttl,
         "noSend": bool(no_send),
     }
+    if recovery:
+        lock["mode"] = "recovery"
     write_lock(ws, lock)
+    if not recovery:
+        upgrade_suite_version(ws)
     return 0, {"acquired": True, "reused": False, "lock": lock, "tookOverFrom": took_over, "reconciled": reconciled}
 
 
 def release_lock(ws, run, tz=None):
     """调用方须已持有 lock_mutex。先持久化收尾意图，核销 pending 后才删除锁。"""
+    version_gate(ws, "recover")
     current = read_lock(ws)
     if not current:
         return 0, {"released": False, "reason": "没有锁", "reconciled": []}
     if current.get("runId") != run:
         return 1, {"released": False, "reason": "锁不属于该 runId", "lock": current}
-    tz = tz or tz_of(load_profile(ws))
+    tz = tz or recovery_tz(ws)
     events, _ = read_events(ws)
     # 收尾中断时保留候选 ID：重试 / 过期接管仍能报告已追加的 uncertain。
     ids = list(current.get("releaseAttempts") or [])
@@ -1146,8 +1240,7 @@ def release_lock(ws, run, tz=None):
 
 
 def cmd_lock(args, ws):
-    profile = load_profile(ws)
-    tz = tz_of(profile)
+    tz = recovery_tz(ws)
     with lock_mutex(ws):
         now = fsutil.now(tz)
         current = read_lock(ws)
@@ -1163,6 +1256,7 @@ def cmd_lock(args, ws):
             return emit(out, code)
 
         if args.action == "renew":
+            version_gate(ws, "write")
             if not current or current.get("runId") != args.run:
                 return emit({"renewed": False, "reason": "已失去运行锁，立即停止外发", "lock": current}, 1)
             if current.get("releasing"):
@@ -1172,7 +1266,7 @@ def cmd_lock(args, ws):
             write_lock(ws, current)
             return emit({"renewed": True, "lock": current})
 
-        code, out = acquire_lock(ws, tz, args.skill, args.run, args.ttl, args.no_send)
+        code, out = acquire_lock(ws, tz, args.skill, args.run, args.ttl, args.no_send, args.recovery)
         out["paused"] = read_pause(ws)
         return emit(out, code)
 
@@ -1201,6 +1295,7 @@ def set_pause(ws, paused, by, reason, tz, im_command=None):
     """写入全局暂停状态。im_command 为已执行的 IM 指令消息 ID，与暂停状态在同一次原子写内落盘；
     之后技能设置安全暂停时保留这些标识，避免旧「恢复」在重放时解除新的安全暂停。"""
     with lock_mutex(ws):
+        version_gate(ws, "write" if paused else "recover")
         previous = read_json(pause_path(ws))
         ids = list((previous or {}).get("imCommands") or [])
         if im_command and im_command not in ids:
@@ -1213,7 +1308,7 @@ def set_pause(ws, paused, by, reason, tz, im_command=None):
 
 
 def cmd_pause(args, ws):
-    tz = tz_of(load_profile(ws))
+    tz = recovery_tz(ws) if args.action == "off" else tz_of(load_profile(ws))
     if args.action == "status":
         return emit({"paused": read_pause(ws)})
     if args.action == "on":
@@ -1340,6 +1435,7 @@ def build_parser():
     lk.add_argument("--run")
     lk.add_argument("--ttl", type=int, default=DEFAULT_LOCK_TTL_MINUTES, help="分钟")
     lk.add_argument("--no-send", action="store_true", help="本轮禁发：持锁期间拒绝写入新的外发")
+    lk.add_argument("--recovery", action="store_true", help="仅 setup 获取恢复锁，只允许恢复类写入")
 
     pz = sub.add_parser("pause", help="全局暂停：暂停期间任何一轮都不能写入新的外发")
     pz.add_argument("action", choices=["on", "off", "status"])
@@ -1364,11 +1460,24 @@ COMMANDS = {
 }
 
 
+def entry_mode(args):
+    if args.cmd == "lock":
+        return {"status": "read", "release": "recover", "renew": "write",
+                "acquire": "recover" if args.recovery else "write"}[args.action]
+    if args.cmd == "pause":
+        return {"status": "read", "on": "write", "off": "recover"}[args.action]
+    if args.cmd == "stoplist":
+        return "read" if args.action == "list" else "write"
+    return "write" if args.cmd in {"append", "guard"} else "read"
+
+
 def main(argv=None):
     fsutil.utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
         if args.cmd == "lock":
+            if args.recovery and (args.action != "acquire" or args.skill != "setup"):
+                raise LedgerError("--recovery 仅用于 lock acquire --skill setup")
             if args.action == "acquire" and not args.skill:
                 raise LedgerError("lock acquire 需要 --skill")
             if args.action in ("release", "renew") and not args.run:
@@ -1381,9 +1490,10 @@ def main(argv=None):
         if args.cmd == "decision" and not DECISION_RE.match(args.id):
             raise LedgerError("决策 ID 应形如 D-20261028-01")
         ws = find_workspace(args.workspace)
-        return COMMANDS[args.cmd](args, ws)
-    except LedgerError as e:
-        return emit({"error": str(e)}, 2)
+        with gated(ws, entry_mode(args)):
+            return COMMANDS[args.cmd](args, ws)
+    except (LedgerError, OSError, ValueError) as e:
+        return emit(error_result(e), 2)
 
 
 if __name__ == "__main__":

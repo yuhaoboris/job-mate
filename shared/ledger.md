@@ -24,13 +24,15 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 | `check --platform boss --kind <reply\|resume\|followup\|intro> --company <公司> --recruiter <姓名(职务)> --run <runId> [--decision <ID>]` | 会话内每次发送前：停止名单、会话结束、本人接管、等待决定的暂停、未确认的外发；`followup` 另查跟进条件 |
 | `quota --platform boss --run <runId>` | 剩余招呼额度、距上次外发的秒数、需等待的秒数 |
 | `append --json '<事件>'` | 追加一条事件；也可从 stdin 读入 |
-| `decision --id <决策 ID> [--step <编号>]` | 查某个已决定事项的执行状态：`not_started` / `partial` / `in_progress` / `failed` / `needs_review` / `done`。`needs_review` 表示有不带步骤编号的外发记录，无法确定对应哪个动作，须本人核对，期间不能为该决定新建外发。另返回各外发步骤的状态（`steps`、`stepState`）、已做的本地动作（`localActions`）、暂停记录的原因与会话（`pausedRecords`）、仍被它暂停的会话（`stillPausing`）。`localActions` 为字符串列表。**已有带该 ID 的 unpaused，且没有会话仍被它暂停才算完成**；部分解除不能盖过 in_progress / needs_review / failed 等阻断 |
+| `decision --id <决策 ID> [--step <编号>]` | 状态：`not_started` / `partial` / `in_progress` / `failed` / `needs_review` / `done`。`needs_review`：无步骤编号的外发须本人核对，期间不能新建该决定的外发。返回 `steps` / `stepState`、本地动作字符串列表 `localActions`、暂停原因与会话 `pausedRecords`、仍暂停的会话 `stillPausing`。**带该 ID 的 unpaused 且无会话仍被暂停才算完成**；部分解除不能覆盖其他阻断 |
 | `guard --run <runId> --attempt <attemptId>` | 每次可能把消息发出去的点击之前：确认本轮仍持有有效锁、该尝试仍是本轮的 `pending`，并续期。失败时立即停止，不点击 |
 | `threads [--platform boss] [--company <公司>] [--recruiter <姓名(职务)>]` | 按会话汇总：最近外发与文字、HR 回复时间、跟进次数、是否本人接管、等待哪些决定、是否已结束、能否主动跟进及原因 |
 | `stats [--since YYYY-MM-DD] [--until YYYY-MM-DD]` | 统计 |
 | `stoplist list` / `stoplist add --name <公司> [--alias <别名>]... --reason <原因> --source <来源>` / `stoplist remove --name <公司>` | 停止名单；`remove` 按 `name` 精确匹配 |
 
 ## 运行锁
+
+版本拒绝与恢复锁见[套件版本准入](workspace.md#套件版本准入)。`lock acquire --skill setup --recovery` 仅用于恢复，不可写普通业务或续期；恢复完成后 `lock release`。
 
 同一工作区同时只运行一个技能。锁有过期时间（默认 60 分钟），过期后可被下一轮接管。正常释放或过期接管都在协调锁内，把对应 `runId` 没有终态的 `pending` 追加为 `uncertain`，在输出的 `reconciled` 中列出（attemptId、company、title、kind）；已有终态保持不变，不核销其他轮次的尝试。调用者必须据此写入 `inbox/decisions.md` 请本人核对，脚本不会代写 inbox。
 

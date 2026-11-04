@@ -547,7 +547,7 @@ class WorkspaceTest(unittest.TestCase):
         finally:
             workspace.do_backup = original
         self.assertEqual(code, 0, out)
-        self.assertEqual(seen["code"], 1)
+        self.assertEqual(seen["code"], 2)  # 恢复锁拒绝普通写入，而非仅报告锁占用。
         with contextlib.redirect_stdout(io.StringIO()):
             workspace.ledger.main(["--workspace", str(self.ws), "lock", "status"])
         self.assertFalse((self.ws / "ledger" / "lock.json").exists())
@@ -571,7 +571,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(workspace.ledger.read_lock(self.ws)["runId"], out["runId"])
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(workspace.ledger.main([
-                "--workspace", str(self.ws), "lock", "acquire", "--skill", "followup"]), 1)
+                "--workspace", str(self.ws), "lock", "acquire", "--skill", "followup"]), 2)
 
     def test_restore_body_error_is_not_masked_by_release_failure(self):
         self.init()
@@ -637,16 +637,17 @@ class WorkspaceTest(unittest.TestCase):
         self.assertFalse(out["release"]["released"])
         self.assertEqual(workspace.ledger.read_lock(self.ws)["runId"], out["runId"])
 
-    def test_restore_non_utf8_profile_before_acquire_returns_json_error_without_traceback(self):
+    def test_restore_non_utf8_profile_uses_default_timezone_and_repairs_config(self):
         self.init()
         self.fill()
         _, backup = run("--workspace", str(self.ws), "backup")
         (self.ws / "profile.json").write_bytes(b"\xff")
         proc = subprocess.run([sys.executable, str(Path(workspace.__file__)), "--workspace", str(self.ws),
                                "restore", backup["backup"]], capture_output=True, text=True, timeout=10)
-        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("Traceback", proc.stderr)
-        self.assertIn("utf-8", json.loads(proc.stdout)["error"])
+        self.assertTrue(json.loads(proc.stdout)["restoreSucceeded"])
+        self.assertEqual(workspace.ledger.load_profile(self.ws), PROFILE)
         self.assertFalse((self.ws / "ledger/lock.json").exists())
 
     def test_restore_does_not_swallow_programming_type_error(self):
@@ -699,7 +700,11 @@ class WorkspaceTest(unittest.TestCase):
         added = []
 
         def add_pending(ws, label=None):
-            added.append(pending(ledger.read_lock(ws)["runId"], "合成本轮"))
+            # 故障注入：正常入口已禁止恢复锁下新增 pending；低层模拟意外遗留。
+            event = dict(ledger.read_events(ws)[0][0], attemptId="att-injected",
+                         runId=ledger.read_lock(ws)["runId"], company="合成本轮", status="pending")
+            ledger.append_line(ws, event)
+            added.append(event["attemptId"])
             return original(ws, label)
 
         with patch.object(workspace, "do_backup", side_effect=add_pending):

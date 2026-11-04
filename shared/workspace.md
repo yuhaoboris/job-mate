@@ -12,6 +12,16 @@
 
 开始时告知工作区的绝对路径；本轮所有读写都在这里，中途不换。`setup-progress.json` 存在且为新建时，工作区初始化尚未完成，不能用于发送；`apply` / `followup` 获取锁被拒绝。草稿读不出时也拒绝；重置草稿不阻断当前配置。
 
+## 套件版本准入
+
+所有数据脚本共用 `job-mate.json.suiteVersion` 门禁：
+
+- 只读始终允许；工作区版本较高时输出 `warnings: ["suite_older_than_workspace"]`（可与其他警告并存）。
+- 写入要求主版本相同，且工作区的「主.次」不高于脚本；拒绝时退出码 2，`code` 为 `suite_major_mismatch` 或 `suite_too_old`，先更新整套技能。普通取锁成功后升级较低的工作区版本，不降级标记。
+- 恢复只要求主版本相同：`lock acquire --skill setup --recovery`、`lock release`、`pause off`、`workspace restore`。恢复锁记 `mode: recovery`，只允许恢复类写入；其他写入（包括 `guard`、续期、进度及通知写入）退出码 2，`code: recovery_lock_only`。只读仍可用。
+- `restore` 未传 `--run` 时自动获取恢复锁；传入时必须是有效 setup 锁。恢复保留恢复前的 `suiteVersion`，不采用备份中的旧版本。
+- 无标记时，`init` 或显式指定目录的 `progress start --mode new --variant typical|custom` 可建立骨架；已有标记时均按写入准入，不能借新建绕过保护。`backup`、全部进度修改、通知排队 / 认领 / 回执 / 入站是写入；`outbox` 不带 `--claim` 是只读。
+
 ## 文件
 
 | 文件 | 内容 | 谁写 |

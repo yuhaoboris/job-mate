@@ -77,8 +77,7 @@ class WorkspaceError(Exception):
 
 
 def emit(obj, code=0):
-    print(json.dumps(obj, ensure_ascii=False, indent=2))
-    return code
+    return ledger.emit(obj, code)
 
 
 def now_stamp():
@@ -87,8 +86,8 @@ def now_stamp():
 
 # ---------- init ----------
 
-def cmd_init(args):
-    ws = Path(args.path).expanduser().resolve()
+def init_workspace(path, boss_account=None, boss_name=None):
+    ws = Path(path).expanduser().resolve()
     home = Path.home().resolve()
     if ws == home or ws == Path("/"):
         raise WorkspaceError(f"不在 {ws} 根部建立工作区，请另选一个目录")
@@ -99,8 +98,8 @@ def cmd_init(args):
     marker = ws / MARKER
     if not marker.exists():
         accounts = {}
-        if args.boss_account:
-            accounts["boss"] = {"accountKey": args.boss_account, "displayName": args.boss_name}
+        if boss_account:
+            accounts["boss"] = {"accountKey": boss_account, "displayName": boss_name}
         marker.write_text(json.dumps({
             "schemaVersion": 1,
             "suiteVersion": ledger.SUITE_VERSION,
@@ -116,7 +115,11 @@ def cmd_init(args):
     if not decisions.exists():
         decisions.write_text("# 待本人决定\n", encoding="utf-8")
         created.append("inbox/decisions.md")
-    return emit({"workspace": str(ws), "created": created})
+    return {"workspace": str(ws), "created": created}
+
+
+def cmd_init(args):
+    return emit(init_workspace(args.path, args.boss_account, args.boss_name))
 
 
 # ---------- check ----------
@@ -362,15 +365,23 @@ def cmd_restore(args):
     src = backups_dir(ws) / args.name
     if not src.is_dir():
         raise WorkspaceError(f"找不到备份：{args.name}")
-    tz = ledger.tz_of(ledger.load_profile(ws))
+    tz = ledger.recovery_tz(ws)
     # 恢复全程持有运行锁：期间 apply / followup 无法启动，读不到前后混合的配置。
     # setup 在自己持锁时可传 --run 沿用；其他任何有效锁（包括别的 setup）都拒绝。
     with ledger.lock_mutex(ws):
-        code, out = ledger.acquire_lock(ws, tz, "setup", args.run)
+        if args.run:
+            current = ledger.read_lock(ws)
+            if (not current or current.get("runId") != args.run or current.get("skill") != "setup"
+                    or current.get("releasing") or ledger.lock_expired(current, fsutil.now(tz))):
+                raise WorkspaceError("restore --run 必须是当前有效的 setup 运行锁")
+            code, out = 0, {"lock": current, "reused": True, "reconciled": []}
+        else:
+            code, out = ledger.acquire_lock(ws, tz, "setup", recovery=True)
     if code != 0:
         lock = out.get("lock") or {}
         raise WorkspaceError(f"{lock.get('skill')}（{lock.get('runId')}）正在运行，等它结束后再恢复")
     run_id, reused = out["lock"]["runId"], out["reused"]
+    suite_version = ledger.read_json(ws / MARKER)["suiteVersion"]
     safety, restored, kept = None, [], []
     restore_error, release_error = None, None
     release = {"attempted": False, "released": False, "reason": "沿用调用者运行锁，由调用者收尾"}
@@ -392,8 +403,12 @@ def cmd_restore(args):
                     ledger.write_atomic(cur_path, ledger.stoplist_text_with(old_text, added))
                     ledger.load_stoplist(ws)
                     kept = [e["name"] for e in added]
+                elif f == MARKER:
+                    meta = ledger.read_json(src / f)
+                    meta["suiteVersion"] = suite_version
+                    ledger.write_atomic(ws / f, json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
                 else:
-                    shutil.copy2(src / f, ws / f)
+                    ledger.write_atomic(ws / f, fsutil.read_text(src / f))
                 restored.append(f)
     except (WorkspaceError, ledger.LedgerError, OSError, ValueError) as e:
         restore_error = str(e)
@@ -647,15 +662,36 @@ COMMANDS = {"init": cmd_init, "check": cmd_check, "backup": cmd_backup,
             "progress": cmd_progress}
 
 
+def entry_mode(args):
+    if args.cmd == "restore":
+        return "recover"
+    if args.cmd == "progress":
+        return "read" if args.action == "show" else "write"
+    return "write" if args.cmd in {"init", "backup"} else "read"
+
+
 def main(argv=None):
     fsutil.utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
         if args.cmd == "init" and bool(args.boss_account) != bool(args.boss_name):
             raise WorkspaceError("--boss-account 与 --boss-name 需同时提供")
-        return COMMANDS[args.cmd](args)
-    except (WorkspaceError, ledger.LedgerError, ValueError) as e:
-        return emit({"error": str(e)}, 2)
+        new_progress = args.cmd == "progress" and args.action == "start" and args.mode == "new"
+        creating = args.cmd == "init" or new_progress
+        path = args.path if args.cmd == "init" else args.workspace
+        if creating and path:
+            ws = Path(path).expanduser().resolve()
+            if not (ws / MARKER).exists():
+                if new_progress:
+                    if not args.variant:
+                        raise WorkspaceError("new 需要 --variant")
+                    init_workspace(ws)
+                return COMMANDS[args.cmd](args)
+        ws = ledger.find_workspace(path)
+        with ledger.gated(ws, entry_mode(args)):
+            return COMMANDS[args.cmd](args)
+    except (WorkspaceError, ledger.LedgerError, ValueError, OSError) as e:
+        return emit(ledger.error_result(e), 2)
 
 
 if __name__ == "__main__":

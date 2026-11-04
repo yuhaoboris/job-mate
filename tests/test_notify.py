@@ -55,7 +55,7 @@ class NotifyTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.ws = Path(self.tmp.name)
-        (self.ws / "job-mate.json").write_text(json.dumps({"schemaVersion": 1, "accounts": {}}))
+        (self.ws / "job-mate.json").write_text(json.dumps({"schemaVersion": 1, "suiteVersion": "1.0.0", "accounts": {}}))
         (self.ws / "ledger").mkdir()
         (self.ws / "inbox").mkdir()
         self.set_im()
