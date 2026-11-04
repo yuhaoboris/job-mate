@@ -365,7 +365,7 @@ class ExecutionRulesTest(unittest.TestCase):
         maintained = ast.parse((ROOT / "tests/test_workspace.py").read_text(encoding="utf-8"))
         methods = {node.name for node in ast.walk(maintained) if isinstance(node, ast.FunctionDef)}
         self.assertTrue({"test_browser_accepts_boolean_headed_input_and_rejects_unknown_fields",
-                         "test_new_browser_after_account_not_preanswered",
+                         "test_new_browser_after_account_defaults_false_without_writing_profile",
                          "test_browser_partial_skip_keep_and_resume_do_not_write_profile",
                          "test_no_send_lock_rejects_pending_and_guard",
                          "test_reacquire_same_run_never_changes_no_send"} <= methods)

@@ -40,6 +40,7 @@ def run_build(*argv):
 # 已完整改写的文档进入体量预算；其余在对应任务重写时加入。
 TEXT_BUDGETS = {"shared/browser/agent-desktop.md": 12000, "shared/im/lark.md": 8000, "shared/config-transaction.md": 16000, "shared/notify.md": 16000, "shared/ledger.md": 16000, "shared/derived.md": 16000, "shared/accounts.md": 16000, "shared/export.md": 16000, "shared/tails.md": 16000, "shared/sending.md": 16000, "shared/execution.md": 16000,
                 "shared/workspace.md": 16000, "skills/setup/SKILL.md": 20000}
+READING_BUDGETS = {"setup": (55000, ("skills/setup/SKILL.md", "shared/workspace.md", "shared/execution.md"))}
 
 
 class BuildTest(unittest.TestCase):
@@ -47,6 +48,15 @@ class BuildTest(unittest.TestCase):
         for name, maximum in TEXT_BUDGETS.items():
             with self.subTest(path=name):
                 self.assertLessEqual((ROOT / name).stat().st_size, maximum)
+
+    def test_setup_required_reading_budget_and_opening_links(self):
+        maximum, files = READING_BUDGETS["setup"]
+        self.assertLessEqual(sum((ROOT / name).stat().st_size for name in files), maximum)
+        skill = (ROOT / files[0]).read_text(encoding="utf-8")
+        first = skill.split("# setup：", 1)[1].split("\n\n", 1)[1].split("。", 1)[0]
+        links = re.findall(r"\[[^\]]+\]\(([^)]+)\)", first)
+        self.assertEqual([(ROOT / files[0]).parent.joinpath(link).resolve() for link in links],
+                         [(ROOT / name).resolve() for name in files[1:]])
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

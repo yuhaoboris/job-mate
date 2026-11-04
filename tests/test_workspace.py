@@ -99,12 +99,12 @@ class WorkspaceTest(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertEqual(out["plan"], [s["id"] for s in workspace.STEPS])
             self.assertEqual(out["current"], "materials")
-            self.assertEqual((out["position"], out["total"]), (2, 19))
+            self.assertEqual((out["position"], out["total"]), (2, 22))
             self.assertEqual(out["answers"]["directory"]["value"], str(self.ws.resolve()))
-            self.assertEqual(set(out["answers"]), {"directory", "activity", "pacing"}
+            self.assertEqual(set(out["answers"]), {"directory", "browser", "activity", "inquiry", "pacing"}
                              if variant == "typical" else {"directory"})
             if variant == "typical":
-                for step in ("activity", "pacing"):
+                for step in ("browser", "activity", "inquiry", "pacing"):
                     self.assertEqual(out["answers"][step]["status"], "default")
                     self.assertEqual(out["answers"][step]["source"], "default")
                     self.assertEqual(out["answers"][step]["value"], workspace.STEP_BY_ID[step]["default"])
@@ -197,8 +197,8 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(out["added"], {})
         for _ in range(2):
             _, out = self.progress("record", "candidate", "--status", "changed")
-            self.assertEqual(out["plan"], ["materials", "candidate", "qa", "greeting"])
-            self.assertEqual(out["added"], {"qa": "candidate", "greeting": "candidate"})
+            self.assertEqual(out["plan"], ["materials", "candidate", "qa", "style", "greeting"])
+            self.assertEqual(out["added"], {"qa": "candidate", "style": "candidate", "greeting": "candidate"})
         self.progress("clear")
         self.start_reset(select="roles")
         _, out = self.progress("record", "roles", "--status", "changed")
@@ -207,7 +207,7 @@ class WorkspaceTest(unittest.TestCase):
         self.progress("clear")
         self.start_reset("resetup")
         _, out = self.progress("record", "candidate", "--status", "changed")
-        self.assertEqual(len(out["plan"]), 18)
+        self.assertEqual(len(out["plan"]), 21)
         self.assertEqual(out["added"], {})
 
     def test_progress_review_inserted_in_catalog_order(self):
@@ -239,12 +239,15 @@ class WorkspaceTest(unittest.TestCase):
                 self.assertEqual(code, 0, out)
                 self.assertEqual(out["current"], "qa")
                 self.assertNotIn("qa", out["answers"])
+                self.assertNotIn("style", out["answers"])
                 self.assertNotIn("greeting", out["answers"])
-                self.assertEqual(out["added"], {"qa": "candidate", "greeting": "candidate"})
+                self.assertEqual(out["added"], {"qa": "candidate", "style": "candidate", "greeting": "candidate"})
                 for step, answer in old_answers.items():
-                    if step not in {"candidate", "qa", "greeting"}:
+                    if step not in {"candidate", "qa", "style", "greeting"}:
                         self.assertEqual(out["answers"][step], answer)
                 _, out = self.progress("record", "qa", "--status", "kept")
+                self.assertEqual(out["current"], "style")
+                _, out = self.progress("record", "style", "--status", "kept")
                 self.assertEqual(out["current"], "greeting")
                 self.progress("clear")
 
@@ -347,7 +350,7 @@ class WorkspaceTest(unittest.TestCase):
         self.progress("start", "--mode", "new", "--variant", "custom")
         code, out = run("--workspace", str(self.ws), "check")
         self.assertEqual(code, 1)
-        self.assertIn("第 2/19 步", out["problems"][0]["problem"])
+        self.assertIn("第 2/22 步", out["problems"][0]["problem"])
         for mode in ("resetup", "partial"):
             self.progress("clear")
             self.init()
@@ -843,12 +846,16 @@ class WorkspaceIsolationTest(unittest.TestCase):
         with patch("subprocess.Popen", side_effect=AssertionError("不得执行外部程序")):
             self.assertEqual(self.work("check")[0], 0)
 
-    def test_new_browser_after_account_not_preanswered(self):
+    def test_new_browser_after_account_defaults_false_without_writing_profile(self):
+        """设计5.2：典型模式预答前台输入为 false；草稿不改正式配置。"""
         ids = [s["id"] for s in workspace.STEPS]
         self.assertEqual(ids[ids.index("account") + 1], "browser")
+        before = (self.ws / "profile.json").read_bytes()
         _, out = self.work("progress", "start", "--mode", "new", "--variant", "typical")
         self.assertIn("browser", out["plan"])
-        self.assertNotIn("browser", out["answers"])
+        self.assertEqual(out["answers"]["browser"]["value"], {"headedInput": False})
+        self.assertEqual(out["answers"]["browser"]["status"], "default")
+        self.assertEqual((self.ws / "profile.json").read_bytes(), before)
         self.assertNotIn("browser", self.profile)
 
     def test_browser_partial_skip_keep_and_resume_do_not_write_profile(self):

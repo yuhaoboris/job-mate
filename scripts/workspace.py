@@ -29,7 +29,8 @@ STEPS = [
     {"id": "directory", "phase": "prepare", "name": "工作区目录", "required": True},
     {"id": "materials", "phase": "prepare", "name": "现成材料", "required": False},
     {"id": "account", "phase": "prepare", "name": "平台账号", "required": True},
-    {"id": "browser", "phase": "prepare", "name": "浏览器操作", "required": False},
+    {"id": "browser", "phase": "prepare", "name": "浏览器操作", "required": False,
+     "default": config_schema.default_profile()["browser"]},
     {"id": "roles", "phase": "criteria", "name": "目标职位", "required": True,
      "review": ["greeting"]},
     {"id": "locations", "phase": "criteria", "name": "城市", "required": True},
@@ -40,17 +41,27 @@ STEPS = [
     {"id": "activity", "phase": "criteria", "name": "招聘者活跃度", "required": False,
      "default": config_schema.default_profile()["recruiterActivity"]},
     {"id": "candidate", "phase": "facts", "name": "个人事实", "required": True,
-     "depends": ["materials"], "review": ["qa", "greeting"]},
+     "depends": ["materials"], "review": ["qa", "style", "greeting"]},
     {"id": "resumes", "phase": "facts", "name": "简历版本", "required": True,
      "depends": ["materials"]},
     {"id": "qa", "phase": "facts", "name": "问答口径", "required": False},
-    {"id": "greeting", "phase": "outreach", "name": "招呼语", "required": True},
-    {"id": "applyAuth", "phase": "outreach", "name": "发起沟通授权", "required": False},
-    {"id": "followupLevel", "phase": "outreach", "name": "代答级别", "required": False},
-    {"id": "pacing", "phase": "outreach", "name": "限额与时段", "required": False,
+    {"id": "style", "phase": "communication", "name": "沟通风格", "required": False,
+     "default": config_schema.default_profile()["style"], "depends": ["greeting"], "review": ["greeting"]},
+    {"id": "inquiry", "phase": "communication", "name": "优先了解的信息", "required": False,
+     "default": config_schema.default_profile()["inquiry"]},
+    {"id": "greeting", "phase": "communication", "name": "招呼语", "required": True},
+    {"id": "applyAuth", "phase": "authorization", "name": "首次沟通授权", "required": False,
+     "default": config_schema.default_profile()["authorization"]["apply"]},
+    {"id": "replyLevel", "phase": "authorization", "name": "代答级别", "required": False,
+     "default": config_schema.default_profile()["authorization"]["followup"]["reply"]},
+    {"id": "nudge", "phase": "authorization", "name": "主动跟进", "required": False,
+     "default": {"authorization": {"followup": {"nudge": config_schema.default_profile()["authorization"]["followup"]["nudge"]}},
+                 "nudge": config_schema.default_profile()["nudge"]}},
+    {"id": "pacing", "phase": "authorization", "name": "限额与时段", "required": False,
      "default": {k: config_schema.default_profile()[k] for k in ("limits", "schedule")}},
-    {"id": "im", "phase": "notify", "name": "IM 通知", "required": False},
+    {"id": "im", "phase": "notify", "name": "飞书通知", "required": False},
 ]
+TYPICAL_DEFAULT_STEPS = ("browser", "activity", "inquiry", "pacing")
 STEP_BY_ID = {s["id"]: s for s in STEPS}
 
 effective_profile = ledger.effective_profile
@@ -519,6 +530,7 @@ def start_progress(args, ws):
         if name in {".", ".."} or Path(name).name != name or not (backups_dir(ws) / name).is_dir():
             raise WorkspaceError(f"找不到备份：{name}")
     plan = [s["id"] for s in STEPS if args.mode == "new" or s["id"] != "directory"]
+    added = {}
     if args.mode == "partial":
         if not args.select:
             raise WorkspaceError("partial 需要 --select")
@@ -532,17 +544,22 @@ def start_progress(args, ws):
                 selected.add(item)
             else:
                 raise WorkspaceError(f"未知或不适用的步骤 id：{item}")
-        for step in list(selected):
-            selected.update(STEP_BY_ID[step].get("depends", []))
+        requested = set(selected)
+        for step in STEPS:
+            if step["id"] in requested:
+                for dependency in step.get("depends", []):
+                    if dependency not in selected and dependency in step.get("review", []):
+                        added[dependency] = step["id"]
+                    selected.add(dependency)
         plan = [s["id"] for s in STEPS if s["id"] in selected]
     at = fsutil.now().astimezone().isoformat(timespec="seconds")
     draft = {"schemaVersion": 1, "mode": args.mode, "variant": args.variant,
              "baseBackup": args.base_backup, "startedAt": at, "updatedAt": at,
-             "plan": plan, "current": None, "added": {}, "answers": {}}
+             "plan": plan, "current": None, "added": added, "answers": {}}
     if args.mode == "new":
         draft["answers"]["directory"] = {"status": "kept", "value": str(ws), "source": "user", "at": at}
         if args.variant == "typical":
-            for step in ("activity", "pacing"):
+            for step in TYPICAL_DEFAULT_STEPS:
                 draft["answers"][step] = {"status": "default", "value": STEP_BY_ID[step]["default"],
                                           "source": "default", "at": at}
     draft["current"] = next_unanswered(draft)
