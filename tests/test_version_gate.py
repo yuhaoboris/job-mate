@@ -17,10 +17,15 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import ledger
 import notify
 import workspace
+import im_lark
 
-MODULES = {"ledger": ledger, "notify": notify, "workspace": workspace}
+MODULES = {"ledger": ledger, "notify": notify, "workspace": workspace, "im_lark": im_lark}
 # 脚本、完整命令及影响副作用的参数、分类。参数值均为合成数据。
 ENTRY_CASES = [
+    ("im_lark", "doctor", "read"),
+    ("im_lark", "sync", "write"),
+    ("im_lark", "sync --send-only", "write"),
+    ("im_lark", "sync --fetch-only", "write"),
     ("ledger", "validate", "read"),
     ("ledger", "screen-check --platform boss --company 示例", "read"),
     ("ledger", "screen-check --platform boss --company 示例 --account main --title 开发 --job-id page-id --run screen-run", "read"),

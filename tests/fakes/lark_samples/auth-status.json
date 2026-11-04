@@ -1,0 +1,30 @@
+{
+  "appId": "cli_1111111111111111",
+  "brand": "feishu",
+  "defaultAs": "auto",
+  "identities": {
+    "bot": {
+      "status": "ready",
+      "available": true,
+      "verified": true,
+      "message": "Bot identity: ready",
+      "openId": "ou_22222222222222222222222222222222",
+      "appName": "合成机器人"
+    },
+    "user": {
+      "status": "ready",
+      "available": true,
+      "verified": true,
+      "message": "User identity: ready",
+      "openId": "ou_11111111111111111111111111111111",
+      "userName": "合成本人",
+      "tokenStatus": "valid",
+      "scope": "im:message:readonly",
+      "expiresAt": "2040-01-02T02:47:50+08:00",
+      "refreshExpiresAt": "2040-01-09T00:47:50+08:00",
+      "grantedAt": "2039-12-29T16:36:51+08:00"
+    }
+  },
+  "identity": "user",
+  "verified": true
+}

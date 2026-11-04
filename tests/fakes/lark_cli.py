@@ -52,7 +52,7 @@ def sample(name):
 
 
 def initial_state(profile="synthetic-profile", seeded=True):
-    """只构造合成数据，不写状态。辅助响应缺省为空，不伪造已实测契约。"""
+    """只构造合成数据，不写状态。profile/auth 用实测形状，contact 仍须显式配置。"""
     sent = sample("send")["data"]
     shortcut = sample("list")["data"]["messages"]
     native = [sample("native-list-page1")["data"]["items"][0], sample("native-list-page2")["data"]["items"][0]]
@@ -65,7 +65,7 @@ def initial_state(profile="synthetic-profile", seeded=True):
          "displayTimes": {m["message_id"]: m["create_time"] for m in shortcut} if seeded else {}, "idempotency": {},
          "nativeClock": str(max(int(m["create_time"]) for m in native) + 1000) if seeded else native[0]["create_time"],
          "shortcutClock": (local + timedelta(seconds=1) if seeded else local).strftime("%Y-%m-%d %H:%M:%S"),
-         "auxiliary": {"profileList": None, "contacts": {}}}
+         "auxiliary": {"profileList": sample("profile-list"), "authStatus": sample("auth-status"), "contacts": {}}}
     return {"schemaVersion": 1, "synthetic": True, "profiles": {profile: p}, "calls": [], "faults": [], "tokens": {},
             "nextMessage": 3 if seeded else 1, "nextPosition": 103 if seeded else 101, "nextToken": 1}
 
@@ -116,7 +116,7 @@ def validate(state):
         delay = fault.get("delaySeconds", 1)
         require(type(delay) in (int, float) and 0.05 <= delay <= 2 and math.isfinite(delay), "故障延时须0.05–2秒")
         message_commands = {"send", "reply", "mget", "list", "native-get", "native-list"}
-        require(fault["command"] in message_commands | {"version", "profiles", "contact"}, "未知故障命令")
+        require(fault["command"] in message_commands | {"version", "profiles", "auth", "contact"}, "未知故障命令")
         require(fault["kind"] not in ("missing_page_token", "non_owner") or fault["command"] in ("list", "native-list"), "故障与分页/用户消息命令不匹配")
         require(fault["kind"] in ("timeout", "nonzero", "missing_page_token", "non_owner") or fault["command"] in message_commands, "故障与消息字段不匹配")
 
@@ -133,6 +133,10 @@ def parse(argv):
     sub = parser.add_subparsers(dest="group", parser_class=Parser)
     profile = sub.add_parser("profile", add_help=False, allow_abbrev=False)
     profile.add_argument("action", choices=("list",))
+    auth = sub.add_parser("auth", add_help=False, allow_abbrev=False)
+    auth.add_argument("action", choices=("status",))
+    auth.add_argument("--json", action="store_true", required=True)
+    auth.add_argument("--verify", action="store_true", required=True)
     contact = sub.add_parser("contact", add_help=False, allow_abbrev=False)
     contact.add_argument("arguments", nargs=argparse.REMAINDER)
     im = sub.add_parser("im", add_help=False, allow_abbrev=False)
@@ -177,7 +181,7 @@ def parse(argv):
     elif args.group == "im":
         args.command = {"+messages-send": "send", "+messages-reply": "reply", "+messages-mget": "mget", "+chat-messages-list": "list"}[args.action]
     else:
-        args.command = "profiles" if args.group == "profile" else "contact"
+        args.command = {"profile": "profiles", "auth": "auth", "contact": "contact"}[args.group]
     return args
 
 
@@ -308,10 +312,15 @@ def dispatch(state, args):
     p = state["profiles"][args.profile]
     if args.command == "version":
         return "lark-cli version 1.0.96\n"
-    if args.command in ("profiles", "contact"):
+    if args.command in ("profiles", "auth", "contact"):
         auxiliary = p["auxiliary"]
-        value = auxiliary.get("profileList") if args.command == "profiles" else auxiliary.get("contacts", {}).get(json.dumps(args.arguments, ensure_ascii=False, separators=(",", ":")))
-        require(isinstance(value, dict), "此辅助命令未采样，必须显式提供合成响应及精确contact参数")
+        if args.command in ("profiles", "auth"):
+            key, expected = ("profileList", list) if args.command == "profiles" else ("authStatus", dict)
+            value = auxiliary.get(key)
+            require(isinstance(value, expected), "采样辅助响应类型不符")
+        else:
+            value = auxiliary.get("contacts", {}).get(json.dumps(args.arguments, ensure_ascii=False, separators=(",", ":")))
+            require(isinstance(value, dict), "contact未采样，必须显式提供合成响应及精确参数")
         return copy.deepcopy(value)
     if args.command in ("send", "reply"):
         return send(state, p, args)

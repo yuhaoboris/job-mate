@@ -32,7 +32,8 @@ def private_values(value):
             for item in obj:
                 walk(item, key)
         elif isinstance(obj, str):
-            if obj and identity_key(key):
+            normalized = re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()
+            if obj and (identity_key(key) or normalized in {"name", "user_name", "app_name", "profile", "profile_name", "user"}):
                 identifiers.add(obj)
             if obj and key == "message_position":
                 positions.add(obj)
@@ -91,11 +92,13 @@ class RepoHygieneTest(unittest.TestCase):
         raw = {"sender": {"id": "opaque-person-123", "tenant_key": "opaque-tenant-456", "open_bot_id": "ou_" + "9" * 32},
                "error": {"log_id": "OpaqueLogABC789", "code": 99992351,
                          "troubleshooter": "https://example.invalid/?log_id=OpaqueLogABC789&method_id=6936075528891154460"},
-               "page_token": "opaque-page-token", "message_position": "732"}
+               "page_token": "opaque-page-token", "message_position": "732",
+               "name": "Private profile label", "userName": "Private owner name", "appName": "Private app name"}
         ids, positions = private_values(raw)
         self.assertIn("opaque-tenant-456", ids)
         self.assertIn("OpaqueLogABC789", ids)
         self.assertIn("opaque-person-123", ids)
+        self.assertTrue({"Private profile label", "Private owner name", "Private app name"} <= ids)
         self.assertNotIn("99992351", ids)
         self.assertNotIn("6936075528891154460", ids)
         self.assertEqual(positions, {"732"})
@@ -111,7 +114,7 @@ class RepoHygieneTest(unittest.TestCase):
 
     def test_lark_samples_preserve_types_precision_relations_and_channels(self):
         folder = ROOT / "tests/fakes/lark_samples"
-        names = {"send", "send-dup", "mget", "list", "send-reject", "native-get", "native-list-page1", "native-list-page2"}
+        names = {"send", "send-dup", "mget", "list", "send-reject", "native-get", "native-list-page1", "native-list-page2", "profile-list", "auth-status"}
         self.assertEqual({p.stem for p in folder.glob("*.json")}, names)
         samples = {name: json.loads((folder / (name + ".json")).read_text(encoding="utf-8")) for name in names}
         sent = samples["send"]["data"]
@@ -145,6 +148,15 @@ class RepoHygieneTest(unittest.TestCase):
         self.assertEqual(native_reply["root_id"], sent["message_id"])
         self.assertEqual(samples["send-reject"]["error"]["code"], 99992351)
         self.assertFalse(samples["send-reject"]["ok"])
+        profiles, auth = samples["profile-list"], samples["auth-status"]
+        self.assertIsInstance(profiles, list)
+        selected = next(p for p in profiles if p.get("effective"))
+        self.assertEqual(selected["name"], "synthetic-profile")
+        self.assertEqual(selected["appId"], auth["appId"])
+        self.assertIs(auth["identities"]["bot"]["verified"], True)
+        self.assertNotEqual(auth["identities"]["bot"]["openId"], auth["identities"]["user"]["openId"])
+        self.assertNotIn("ok", auth)
+        self.assertNotIn("data", auth)
         self.assertTrue((folder / "NOTES.md").is_file())
 
     def test_lark_raw_identifiers_do_not_leak_into_public_samples(self):

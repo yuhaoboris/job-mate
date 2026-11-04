@@ -360,20 +360,27 @@ def outbox_rows(ws, ctx):
 
 
 def cmd_outbox(args, ws):
-    ctx = context(ws)
+    return emit(outbox(ws, context(ws), args.limit, args.claim, args.stale))
+
+
+def outbox(ws, ctx, limit=100, claim=False, stale=False, exclude=()):
+    """函数级同步接口；调用者冻结 ctx 并持写入准入，CLI 与适配器共用认领规则。"""
+    args = argparse.Namespace(limit=limit, claim=claim, stale=stale)
     if args.limit <= 0:
         raise NotifyError("limit 必须为正数")
     with im_mutex(ws, write=args.claim):
+        if args.claim:
+            ledger.version_gate(ws, "write")
         rows = outbox_rows(ws, ctx)
         if args.stale:
             rows = [o for o in rows if o.get("stale")]
         if not args.claim:
-            return emit({"entries": rows[:args.limit]})
+            return {"entries": rows[:args.limit]}
         if args.stale:
             raise NotifyError("stale 只能查看，不能认领")
         claimed = []
         for o in rows:
-            if o["status"] not in ("queued", "failed"):
+            if o["status"] not in ("queued", "failed") or o["key"] in exclude:
                 continue
             rec = {"type": "out", "key": o["key"], "status": "handoff", "token": uuid.uuid4().hex,
                    "attempt": o["attempts"] + 1, "handoffMs": now_ms(),
@@ -383,11 +390,18 @@ def cmd_outbox(args, ws):
                             **{k: rec[k] for k in ("attempt", "token", "idempotencyKey")}})
             if len(claimed) >= args.limit:
                 break
-        return emit({"entries": claimed})
+        return {"entries": claimed}
 
 
 def cmd_receipt(args, ws):
-    ctx = context(ws)
+    return emit(receipt(ws, context(ws), **{k: getattr(args, k) for k in
+                ("key", "token", "result", "message_id", "chat_id", "create_time", "error")}))
+
+
+def receipt(ws, ctx, key, token, result, message_id=None, chat_id=None, create_time=None, error=None):
+    """同一回执状态机；不重载或切换本轮冻结路由。"""
+    args = argparse.Namespace(key=key, token=token, result=result, message_id=message_id,
+                              chat_id=chat_id, create_time=create_time, error=error)
     if not nonempty(args.key) or not nonempty(args.token):
         raise NotifyError("key/token 不能为空")
     if args.create_time is not None and (not valid_ms(args.create_time) or args.create_time > now_ms() + 300000):
@@ -402,13 +416,14 @@ def cmd_receipt(args, ws):
     receipt = {"result": args.result, "messageId": args.message_id, "chatId": args.chat_id,
                "createTime": args.create_time, "error": args.error}
     with im_mutex(ws):
+        ledger.version_gate(ws, "write")
         st = load_state(ws, ctx["cfg"])
         o = st["out"].get(args.key)
         if not o or o.get("token") != args.token:
             raise NotifyError("未知或陈旧的 key/token")
         if o["status"] != "handoff":
             if o.get("receipt") == receipt:
-                return emit({"status": "duplicate", "key": args.key})
+                return {"status": "duplicate", "key": args.key}
             raise NotifyError("冲突回执，不能覆盖已有结果")
         if args.result == "sent" and any(other["key"] != args.key and other.get("messageId") == args.message_id
                                          for other in st["out"].values()):
@@ -420,7 +435,7 @@ def cmd_receipt(args, ws):
             rec["error"] = args.error
         append_record(ws, rec, ctx["tz"])
         # chat 可从已保存 sent 推导；重复回执也不依赖第二次写入是否成功。
-    return emit({"status": args.result, "key": args.key})
+    return {"status": args.result, "key": args.key}
 
 
 def sync_view(ws, cfg):

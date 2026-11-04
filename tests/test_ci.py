@@ -23,6 +23,9 @@ class CiTest(unittest.TestCase):
                                     "python -m unittest discover -s tests",
                                     'python scripts/build.py --out "${{ runner.temp }}/dist"'])
         self.assertLess(text.index("core.autocrlf false"), text.index("actions/checkout@"))
+        self.assertIn("actions/setup-node@v4", text)
+        self.assertIn("node-version: lts/*", text)
+        self.assertLess(text.index("actions/setup-node@"), text.index("name: 全量单测"))
         self.assertIn("contents: read", text)
         self.assertNotIn("secrets.", text)
         self.assertNotIn("--install", text)

@@ -20,7 +20,7 @@ import fsutil
 import ledger
 import notify
 import workspace
-from test_version_gate import ENTRY_CASES, CREATION_CASES, argv
+from test_version_gate import ENTRY_CASES, CREATION_CASES, MODULES, argv
 
 
 CHILD = r'''
@@ -311,7 +311,7 @@ class MutationCoordinationTest(unittest.TestCase):
                     self.assertEqual(ledger.read_json(ws / ledger.MARKER)["suiteVersion"], version)
 
     def test_all_registered_write_recover_and_creation_handlers_hold_coordination(self):
-        modules = {"ledger": ledger, "notify": notify, "workspace": workspace}
+        modules = MODULES
         for script, command, mode in ENTRY_CASES:
             with self.subTest(script=script, command=command):
                 ws = self.make_ws()

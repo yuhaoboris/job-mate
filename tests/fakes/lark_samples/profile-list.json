@@ -1,0 +1,20 @@
+[
+  {
+    "name": "cli_3333333333333333",
+    "appId": "cli_3333333333333333",
+    "brand": "feishu",
+    "active": true,
+    "user": "合成本人",
+    "tokenStatus": "needs_refresh"
+  },
+  {
+    "name": "synthetic-profile",
+    "appId": "cli_1111111111111111",
+    "brand": "feishu",
+    "active": false,
+    "effective": true,
+    "effectiveSource": "flag",
+    "user": "合成本人",
+    "tokenStatus": "valid"
+  }
+]

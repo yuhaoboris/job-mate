@@ -57,13 +57,14 @@ state.faults 为按 command 精确匹配、只消费一次的列表。kind 为 t
 
 `lark_cli.py` 只用 `[sys.executable, 文件绝对路径, ...]` 调用，不提供 launcher/.cmd，不查找真实 lark-cli、不联网。所有调用（包括版本）显式带 `--profile`，原始 argv 保留在临时状态 calls；未支持命令、未知 profile/目标、错 token/窗口均失败，不回退真程序。
 
-先由 `initial_state("synthetic-profile", seeded=True)` 构造 JSON，写入系统临时目录、仓库外的已有文件，设置绝对 `LARK_FAKE_STATE`。seeded:true 装入八份[脱敏样本](lark_samples/NOTES.md)中的两条合成消息，false 则用于空私聊发送测试。程序只读提交样本、只修改临时状态，共用 fsutil 锁与原子替换；无环境、非合成标记、链接、缺文件或坏状态拒绝，不猜默认状态路径。
+先由 `initial_state("synthetic-profile", seeded=True)` 构造 JSON，写入系统临时目录、仓库外的已有文件，设置绝对 `LARK_FAKE_STATE`。seeded:true 装入十份[脱敏样本](lark_samples/NOTES.md)中的两条合成消息，false 则用于空私聊发送测试。程序只读提交样本、只修改临时状态，共用 fsutil 锁与原子替换；无环境、非合成标记、链接、缺文件或坏状态拒绝，不猜默认状态路径。
 
 显式子集（全局 --profile 位于命令之前）：
 
 ```text
 --profile PROFILE --version
 --profile PROFILE profile list
+--profile PROFILE auth status --json --verify
 --profile PROFILE contact <调用者配置的精确参数列表>
 --profile PROFILE im +messages-send --as bot --user-id ID --text TEXT --idempotency-key KEY --format json
 --profile PROFILE im +messages-reply --as bot --message-id ID --text TEXT --idempotency-key KEY --format json
@@ -73,14 +74,14 @@ state.faults 为按 command 精确匹配、只消费一次的列表。kind 为 t
 --profile PROFILE api GET /open-apis/im/v1/messages --as bot --params JSON --format json
 ```
 
-- 版本是实测的纯文本 `lark-cli version 1.0.96`，不是 JSON。已采成功/拒绝响应从八份样本复制并替换合成动态值；成功 stdout/0、拒绝 stderr/1。fake 自身参数/状态错误为明确标注 type:fake 的 stderr JSON/2，不冒充真实 API 错误码。
+- 版本是实测的纯文本 `lark-cli version 1.0.96`，不是 JSON。已采成功/拒绝响应从十份样本复制并替换合成动态值；成功 stdout/0、拒绝 stderr/1。fake 自身参数/状态错误为明确标注 type:fake 的 stderr JSON/2，不冒充真实 API 错误码。
 - 原生只接受上述两条 GET 路径，尤其拒绝 POST/其他 API。params 严格检查 container_id_type:chat、选定配置档的 container_id、十进制字符串 start_time/end_time、ByCreateTimeAsc、整数 page_size:1–50、可选非空 page_token；不静默补参。第一页返回的合成 token 绑定配置档、会话、窗口、page_size 和该次消息 ID 序列，下一页失配拒绝。默认两页与实测样本逐字段相同，不解码 token。
 - profile.messages 采用原生 list 的 items 形状。原生 get 投影为实测 get 形状，shortcut mget/list 投影为相应样本形状，保留 sender 对象、正文字符串/嵌套 JSON 字符串、reply_to 与 parent_id/root_id 的区别。shortcut展示时间必须由 displayTimes 明确提供，不能由epoch猜时区。新消息使用**独立**的 nativeClock 和 shortcutClock 合成时钟，不把两套表示互相转换。
 - 幂等表按配置档隔离。同 key 同动作/目标/原文返回同一回执，不重复建消息；同 key 改意图拒绝。文字与 shell 元字符只作为字符串保存，引用回复记录 parent_id/root_id。引用回复、动态新消息/过滤边界/分页快照等是基于已测结构的**推演测试契约**，不是新增真实样本。
-- profile/contact 没有已采响应，默认拒绝。只能在所选 profile 的 auxiliary.profileList 放显式合成响应，或在 auxiliary.contacts 以 `json.dumps(contact参数数组, ensure_ascii=False, separators=(",", ":"))` 为键放响应；严格匹配才原样返回，不为未匹配查询默认成功。这些形状仍须 T7 前决定/核验。
+- profile/auth 采用补采响应：auxiliary.profileList 为顶层数组，auxiliary.authStatus 为顶层诊断对象，均不套 IM 的 ok/data。auth 仅支持精确的 `status --json --verify`，不支持登录/写配置。contact 仍未独采，默认拒绝；必须在 auxiliary.contacts 以 `json.dumps(contact参数数组, ensure_ascii=False, separators=(",", ":"))` 为键放明确合成响应，严格匹配才返回。
 - 原生窗口使用合成的 `[start秒*1000,end秒*1000)`，token 后续页沿用首次 ID 序列；shortcut start 用调用者已明确时区的输入，聚合只支持不超过 page_limit*50 条。以上过滤/时效边界未由真实样本穷尽，不视为服务端全部行为。
 
-state.faults 的 command 为 version/profiles/contact/send/reply/mget/list/native-get/native-list，kind 为 timeout、nonzero、missing_message_id、missing_create_time、missing_page_token、other_chat、non_owner，按命令只消费一次。缺字段/异会话/非本人只改本次响应，不污染正常消息；非零故障复用采到的拒绝树，发生在动作前。timeout 支持 before/after，刷盘并释放锁后输出 stderr `fake-timeout-ready`，等待0.05–2秒；测试读取 ready 后短时超时并清理真实子进程，after 可保留已经模拟发送的消息。计划响应不是收到 stdout 的证明。
+state.faults 的 command 为 version/profiles/auth/contact/send/reply/mget/list/native-get/native-list，kind 为 timeout、nonzero、missing_message_id、missing_create_time、missing_page_token、other_chat、non_owner，按命令只消费一次。缺字段/异会话/非本人只改本次响应，不污染正常消息；非零故障复用采到的拒绝树，发生在动作前。timeout 支持 before/after，刷盘并释放锁后输出 stderr `fake-timeout-ready`，等待0.05–2秒；测试读取 ready 后短时超时并清理真实子进程，after 可保留已经模拟发送的消息。计划响应不是收到 stdout 的证明。
 
 可以为 native-get 单独注入非零/超时/缺 create_time，供后续测试已成功发送、仅时间补查失败的场景；本替身不实现 sent/unknown 的适配器决策，不因补查失败自行重发。T6.3 没有运行真实采集或任何 lark-cli/API。
 
@@ -92,4 +93,6 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_fake_age
 
 飞书专项：`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_fake_lark_cli.py`。
 
-桌面覆盖正常/错误信封、argv、页面与输入状态、故障、真实进程超时清理、POSIX launcher；飞书覆盖八份真实样本形状、推演辅助契约、幂等、引用、分页/路由及故障。两者都检查未分发、提交夹具未污染。原生 Windows 直接执行 Python；仅 POSIX launcher 测试按系统能力区分。没有新增真实采集或平台验证。
+适配器专项为 `test_im_lark.py`；`argv_echo.js` 只用真实 Node 回显 argv，验证显式入口与完整 npm 模板的参数保真，不联网、不创建子进程。CI 显式安装 Node LTS，缺 Node 必须失败；本机缺失才可明确跳过。POSIX 上的 Windows 解析模拟不能代替原生 Windows 运行结果。
+
+桌面覆盖正常/错误信封、argv、页面与输入状态、故障、真实进程超时清理、POSIX launcher；飞书覆盖十份实测样本形状、推演辅助契约、幂等、引用、分页/路由及故障。两者都检查未分发、提交夹具未污染。原生 Windows 直接执行 Python；仅 POSIX launcher 测试按系统能力区分。没有新增真实采集或平台验证。

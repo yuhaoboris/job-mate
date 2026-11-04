@@ -2,7 +2,7 @@
 
 采集日期：2026-11-04 UTC（采集程序记录）；版本输出为 `lark-cli version 1.0.96`。采样由父任务按本人授权执行；本批开发仅离线脱敏，没有重跑采集或外发。原始 stdout/stderr、退出码、请求参数和目标核验材料只在私有目录，不提交。
 
-## 八份样本与通道
+## 十份样本与通道
 
 | 文件 | 实际采样 | 输出/退出码 |
 |---|---|---|
@@ -14,8 +14,10 @@
 | native-get.json | `api GET /open-apis/im/v1/messages/<message_id>`，按 ID 获取指定消息，不称为原生 mget | stdout / 0 |
 | native-list-page1.json | `api GET /open-apis/im/v1/messages --params <JSON>`，page_size:1 的第一页 | stdout / 0，has_more:true，非空 page_token |
 | native-list-page2.json | 用上一页 token 读取第二页，含本人引用回复 | stdout / 0，has_more:false，空字符串 token |
+| profile-list.json | 补采 `profile list`，只读 | stdout / 0，**顶层数组** |
+| auth-status.json | 指定配置档 `auth status --json --verify`，只读 | stdout / 0，**顶层诊断对象**，没有 IM 的 ok/data 信封 |
 
-JSON 文件只保存所述通道的原始响应树，不添加私有 metadata、argv、配置档名或本机路径。字段集合、数组顺序、缺失字段、空字符串、布尔和数值类型保留；不把未采到的字段补成 null。
+JSON 文件只保存所述通道的脱敏响应树，不添加私有 metadata、argv 或本机路径。profile 中实际返回的配置档名也替换为稳定合成值。字段集合、数组顺序、缺失字段、空字符串、布尔和数值类型保留；不把未采到的字段补成 null。
 
 ## 实测字段路径
 
@@ -29,16 +31,18 @@ JSON 文件只保存所述通道的原始响应树，不添加私有 metadata、
 
 父任务已依据官方[获取指定消息](https://open.feishu.cn/document/server-docs/im-v1/message/get.md)与[会话历史](https://open.feishu.cn/document/server-docs/im-v1/message/list.md)核对原生路径；这里的字段事实仍以本次实测响应为准。
 
+补采 profile/auth 仍由父任务按本人授权执行；本批只读取已落盘文件，没有执行采集器、真实 CLI 或网络。profile 数组保留 active/effective/effectiveSource 的实际结构，不凭 active 猜本轮选定应用。auth 的 appId 与选定 profile 对应；机器人证据是 identities.bot.available/verified。顶层 identity/verified 可能对应 user，不作为机器人验证依据；bot.openId **不是** ownerId。
+
 ## 脱敏与时间边界
 
 个人、会话、消息、app、bot、tenant、log ID、分页 token、姓名/i18n、正文、message_position 及 URL 内嵌值均替换为固定合成值，不使用原 ID 的散列或保留其私有前后缀。相同原值只映射到同一合成值，ID 家族、长度/字符类型和关系保留。诊断文本中的 ID/示例掩码也已替换。公共 URL 的协议、域名、路径与方法标识不伪装成私人信息。
 
 日期统一按整天平移到合成日期；原生 epoch 数字字符串增加同一个整天毫秒偏移，create/update 相对时差不变。两套时间**不互相转换**，不推断 shortcut 的时区，不补秒或伪造毫秒。适配器未来应使用原生 GET 补查可信时间，不能把发送成功后的时间补查失败当成重新发送的理由；这不是本批实现的适配器兼容证明。
 
-隐私检查在私有 raw 目录存在时提取结构化 ID、未知前缀 tenant/log、URL 内嵌 ID 和分页 token；另外用完全合成单测验证检查器能抓泄漏且不误报公共错误码。公开仓库没有 raw 时不依赖私有数据，仍检查八份样本的类型、精度和关系。
+隐私检查在私有 raw 目录存在时提取结构化 ID、未知前缀 tenant/log、URL 内嵌 ID 和分页 token；同时扫描姓名、应用名及 profile 名；另用完全合成单测验证检查器能抓泄漏且不误报公共错误码。认证提示、scope 字符串替换为合成文字，不反映真实授权范围；含偏移的认证时效字符串也按同一整天偏移平移，保留原始表示而不作为消息游标。公开仓库没有 raw 时不依赖私有数据，仍检查十份样本的类型、精度和关系。
 
 ## 未采样与辅助测试契约
 
-profile list、contact 查询、`im +messages-reply` **没有独立实测响应**。T6.3 替身的 profile/contact 只返回调用者明确提供的合成响应，缺省拒绝；reply 复用已测 send 形状构造并标注推演，不能当作第九份真实样本。参数语法子集、动态分页/幂等状态和注入故障也只是替身测试契约，见[替身说明](../README.md#飞书替身t63纯离线)。
+contact 查询、`im +messages-reply` **没有独立实测响应**。替身的 profile/auth 现在使用补采形状，contact 仍只返回调用者明确提供的合成响应，缺省拒绝；reply 复用已测 send 形状构造并标注推演，不冒充独立实测。参数语法子集、动态分页/幂等状态和注入故障也只是替身测试契约，见[替身说明](../README.md#飞书替身t63纯离线)。
 
-未覆盖其他 API 路径/POST、消息编辑/删除、非文本、群聊、话题回复、权限错误分类大全、所有分页边界、生产幂等时效及跨时区展示语义。不调用真实 CLI 来补猜这些空白；T7 前仍须依据设计决定辅助契约和规范化边界。
+未覆盖其他 API 路径/POST、消息编辑/删除、非文本、群聊、话题回复、权限错误分类大全、所有分页边界、生产幂等时效及跨时区展示语义。不调用真实 CLI 来补猜这些空白；适配器的支持边界以规范化单测和已采字段为限，不代表这些未采能力已经核验。

@@ -64,8 +64,14 @@ class FakeLarkCliTest(unittest.TestCase):
         else:
             self.assertFalse(p.stderr, p.stderr)
             out = json.loads(p.stdout)
-            self.assertIs(out["ok"], True)
-            self.assertEqual(out["identity"], "bot")
+            if args == ("profile", "list"):
+                self.assertIsInstance(out, list)
+            elif args == ("auth", "status", "--json", "--verify"):
+                self.assertIsInstance(out.get("identities"), dict)
+                self.assertNotIn("ok", out)
+            else:
+                self.assertIs(out["ok"], True)
+                self.assertEqual(out["identity"], "bot")
         return out
 
     def send(self, text="合成通知，可忽略", key="synthetic-key", **kwargs):
@@ -149,11 +155,14 @@ class FakeLarkCliTest(unittest.TestCase):
         self.assertEqual(json.loads(message["body"]["content"])["text"], "合成引用回复")
         self.assertEqual(len(self.data()["profiles"][PROFILE]["messages"]), 3)
 
-    def test_auxiliary_profile_contact_require_explicit_synthetic_responses(self):
-        self.cli("profile", "list", code=2)
+    def test_sampled_profile_auth_and_unsampled_contact_are_distinct(self):
+        self.assertEqual(self.cli("profile", "list"), sample("profile-list"))
+        self.assertEqual(self.cli("auth", "status", "--json", "--verify"), sample("auth-status"))
+        for arguments in (("auth", "status"), ("auth", "status", "--json"), ("auth", "login")):
+            self.cli(*arguments, code=2)
         query = ["+get", "--user-id", sample("list")["data"]["messages"][1]["sender"]["id"]]
         self.cli("contact", *query, code=2)
-        profile_response = {"ok": True, "identity": "bot", "data": {"synthetic": True, "profiles": [PROFILE]}}
+        profile_response = [{"name": PROFILE, "appId": "cli_" + "3" * 16, "active": True}]
         contact_response = {"ok": True, "identity": "bot", "data": {"synthetic": True, "confirmedOwner": query[-1]}}
         def configure(state):
             aux = state["profiles"][PROFILE]["auxiliary"]

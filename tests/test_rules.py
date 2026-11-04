@@ -28,8 +28,8 @@ def core_documents():
                   for path in (ROOT / directory).rglob("*.md"))
 
 
-def external_execution_violations(content, allow_build_git=False):
-    """保守 AST 门禁；build 唯一例外是参数数组以常量 git 开头的 run。"""
+def external_execution_violations(content, allow_build_git=False, allow_lark=False):
+    """仅 build 的常量 git 与飞书适配器的唯一受控 run 有例外。"""
     tree = ast.parse(content)
     aliases, violations = {}, []
     forbidden = {"desktop", "agent_desktop", "lark", "tools", "subprocess", "asyncio", "multiprocessing", "pty", "ctypes", "importlib",
@@ -43,7 +43,7 @@ def external_execution_violations(content, allow_build_git=False):
         for local, name in imported:
             aliases[local] = name
             root = name.split(".")[0]
-            if root == "integrations" or root in forbidden and not (root == "subprocess" and allow_build_git):
+            if root == "integrations" or root in forbidden and not (root == "subprocess" and (allow_build_git or allow_lark)):
                 violations.append((node.lineno, "import", name))
 
     def name_of(node):
@@ -63,7 +63,15 @@ def external_execution_violations(content, allow_build_git=False):
                     and isinstance(node.args[0].elts[0], ast.Constant) and node.args[0].elts[0].value == "git"
                     and not any(k.arg == "shell" and not (isinstance(k.value, ast.Constant) and k.value.value is False)
                                 for k in node.keywords))
-        if safe_git:
+        keywords = {k.arg: k.value for k in node.keywords}
+        safe_lark = (allow_lark and name == "subprocess.run" and len(node.args) == 1
+                     and isinstance(node.args[0], ast.List) and len(node.args[0].elts) == 2
+                     and all(isinstance(e, ast.Starred) and isinstance(e.value, ast.Name) and e.value.id == expected
+                             for e, expected in zip(node.args[0].elts, ("prefix", "arguments")))
+                     and all(isinstance(keywords.get(k), ast.Constant) and keywords[k].value == v
+                             for k, v in (("shell", False), ("capture_output", True), ("encoding", "utf-8")))
+                     and isinstance(keywords.get("timeout"), ast.Name) and keywords["timeout"].id == "TIMEOUT")
+        if safe_git or safe_lark:
             continue
         if (root in forbidden or root == "socket" and member != "gethostname"
                 or root == "os" and (member in {"system", "popen", "fork", "forkpty", "startfile"}
@@ -181,11 +189,13 @@ class ExecutionRulesTest(unittest.TestCase):
 
     def test_core_scripts_have_no_external_execution_except_build_git(self):
         scripts = sorted((ROOT / "scripts").glob("*.py"))
-        self.assertEqual({p.name for p in scripts}, {"ledger.py", "workspace.py", "notify.py", "build.py", "fsutil.py", "platforms.py", "outbound.py", "config_txn.py", "config_schema.py"})
+        self.assertEqual({p.name for p in scripts}, {"ledger.py", "workspace.py", "notify.py", "build.py", "fsutil.py", "platforms.py", "outbound.py", "config_txn.py", "config_schema.py", "im_lark.py"})
         for source in scripts:
             content = source.read_text(encoding="utf-8")
             with self.subTest(source=source):
-                self.assertEqual(external_execution_violations(content, source.name == "build.py"), [])
+                self.assertEqual(external_execution_violations(content, source.name == "build.py", source.name == "im_lark.py"), [])
+                if source.name == "im_lark.py":
+                    continue  # 适配器固定协议字符串由真实替身/Node及禁用进程测试校验。
                 for node in ast.walk(ast.parse(content)):
                     if isinstance(node, ast.Constant) and isinstance(node.value, str):
                         self.assertIsNone(TOOL_CALL.search(node.value), (source, node.lineno, node.value))
@@ -201,6 +211,10 @@ class ExecutionRulesTest(unittest.TestCase):
                         "import subprocess; subprocess.run('git status', shell=True)",
                         "import subprocess; subprocess.Popen(['git'])"):
             self.assertTrue(external_execution_violations(content, True), content)
+        for content in ("import subprocess; subprocess.run([\x27cmd.exe\x27], shell=False)",
+                        "import subprocess; subprocess.Popen([\x27node\x27])",
+                        "import os; os.system(\x27node\x27)"):
+            self.assertTrue(external_execution_violations(content, allow_lark=True), content)
         self.assertFalse(external_execution_violations("import socket; socket.gethostname()"))
         self.assertFalse(external_execution_violations("import subprocess; subprocess.run(['git', 'status'])", True))
 
