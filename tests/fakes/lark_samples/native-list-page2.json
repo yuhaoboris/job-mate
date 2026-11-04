@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "identity": "bot",
+  "data": {
+    "has_more": false,
+    "items": [
+      {
+        "body": {
+          "content": "{\"text\":\"合成确认\"}"
+        },
+        "chat_default_name": "",
+        "chat_id": "oc_11111111111111111111111111111111",
+        "chat_type": "p2p",
+        "create_time": "2209049383870",
+        "deleted": false,
+        "message_id": "om_22222222222222222222222222222222",
+        "message_position": "102",
+        "msg_type": "text",
+        "parent_id": "om_11111111111111111111111111111111",
+        "root_id": "om_11111111111111111111111111111111",
+        "sender": {
+          "id": "ou_11111111111111111111111111111111",
+          "id_type": "open_id",
+          "is_agent": false,
+          "sender_type": "user",
+          "tenant_key": "1111111111111111"
+        },
+        "update_time": "2209049383870",
+        "updated": false
+      }
+    ],
+    "page_token": ""
+  }
+}

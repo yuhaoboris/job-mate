@@ -1,0 +1,32 @@
+{
+  "ok": true,
+  "identity": "bot",
+  "data": {
+    "has_more": true,
+    "items": [
+      {
+        "body": {
+          "content": "{\"text\":\"合成通知，可忽略\"}"
+        },
+        "chat_default_name": "",
+        "chat_id": "oc_11111111111111111111111111111111",
+        "chat_type": "p2p",
+        "create_time": "2209049354866",
+        "deleted": false,
+        "message_id": "om_11111111111111111111111111111111",
+        "message_position": "101",
+        "msg_type": "text",
+        "sender": {
+          "id": "cli_1111111111111111",
+          "id_type": "app_id",
+          "is_agent": false,
+          "sender_type": "app",
+          "tenant_key": "1111111111111111"
+        },
+        "update_time": "2209049354866",
+        "updated": false
+      }
+    ],
+    "page_token": "U1lOVEhFVElDLVBBR0lOQVRJT04tMS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQ=="
+  }
+}

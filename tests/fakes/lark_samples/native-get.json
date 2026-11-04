@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "identity": "bot",
+  "data": {
+    "items": [
+      {
+        "body": {
+          "content": "{\"text\":\"合成通知，可忽略\"}"
+        },
+        "chat_id": "oc_11111111111111111111111111111111",
+        "create_time": "2209049354866",
+        "deleted": false,
+        "message_id": "om_11111111111111111111111111111111",
+        "message_position": "101",
+        "msg_type": "text",
+        "sender": {
+          "id": "cli_1111111111111111",
+          "id_type": "app_id",
+          "sender_type": "app",
+          "tenant_key": "1111111111111111"
+        },
+        "update_time": "2209049354866",
+        "updated": false
+      }
+    ]
+  }
+}
