@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 CORE_RULES = (ROOT / "shared/execution.md", ROOT / "shared/browser/README.md")
 REFERENCES = tuple(ROOT / "integrations" / name / "README.md"
-                   for name in ("agent-desktop", "pi", "lark"))
+                   for name in ("agent-desktop", "lark"))
 TOOL_CALL = re.compile(
     r"lark-cli\b|agent-desktop\s+(?:--[\w-]+|[a-z][\w-]*\b)|desktop\.py|"
     r"launchctl\b|caffeinate\b|npm\s+install|subprocess|"
@@ -204,7 +204,7 @@ class ExecutionRulesTest(unittest.TestCase):
 
     def test_new_document_links_and_anchors_resolve(self):
         maintained = (ROOT / name for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md",
-                                                "docs/design.md", "docs/status.md"))
+                                                "docs/design.md", "docs/README.md"))
         for source in (*core_documents(), *REFERENCES, *maintained):
             for target in LINK.findall(source.read_text(encoding="utf-8")):
                 parsed = urlsplit(target)
@@ -228,7 +228,7 @@ class ExecutionRulesTest(unittest.TestCase):
         self.assert_terms(desktop, ("after_action", "INVALID_ARGS", "UTF-8", "8 MiB", "EPERM",
                                     "steps 缺失", "非空 steps", "data.complete", "subtree_truncated",
                                     "禁止后台 type", "后台写入尚未实测", "not_delivered 不作为动作成功前提"))
-        lark = REFERENCES[2].read_text(encoding="utf-8")
+        lark = REFERENCES[1].read_text(encoding="utf-8")
         self.assert_terms(lark, ("message_id", "chat_id", "sender.sender_type", "create_time", "parent_id",
                                  "连续前缀", "complete 为 false", "deliveryDeadlineMs", "幂等窗口按 0",
                                  "字段须在接入时核对", "旧无身份历史默认不继承"))
@@ -270,7 +270,6 @@ class ExecutionRulesTest(unittest.TestCase):
                                  "migrate-legacy", "可信 runtime", "能力不足就停", "身份确认不等于业务执行",
                                  "notify test", "只排队（queued）", "notify outbox --claim", "notify receipt",
                                  "notify incoming", "引用测试消息回复「收到」", "普通业务答复仍 received"))
-        self.assertNotIn("~/.config/job-wingman/listener.json", skill)
 
     def test_platform_facts_do_not_reintroduce_tool_instructions(self):
         for name in ("apply", "followup"):
@@ -332,7 +331,7 @@ class ExecutionRulesTest(unittest.TestCase):
 
     def test_current_guides_do_not_embed_development_history(self):
         guides = [ROOT / name for name in ("README.md", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md",
-                                           "docs/README.md", "docs/design.md", "docs/status.md")]
+                                           "docs/README.md", "docs/design.md")]
         guides.extend(REFERENCES)
         for source in guides:
             with self.subTest(source=source.relative_to(ROOT)):
@@ -350,13 +349,6 @@ class ExecutionRulesTest(unittest.TestCase):
             with self.subTest(source=source.relative_to(ROOT)):
                 self.assertNotRegex(source.read_text(encoding="utf-8"),
                                     r"(?:cli_|ou_|oc_)[A-Za-z0-9]{4,}|/(?:Users|home)/(?![.<])[^/\s<>]+")
-
-    def test_archived_documents_are_labeled_as_historical(self):
-        for source in (ROOT / "docs/archive").rglob("*.md"):
-            if source.name == "README.md":
-                continue
-            with self.subTest(source=source.relative_to(ROOT)):
-                self.assertIn("历史归档", "\n".join(source.read_text(encoding="utf-8").splitlines()[:5]))
 
     def test_removed_executor_and_preserved_workspace_tests(self):
         for relative in ("scripts/desktop.py", "tests/test_desktop.py",

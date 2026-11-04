@@ -6,7 +6,7 @@
 
 - 从 `https://www.zhipin.com/` 或本人提供、核对过域名的职位链接进入。
 - **不要用 CDP / Playwright**：会被重定向到 `_security_check`，随后页面空白（2026-10-28 实测）。用本人日常的浏览器窗口，经辅助功能树或桌面 UI 工具操作。
-- 账号名在页面右上角头像附近，与 `job-wingman.json` 的 `displayName` 核对。
+- 账号名在页面右上角头像附近，与 `job-mate.json` 的 `displayName` 核对。
 
 ## 职位列表与详情
 

@@ -2,7 +2,7 @@
 
 需要本人决定或处理的事项，**一律先写入 `inbox/decisions.md`**，再排队通知。inbox 与 `ledger` 是唯一事实来源，通知失败也不丢。只有本人明确答复才算决定；排队、交付 runtime、消息送达都不等于批准。
 
-下文 `notify` 指 `python3 <plugin>/scripts/notify.py`（先解析脚本绝对路径）。输出 JSON；退出码 `0` 已记录，`1` 被阻断、需汇报，`2` 错误。核心只读写本地状态；IM 收发、等待、调度、单实例与进程收尾由当前 runtime 负责。核心不加载具体通道适配器。
+下文 `notify` 指 `python3 <job-mate 技能目录>/scripts/notify.py`（先解析脚本绝对路径）。输出 JSON；退出码 `0` 已记录，`1` 被阻断、需汇报，`2` 错误。核心只读写本地状态；IM 收发、等待、调度、单实例与进程收尾由当前 runtime 负责。核心不加载具体通道适配器。
 
 ## inbox/decisions.md
 

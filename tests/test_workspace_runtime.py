@@ -164,24 +164,6 @@ class BrowserWorkspaceTest(unittest.TestCase):
             else:
                 self.assertIn("--env", result.stderr)
 
-    def test_gitignore_uses_only_filesystem_markers(self):
-        root = Path(self.tmp.name)
-        # 普通仓库与 worktree 的标记都不需要执行 git。
-        for file_marker in (False, True):
-            marker = root / ".git"
-            if file_marker:
-                marker.write_text("gitdir: /synthetic/metadata\n")
-            else:
-                marker.mkdir()
-            try:
-                with mock.patch("subprocess.Popen", side_effect=AssertionError("不得执行 git")):
-                    self.assertEqual(workspace.git_root(self.ws), root.resolve())
-                    workspace.ensure_gitignore(self.ws)
-                self.assertIn("/jobs/setup-progress.json", (root / ".gitignore").read_text())
-            finally:
-                marker.unlink() if file_marker else marker.rmdir()
-        self.assertIsNone(workspace.git_root(self.ws))
-
     def test_runtime_im_valid_transport_is_opaque_and_not_rewritten(self):
         for transport in ({}, {"idempotencyWindowSeconds": 0},
                           {"idempotencyWindowSeconds": 86400},
@@ -293,7 +275,6 @@ class BrowserWorkspaceTest(unittest.TestCase):
         self.assertTrue(finished["finished"])
         self.assertEqual(finished["unapplied"], shown["unapplied"])
         self.assertEqual((self.ws / "profile.json").read_bytes(), before)
-        self.assertFalse((Path(self.tmp.name) / ".config/job-wingman/listener.json").exists())
         self.assertFalse((self.ws / "ledger/listener.json").exists())
         self.assertFalse(path.exists())
 

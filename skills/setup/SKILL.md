@@ -22,7 +22,7 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 
 「重新设置」与「部分重新设置」统称重置。本人只说「重置」时，先问要全部还是部分。**事件记录不动**，不提供清空事件记录重来的选项；停止名单只按本人明确要求逐条增删。
 
-目录：本人指定的优先；否则从当前目录向上查找 `job-wingman.json`。新建时建议使用当前目录，说出绝对路径，**本人确认后**再创建。不在用户主目录根部、job-mate 自身目录或明显的代码项目中建立工作区。
+目录：本人指定的优先；否则从当前目录向上查找 `job-mate.json`。新建时建议使用当前目录，说出绝对路径，**本人确认后**再创建。不在用户主目录根部、job-mate 自身目录或明显的代码项目中建立工作区。
 
 ## 2. 步骤目录
 
@@ -32,7 +32,7 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 |---|---|---|---|---|---|---|
 | `prepare` 准备 | `directory` | 工作区目录 | — | 是 | 问 | 仅新建；开始时自动记为已答 |
 | | `materials` | 现成材料 | — | 否 | 问 | 第 6 节；读取后为后续步骤预填 |
-| | `account` | 平台账号 | `job-wingman.json` | 是 | 问 | 第 7 节；BOSS 显示的名字与本地别名 |
+| | `account` | 平台账号 | `job-mate.json` | 是 | 问 | 第 7 节；BOSS 显示的名字与本地别名 |
 | | `browser` | 浏览器操作 | `profile.browser` | 否 | 问 | 第 6.1 节；只问偏好，不预先记默认 |
 | `criteria` 求职条件 | `roles` | 目标职位 | `profile.targetRoles` | 是 | 问 | 按优先级；第 6、7 节 |
 | | `locations` | 城市 | `profile.locations`、`rules.md` | 是 | 问 | 「不限」有效；第 6、7 节 |
@@ -59,7 +59,7 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 
 ### 3.1 开始与接续
 
-- 新建：目录经本人确认 → `workspace init <目录>`（账号可在 `account` 步补齐）→ 请本人选典型或自定义 → `workspace progress start --mode new --variant typical|custom`。`init` 建立骨架，不覆盖已有文件；在 Git 内忽略私人目录与草稿。
+- 新建：目录经本人确认 → `workspace init <目录>`（账号可在 `account` 步补齐）→ 请本人选典型或自定义 → `workspace progress start --mode new --variant typical|custom`。`init` 建立骨架，不覆盖已有文件。
 - 重新设置：`workspace backup --label resetup` → 告诉本人备份名与恢复方法 → `workspace progress start --mode resetup --base-backup <备份名>`。
 - 部分重新设置：`workspace backup --label partial` → 告诉本人备份名与恢复方法 → 展示阶段/步骤菜单，请本人选择 → `workspace progress start --mode partial --select <阶段或步骤id,…> --base-backup <备份名>`。
 - 有草稿：先询问本人。继续则用 `progress show` 的当前步骤与已有回答接续；从头开始则经本人确认后 `progress clear`，重新进入原模式：新建重新 `workspace init`、选择典型或自定义、`progress start`；重置重新备份，部分重置重新选步骤。放弃则确认后 `progress clear`，按 `markerRemoved` 汇报是否撤销工作区标记；有事件时标记保留，说明原因，不宣称该目录已停用。草稿损坏时报告问题，请本人决定是否放弃，不自行覆盖。
@@ -87,7 +87,7 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 | 跳过 | 非必答项记 `skipped`，标为未知或保留缺省；必答项说明原因后重问 |
 | 上一步 / 回到第 n 步 | 按计划找到 id，`progress goto <id>`；已有回答保留，重答才覆盖 |
 | 稍后再说 | 确保已答步骤落盘，结束本轮，告诉本人下次说「继续 setup」 |
-| 放弃 | 本人确认后 `progress clear`。新建同时删除 `job-wingman.json`，目录与其他文件保留，该目录不再是工作区，以后须重新 setup；有事件时不删标记，按输出说明原因；重置不动标记 |
+| 放弃 | 本人确认后 `progress clear`。新建同时删除 `job-mate.json`，目录与其他文件保留，该目录不再是工作区，以后须重新 setup；有事件时不删标记，按输出说明原因；重置不动标记 |
 
 草稿只用 `workspace progress` 读写。`record` 的 `--value` 是合法 JSON，脚本不校验取值结构；来源还可用 `resume`、`legacy`。生成文件与含义核对仍由 Agent 按第 6–10 节执行。`show` 返回模式、计划、当前步骤、序号、回答与追加来源；`goto` 后重答继续向未回答项推进。
 
@@ -154,7 +154,7 @@ progress 只记录回答，profile 合并由第 3.3 节写入阶段完成：
 
 | 文件 | 来源与要点 |
 |---|---|
-| `job-wingman.json` | `accounts` 中的 `displayName` 取本人在平台上显示的名字，由本人告知或只读查看 |
+| `job-mate.json` | `accounts` 中的 `displayName` 取本人在平台上显示的名字，由本人告知或只读查看 |
 | `profile.json` | 可机器判断的条件、限额、授权、招呼语方式；未提供的限额用默认值 |
 | `stoplist.yaml` | 用 `ledger stoplist add` 逐条添加，每条写明原因和来源。「待核实、不自动联系」的公司也写进来，并在 `reason` 中注明 |
 | `candidate.md` | 个人事实：基本信息、技术栈分层（生产主力 / 用过 / 个人实践）、明确缺少的经历、工作经历、可公开的数字、未确认项。只写本人提供或简历中有依据的内容 |

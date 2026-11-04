@@ -1,8 +1,6 @@
 # job-mate · 职伴
 
-职伴是面向不同 Agent 的求职助手 skills / plugin：定义筛选职位、打招呼、跟进 HR 消息的流程和规则，关键决定由你本人拍板；具体工具与执行方式由实际 Agent runtime 决定。
-
-> 状态：开发预览。核心技能和脚本已实现，完整流程与各 Agent 运行环境的接入仍待验收。已验证范围和待处理项见 [项目状态](docs/status.md)。
+职伴是面向不同 Agent 的求职助手 skills：定义筛选职位、打招呼、跟进 HR 消息的流程和规则，关键决定由你本人拍板；具体工具与执行方式由实际 Agent runtime 决定。
 
 ## 技能
 
@@ -25,16 +23,7 @@
 
 核心脚本需要 Python 3 和 POSIX `fcntl` 文件锁，不支持直接在原生 Windows Python 中运行。Agent 还需具备下文所述的执行能力。
 
-Claude Code：
-
-```text
-/plugin marketplace add <本地仓库路径>
-/plugin install job-mate@job-mate
-```
-
-将 `<本地仓库路径>` 替换为本仓库的实际绝对路径。之后在求职工作区中使用 `/job-mate:setup`、`/job-mate:apply`、`/job-mate:followup`。仓库更新后如未生效，运行 `/plugin marketplace update job-mate`。
-
-其他 Agent（Codex、Pi 等只认技能的环境）：构建独立技能并安装到项目或用户的技能目录：
+构建整套技能并安装到项目或用户的技能目录：
 
 ```sh
 python3 scripts/build.py --install <项目>/.agents/skills
@@ -50,7 +39,7 @@ python3 scripts/build.py --install <项目>/.agents/skills
 2. 运行 `apply` 筛选职位；建议先只筛选，核对结果后再明确授权首次沟通。
 3. 运行 `followup` 处理 HR 消息；默认 L2，只按有依据的口径代答，需要承诺的事项交由你决定。
 
-Claude Code 使用 `/job-mate:<技能名>`；其他 Agent 按各自技能调用方式选择 `job-mate-setup`、`job-mate-apply` 或 `job-mate-followup`。
+按所用 Agent 的技能调用方式选择 `job-mate-setup`、`job-mate-apply` 或 `job-mate-followup`。
 
 ## 运行环境
 
@@ -58,7 +47,7 @@ Claude Code 使用 `/job-mate:<技能名>`；其他 Agent 按各自技能调用�
 
 BOSS 只操作你日常已登录的可见浏览器，经辅助功能树或桌面 UI，不使用 CDP / Playwright 或内部接口。选定执行偏好不能满足时不操作平台、不回退；没有结果证据用禁发锁。锁 / guard 不是进程强单实例，自动唤起的互斥和后代清理由 runtime 保证。
 
-可选参考：[agent-desktop](integrations/agent-desktop/README.md)、[Pi UI](integrations/pi/README.md)、[飞书私聊](integrations/lark/README.md)。这些文档不随核心分发，不是必须工具，也不表示当前版本兼容或真实验收通过。
+可选参考：[agent-desktop](integrations/agent-desktop/README.md)、[飞书私聊](integrations/lark/README.md)。这些文档不随核心分发，不是必须工具，也不表示当前版本在所有环境中兼容。
 
 ## 开发
 
@@ -66,4 +55,6 @@ BOSS 只操作你日常已登录的可见浏览器，经辅助功能树或桌面
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests
 ```
 
-更多说明见 [文档入口](docs/README.md)、[设计](docs/design.md)与[项目状态](docs/status.md)。参与维护前请读 [贡献指南](CONTRIBUTING.md)；敏感问题按 [安全报告说明](SECURITY.md) 处理。
+更多说明见 [文档入口](docs/README.md)与[设计](docs/design.md)。参与维护前请读 [贡献指南](CONTRIBUTING.md)；敏感问题按 [安全报告说明](SECURITY.md) 处理。
+
+许可证：Apache-2.0。

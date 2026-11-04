@@ -21,7 +21,7 @@ class Workspace:
     def __init__(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name)
-        (self.path / "job-wingman.json").write_text(json.dumps({
+        (self.path / "job-mate.json").write_text(json.dumps({
             "schemaVersion": 1, "accounts": {"boss": {"accountKey": "zhipin-test"}},
         }))
         (self.path / "profile.json").write_text(json.dumps({"schemaVersion": 2}))

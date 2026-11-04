@@ -58,7 +58,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 
 ## 3. 准备浏览器
 
-按 browser/README.md 选择控制方式，确认当前网站、账号与 `job-wingman.json` 中的 `displayName` 一致、页面可读。需要登录时请本人自己扫码或验证。
+按 browser/README.md 选择控制方式，确认当前网站、账号与 `job-mate.json` 中的 `displayName` 一致、页面可读。需要登录时请本人自己扫码或验证。
 
 没有可用的浏览器操作能力时，说明缺少什么，不把「可以自动化」当成已执行。
 

@@ -19,8 +19,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+SUITE_VERSION = "1.0.0"
 SCHEMA_VERSION = 2
-MARKER = "job-wingman.json"  # 工作区格式标识保留旧名，兼容现有数据。
+MARKER = "job-mate.json"
 
 ACTION_KINDS = {"greet", "intro", "reply", "followup", "resume"}
 CONVERSATION_KINDS = ACTION_KINDS - {"greet"}
@@ -1495,7 +1496,7 @@ def cmd_migrate(args, ws):
 
 def build_parser():
     p = argparse.ArgumentParser(prog="ledger.py", description=__doc__.splitlines()[0])
-    p.add_argument("--workspace", help="工作区路径；默认从当前目录向上查找 job-wingman.json")
+    p.add_argument("--workspace", help="工作区路径；默认从当前目录向上查找 job-mate.json")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("validate", help="校验事件记录与停止名单")

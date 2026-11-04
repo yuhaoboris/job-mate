@@ -18,10 +18,9 @@ import ledger  # noqa: E402
 
 MARKER = ledger.MARKER
 CONFIG_FILES = [
-    "job-wingman.json", "profile.json", "stoplist.yaml", "candidate.md",
+    "job-mate.json", "profile.json", "stoplist.yaml", "candidate.md",
     "qa.yaml", "rules.md", "resumes/index.yaml",
 ]
-PRIVATE_DIRS = ["/ledger/", "/inbox/", "/backups/", "/setup-progress.json"]
 PROGRESS_FILE = "setup-progress.json"
 
 # 标准流程的唯一定义；SKILL.md 的步骤表由测试核对顺序。
@@ -89,38 +88,12 @@ def now_stamp():
 
 # ---------- init ----------
 
-def git_root(path):
-    """只读目录标记定位仓库（含 worktree 的 .git 文件），不启动外部程序。"""
-    path = Path(path).resolve()
-    return next((p for p in (path, *path.parents)
-                 if (p / ".git").is_dir() or (p / ".git").is_file()), None)
-
-
-def ensure_gitignore(ws):
-    root = git_root(ws)
-    if not root:
-        return None
-    rel = ws.resolve().relative_to(root.resolve())
-    prefix = "" if str(rel) == "." else "/" + rel.as_posix()
-    wanted = [prefix + d for d in PRIVATE_DIRS]
-    gi = root / ".gitignore"
-    existing = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
-    missing = [w for w in wanted if w not in existing]
-    if missing:
-        text = gi.read_text(encoding="utf-8") if gi.exists() else ""
-        if text and not text.endswith("\n"):
-            text += "\n"
-        text += "\n# job-mate private data.\n" + "\n".join(missing) + "\n"
-        gi.write_text(text, encoding="utf-8")
-    return {"gitignore": str(gi), "added": missing}
-
-
 def cmd_init(args):
     ws = Path(args.path).expanduser().resolve()
     home = Path.home().resolve()
     if ws == home or ws == Path("/"):
         raise WorkspaceError(f"不在 {ws} 根部建立工作区，请另选一个目录")
-    if (ws / ".claude-plugin").exists() or (ws / "skills" / "apply" / "SKILL.md").exists():
+    if (ws / "scripts" / "ledger.py").is_file() and (ws / "skills" / "apply" / "SKILL.md").is_file():
         raise WorkspaceError("这是 job-mate 自身目录，不在此建立工作区")
     ws.mkdir(parents=True, exist_ok=True)
     created = []
@@ -131,6 +104,7 @@ def cmd_init(args):
             accounts["boss"] = {"accountKey": args.boss_account, "displayName": args.boss_name}
         marker.write_text(json.dumps({
             "schemaVersion": 1,
+            "suiteVersion": ledger.SUITE_VERSION,
             "createdAt": datetime.now().astimezone().isoformat(timespec="seconds"),
             "accounts": accounts,
         }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -143,7 +117,7 @@ def cmd_init(args):
     if not decisions.exists():
         decisions.write_text("# 待本人决定\n", encoding="utf-8")
         created.append("inbox/decisions.md")
-    return emit({"workspace": str(ws), "created": created, "git": ensure_gitignore(ws)})
+    return emit({"workspace": str(ws), "created": created})
 
 
 # ---------- check ----------
@@ -622,9 +596,8 @@ def start_progress(args, ws):
                 draft["answers"][step] = {"status": "default", "value": STEP_BY_ID[step]["default"],
                                           "source": "default", "at": at}
     draft["current"] = next_unanswered(draft)
-    git = ensure_gitignore(ws)
     save_progress(ws, draft)
-    return emit({**progress_summary(draft), "git": git})
+    return emit(progress_summary(draft))
 
 
 def reject_json_constant(value):
@@ -701,7 +674,7 @@ def cmd_progress(args):
 
 def build_parser():
     p = argparse.ArgumentParser(prog="workspace.py", description=__doc__.splitlines()[0])
-    p.add_argument("--workspace", help="工作区路径；默认从当前目录向上查找 job-wingman.json")
+    p.add_argument("--workspace", help="工作区路径；默认从当前目录向上查找 job-mate.json")
     sub = p.add_subparsers(dest="cmd", required=True)
     i = sub.add_parser("init", help="建立工作区骨架（不覆盖已有文件）")
     i.add_argument("path")

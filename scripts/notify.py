@@ -26,7 +26,6 @@ IDEMPOTENCY_MARGIN_MS = 300000
 MAX_LAUNCHES_PER_REPLY = 2
 TEST_REPLY_WINDOW_SECONDS = 1800
 HEADER = "【职伴】"
-LEGACY_HEADER = "【job-wingman】"
 REPLY_STATES = {"ready", "consumed", "clarifying", "ignored"}
 PENDING_REPLY_STATES = {"received", "ready"}
 STATE_VERSION = 2
@@ -406,8 +405,6 @@ def compose(kind, body, decision=None):
 
 def text_digest(text):
     s = unicodedata.normalize("NFKC", text or "")
-    if s.startswith(HEADER):
-        s = LEGACY_HEADER + s[len(HEADER):]
     return hashlib.sha1(re.sub(r"\s+", " ", s).strip().encode()).hexdigest()[:12]
 
 

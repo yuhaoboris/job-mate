@@ -1,13 +1,13 @@
 # 工作区
 
-求职数据存放在用户的工作区，与 plugin 分离。不把真实数据写进 plugin 目录、提交到 plugin 仓库或上传外部服务。
+求职数据存放在用户的工作区，与 job-mate 分离。不把真实数据写进 job-mate 目录、提交到 job-mate 仓库或上传外部服务。
 
-工作区以 `job-wingman.json` 为标记文件，文件名属于工作区格式契约。本文示例均为虚构数据，不表示默认求职偏好或个人事实。
+工作区以 `job-mate.json` 为标记文件，文件名属于工作区格式契约。本文示例均为虚构数据，不表示默认求职偏好或个人事实。
 
 ## 定位
 
 1. 本轮指令中明确指定的路径。
-2. 从当前目录逐级向上查找 `job-wingman.json`，找到的目录即工作区。
+2. 从当前目录逐级向上查找 `job-mate.json`，找到的目录即工作区。
 3. 都找不到：只允许只筛选，不读写任何记录；需要发送时请本人运行 `setup` 或指定工作区。**不回退到用户主目录，不自行创建工作区。**
 
 开始时告知工作区的绝对路径；本轮所有读写都在这里，中途不换。`setup-progress.json` 存在且为新建时，工作区初始化尚未完成，不能用于发送；`apply` / `followup` 获取锁被拒绝。草稿读不出时也拒绝；重置草稿不阻断当前配置。
@@ -16,7 +16,7 @@
 
 | 文件 | 内容 | 谁写 |
 |---|---|---|
-| `job-wingman.json` | 标记与元数据：`schemaVersion`、`accounts`、`createdAt` | `setup` |
+| `job-mate.json` | 标记与元数据：`schemaVersion`、`suiteVersion`、`accounts`、`createdAt` | `setup` |
 | `setup-progress.json` | setup 的模式、步骤计划、当前步骤、回答与复核来源，含私人信息 | 只经 `workspace.py progress` 读写 |
 | `profile.json` | 筛选条件、限额、授权、招呼语方式 | `setup`；本人说「以后……」时由当前技能更新 |
 | `stoplist.yaml` | 停止名单 | 本人手工；技能经 `ledger.py stoplist add` |
@@ -33,8 +33,6 @@
 
 `scripts/workspace.py` 提供 `progress`（见下）、`init`（建立骨架）、`check`（体检：`problems` 必须修复，`warnings` 是缺少的新字段等提示）、`backup` / `backups` / `restore`（备份与恢复配置文件；恢复时保留备份之后新增的停止项，`apply` / `followup` 运行中拒绝恢复）、`changed --since <备份>`（列出备份之后被改动的配置文件）。
 
-工作区若在 Git 仓库内，`workspace.py init` 会把 `ledger/`、`inbox/`、`backups/` 与 `/setup-progress.json` 加入 `.gitignore`（按工作区相对仓库根目录的路径加前缀）；已有工作区由 `progress start` 补齐，不重复添加。确认简历等其他私人数据是否提交由本人决定。已被跟踪的文件不会因忽略规则自动移除，要提醒本人。
-
 ## setup 进度
 
 `workspace progress` 的命令如下。步骤 id 与阶段菜单见 setup 技能，目录的唯一定义在 `scripts/workspace.py`。
@@ -48,7 +46,7 @@
 | `record <id> --status changed\|kept\|default\|skipped [--value '<JSON>'] [--source user\|current\|resume\|legacy\|default]` | 覆盖该步回答，推进到第一个未答步骤；必答不能跳过；联动复核按目录顺序插入，已有回答的复核步骤清除回答、重新待答，记录带入来源 |
 | `goto <id>` | 移动当前步骤，保留已有回答 |
 | `finish` | 复用体检但不计草稿存在一项；没有其他问题才删除草稿，否则保留并返回问题 |
-| `clear` | 放弃或从头开始，不做体检；新建同时删除 `job-wingman.json`，返回 `markerRemoved: true`；有事件时保留标记，返回 `false` 与原因；重置不动标记 |
+| `clear` | 放弃或从头开始，不做体检；新建同时删除 `job-mate.json`，返回 `markerRemoved: true`；有事件时保留标记，返回 `false` 与原因；重置不动标记 |
 
 输出一个 JSON 对象；退出码 0 成功、1 体检未通过、2 错误。草稿已有时 `start` 报错并返回摘要，不覆盖。本人可稍后继续或确认放弃。新建 `clear` 删除草稿与工作区标记，目录与其他文件保留；标记撤销后该目录不再是工作区，`ledger` / `workspace` 找不到它。若已有事件则保留标记并说明原因，不宣称工作区已停用。新建从头开始时，`clear` 后须重新 `init`、`progress start`。
 
@@ -56,11 +54,12 @@
 
 旧 setup 草稿保持原计划和 browser、im、listener 的原答案，不自动插入 browser；继续可正常完成，goto / record browser 在不含它的计划上报错，提示完成后另做只选 browser 的部分重新设置。步骤 `listener` 显示为「无人值守唤起」。该步只记录本人决定，`show` / `record` / `finish` 的 `unapplied` 列表提示答案「未应用」；不会把旧监听器答案变成 runtime 调度配置，也不读写旧服务配置或安装任何东西。无人值守执行须由 runtime 保证单实例、超时、进程树清理和防睡眠，并遵守 [notify.md](notify.md) 的 trigger 契约；做不到时不设置无人值守唤起。
 
-## job-wingman.json
+## job-mate.json
 
 ```json
 {
   "schemaVersion": 1,
+  "suiteVersion": "1.0.0",
   "createdAt": "2026-10-28T10:00:00+08:00",
   "accounts": {
     "boss": {"accountKey": "zhipin-main", "displayName": "张三"}

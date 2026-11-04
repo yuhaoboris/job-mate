@@ -56,16 +56,24 @@ class WorkspaceTest(unittest.TestCase):
     def init(self):
         return run("init", str(self.ws), "--boss-account", "zp-1", "--boss-name", "张三")
 
-    def test_init_creates_skeleton_and_gitignore_without_overwriting(self):
+    def test_init_creates_skeleton_without_overwriting(self):
         code, out = self.init()
         self.assertEqual(code, 0)
-        self.assertIn("job-wingman.json", out["created"])
-        gi = (self.root / ".gitignore").read_text()
-        self.assertIn("/jobs/ledger/", gi)
-        self.assertIn("/jobs/backups/", gi)
+        self.assertIn("job-mate.json", out["created"])
         code, out = self.init()
         self.assertEqual(out["created"], [])
-        self.assertEqual(out["git"]["added"], [])
+
+    def test_init_writes_suite_version_and_only_recognizes_current_marker(self):
+        self.init()
+        marker = json.loads((self.ws / workspace.MARKER).read_text())
+        self.assertEqual(marker["suiteVersion"], "1.0.0")
+        self.assertEqual(marker["schemaVersion"], 1)
+        (self.ws / workspace.MARKER).rename(self.ws / "other-marker.json")
+        with self.assertRaises(workspace.ledger.LedgerError):
+            workspace.ledger.find_workspace(str(self.ws))
+        with patch("pathlib.Path.cwd", return_value=self.ws):
+            with self.assertRaises(workspace.ledger.LedgerError):
+                workspace.ledger.find_workspace(None)
 
     def progress(self, *args):
         return run("--workspace", str(self.ws), "progress", *args)
@@ -314,20 +322,18 @@ class WorkspaceTest(unittest.TestCase):
         _, out = self.progress("record", "exclusions", "--status", "default")
         self.assertIsNone(out["current"])
 
-    def test_progress_gitignore_added_once_for_existing_workspace(self):
-        """判据 5：init 与 start 均补私人路径，含仓库根目录与子目录。"""
-        self.init()
+    def test_init_and_progress_do_not_touch_repository_ignore_file(self):
         gi = self.root / ".gitignore"
-        self.assertEqual(gi.read_text().count("/jobs/setup-progress.json"), 1)
-        gi.write_text("# 原有内容\n")
-        for _ in range(2):
+        for initial in (None, "# 原有内容\n"):
+            if initial is not None:
+                gi.write_text(initial)
+            self.init()
             self.progress("start", "--mode", "new", "--variant", "typical")
             self.progress("clear")
-            self.init()
-        self.assertEqual(gi.read_text().count("/jobs/setup-progress.json"), 1)
-        self.assertTrue(gi.read_text().startswith("# 原有内容\n"))
-        run("init", str(self.root))
-        self.assertIn("/setup-progress.json", gi.read_text().splitlines())
+            if initial is None:
+                self.assertFalse(gi.exists())
+            else:
+                self.assertEqual(gi.read_text(), initial)
 
     def test_check_progress_modes_and_corruption(self):
         """判据 6：新建阻断、重置提示、损坏阻断且建议放弃。"""
@@ -597,7 +603,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertFalse(out["restoreSucceeded"])
         self.assertIn("utf-8", out["restoreError"])
         self.assertIn("损坏", out["releaseError"])
-        self.assertEqual(out["restored"], ["job-wingman.json", "profile.json"])
+        self.assertEqual(out["restored"], ["job-mate.json", "profile.json"])
         self.assertTrue(out["previousSavedAs"])
         self.assertFalse(out["release"]["released"])
         self.assertEqual(workspace.ledger.read_lock(self.ws)["runId"], out["runId"])

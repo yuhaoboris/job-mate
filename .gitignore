@@ -2,26 +2,27 @@
 .env
 .env.*
 *.log
-
-# Build output; released as zips, not versioned.
-/dist/
-
-# Local installed copies are generated, not source.
-/.agents/skills/job-mate-*/
-
-# Never commit a real job-search workspace here.
-job-wingman.json
-/setup-progress.json
-/profile.json
-/candidate.md
-/qa.yaml
-/rules.md
-/stoplist.yaml
-/resumes/
-/ledger/
-/inbox/
-/backups/
-
-# Python bytecode.
 __pycache__/
 *.pyc
+
+# 本地内部材料与构建产物
+/.private/
+/dist/
+/.agents/
+.claude/settings.local.json
+
+# 求职工作区与本地测试工作区，任何深度都不提交
+job-mate.json
+setup-progress.json
+.job-mate-txn.json
+profile.json
+candidate.md
+qa.yaml
+rules.md
+stoplist.yaml
+resumes/
+ledger/
+inbox/
+backups/
+/workspace*/
+lark-im-resources/

@@ -55,7 +55,7 @@ class NotifyTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.ws = Path(self.tmp.name)
-        (self.ws / "job-wingman.json").write_text(json.dumps({"schemaVersion": 1, "accounts": {}}))
+        (self.ws / "job-mate.json").write_text(json.dumps({"schemaVersion": 1, "accounts": {}}))
         (self.ws / "ledger").mkdir()
         (self.ws / "inbox").mkdir()
         self.set_im()
@@ -834,37 +834,6 @@ class NotifyTest(unittest.TestCase):
     def send_done(self, text, key=None):
         argv = ["send", "--kind", "done", "--decision", D1, "--text", text]
         return self.run_cmd(*argv, *(["--key", key] if key else []))
-
-    def test_done_versions_brand_legacy_key_and_frozen_body(self):
-        with patch.object(notify, "HEADER", notify.LEGACY_HEADER):
-            _, first = self.send_done("结果不明：  超时", key=f"done:{D1}")
-        original = self.claim()[0]
-        self.assertTrue(original["text"].startswith(notify.LEGACY_HEADER))
-        self.receipt(original, "failed", error="未投递")
-        _, again = self.send_done("结果不明： 超时")
-        self.assertEqual(again["key"], first["key"])
-        self.assertTrue(again["reusedStored"])
-        retried = self.claim()[0]
-        self.assertEqual(retried["text"], original["text"])
-        self.assertEqual(retried["idempotencyKey"], original["idempotencyKey"])
-        self.receipt(retried)
-        self.assertEqual(self.send_done("结果不明： 超时")[1]["status"], "already_sent")
-        _, changed = self.send_done("已完成")
-        self.assertNotEqual(changed["key"], first["key"])
-        self.assertEqual(self.send_done("已完成")[1]["key"], changed["key"])
-
-    def test_rebrand_does_not_resend_delivered_result(self):
-        with patch.object(notify, "HEADER", notify.LEGACY_HEADER):
-            _, first = self.send_done("已完成：HR 已回复")
-        entry = self.claim()[0]
-        self.assertTrue(entry["text"].startswith(notify.LEGACY_HEADER))
-        self.receipt(entry)
-        _, again = self.send_done("已完成：HR 已回复")
-        self.assertEqual((again["status"], again["key"]), ("already_sent", first["key"]))
-        self.assertEqual(self.claim(), [])
-        _, changed = self.send_done("已完成：面试安排已确认")
-        self.assertNotEqual(changed["key"], first["key"])
-        self.assertTrue(self.claim()[0]["text"].startswith(notify.HEADER))
 
     def test_done_hint_participates_key_but_dynamic_candidates_do_not_duplicate(self):
         self.inbox((D1, "已决定"))

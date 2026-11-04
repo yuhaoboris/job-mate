@@ -101,7 +101,7 @@ class ReleaseRecoveryDataTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.ws = Path(self.tmp.name)
-        (self.ws / "job-wingman.json").write_text(json.dumps({
+        (self.ws / "job-mate.json").write_text(json.dumps({
             "schemaVersion": 1, "accounts": {"boss": {"accountKey": "synthetic"}}}))
         (self.ws / "profile.json").write_text(json.dumps({"schemaVersion": 2}))
         (self.ws / "inbox").mkdir()
