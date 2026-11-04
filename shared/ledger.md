@@ -34,7 +34,7 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 同一工作区只运行一个技能；锁默认 60 分钟。版本与恢复锁见[套件版本准入](workspace.md#套件版本准入)。`lock acquire --skill setup --recovery` 只做恢复与释放，不能用于普通写入、tail、进度、通知或续期。
 
 - 新建 setup 未完成或草稿模式读不出时，apply / followup 取锁（包括沿用 runId）返回 1；重新设置、部分重新设置草稿不阻断当前配置。
-- 新外发 pending 与 guard 必须是当前有效、未 releasing、未禁发的持锁者，全局暂停时拒绝；pending / guard 自动续期。等待、超时或页面变化后先重读，再 guard，不新建尝试绕过失锁。
+- 新外发 pending 与 guard 必须是当前有效、未 releasing、未禁发的持锁者，全局暂停时拒绝；pending / guard 自动续期。正常等待或页面变化后重读再 guard；工具超时按[停止范围](execution.md#结果不明时的停止范围)收尾，不新建尝试绕过失锁。
 - screen 和 tail 也须有效的普通运行锁；禁发或暂停时仍可记本地观察，不因此获得外发授权。adopted 另要求本人授权，禁发 / 暂停时拒绝。
 - 终态与事实观察不要求运行锁；恢复锁下仍受写入门禁限制。
 - 释放 / 接管只核销该轮 pending，返回 reconciled；不改其他轮次或已有终态。按[释放与对账契约](#释放与对账契约)写 inbox，脚本不代写。
@@ -94,6 +94,8 @@ observed 可取：tail、handled、replied、decision、info、resume_requested�
 ## 去重
 
 首次联系检查停止名单、同平台账号历史联系与 rejected / risk。company 范围按公司，job 范围按 ID，缺 ID 比公司 + 职位；同公司同职位而 ID 不同报疑似重新发布。通过 check 后仍以当前页面为准：已联系记 already_contacted，不发送。本人逐个放行仅经绑定单职位的 dedup_once；它不是发送授权，不能越过其他门禁。
+
+uncertain 的停止范围与来源字段见[统一执行规则](execution.md#结果不明时的停止范围)：业务标 business，工具/环境标 tool，未说明保守按 tool；自动锁收尾的 reconcile / reconcileProof 只能由脚本生成并校验原 pending，不靠 reason 文本区分。
 
 ## 发送门禁原因码
 

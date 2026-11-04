@@ -591,6 +591,18 @@ def validate_event(ev):
         errs.extend(validate_acknowledged(ev["acknowledged"]))
     if "boundaryAt" in ev:
         errs.append("boundaryAt 由 threads 计算，不能在事件中指定")
+    if "uncertaintyClass" in ev:
+        if (kind not in ACTION_KINDS or ev.get("status") != "uncertain"
+                or ev["uncertaintyClass"] not in ("business", "tool", "reconcile")):
+            errs.append("uncertaintyClass 只能用于 uncertain，取 business / tool / reconcile")
+    proof = ev.get("reconcileProof")
+    if ev.get("uncertaintyClass") == "reconcile":
+        if (not isinstance(proof, dict) or set(proof) != {"via", "pendingEventId", "runId"}
+                or proof.get("via") not in ("release", "takeover")
+                or not isinstance(proof.get("pendingEventId"), str) or not isinstance(proof.get("runId"), str)):
+            errs.append("锁收尾来源须有完整结构化 reconcileProof")
+    elif "reconcileProof" in ev:
+        errs.append("reconcileProof 仅用于脚本锁收尾")
     errs.extend(validate_v1(ev))
     return errs
 
@@ -687,6 +699,15 @@ def validate_history_event(events, ev):
     if any(e["eventId"] == ev["eventId"] for e in events):
         raise LedgerError("eventId 重复")
     if ev["kind"] != "observe":
+        if ev.get("uncertaintyClass") == "reconcile":
+            proof = ev["reconcileProof"]
+            pending = next((e for e in events if e["kind"] in ACTION_KINDS and e.get("status") == "pending"
+                            and e["eventId"] == proof["pendingEventId"]), None)
+            original = next((e for e in events if e["kind"] in ACTION_KINDS and e.get("status") == "pending"
+                             and attempt_key(e) == attempt_key(ev)), None)
+            if (pending is None or original is not pending or attempt_key(pending) != attempt_key(ev)
+                    or pending["runId"] != proof["runId"] or ev["runId"] != pending["runId"]):
+                raise LedgerError("reconcileProof 未对应同轮同平台账号的原 pending")
         return
     if ev["observed"] == "tail":
         if any(e["kind"] == "observe" and e["observed"] == "tail" and e["tailId"] == ev["tailId"] for e in events):
@@ -1731,6 +1752,10 @@ def cmd_append(args, ws):
         raise LedgerError("kind、skill、status、observed 须为字符串")
     if ev.get("kind") in ACTION_KINDS and ev.get("status") == "pending":
         raise LedgerError("动作 pending 只能用 ledger prepare 原子准备")
+    if "reconcileProof" in ev or ev.get("uncertaintyClass") == "reconcile":
+        raise LedgerError("锁收尾来源仅由脚本生成，不能伪造")
+    if ev.get("kind") in ACTION_KINDS and ev.get("status") == "uncertain":
+        ev.setdefault("uncertaintyClass", "tool")  # 未说明分类时不假定工具正常，保守停整轮。
     if any(field in ev for field in ("eventId", "authorizedBy", "decisionVersion", "dedupGrant", "profileRev", "styleRev", "scopeBindings", "runPolicyRev")):
         raise LedgerError("ID、授权、版本、摘要与绑定由脚本冻结，不能指定或覆盖")
     if ev.get("kind") == "observe" and ev.get("observed") == "tail":
@@ -2806,14 +2831,17 @@ def reconcile_run(ws, old_lock, tz):
         if a["runId"] != old_lock.get("runId"):
             continue
         if a["status"] == "pending":
-            last = a["events"][-1]
-            ev = {k: v for k, v in last.items() if not k.startswith("_")}
+            first = next(e for e in a["events"] if e["status"] == "pending")
+            ev = {k: v for k, v in first.items() if not k.startswith("_")}
             ev.update({
                 "at": fsutil.now(tz).isoformat(),
                 "status": "uncertain",
                 "reason": f"本轮（{old_lock.get('runId')}）锁{cause}，结果未确认，需人工核对",
                 "evidence": None,
                 "eventId": "evt-" + uuid.uuid4().hex[:12],
+                "uncertaintyClass": "reconcile",
+                "reconcileProof": {"via": "release" if old_lock.get("releasing") else "takeover",
+                                   "pendingEventId": first["eventId"], "runId": a["runId"]},
             })
             validate_history_event(events, ev)
             append_line(ws, ev)

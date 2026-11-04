@@ -10,6 +10,9 @@ import ledger
 
 def append_action(ws, raw):
     raw = dict(raw)
+    if raw.get("status") == "uncertain":
+        # 本夹具明确构造工具正常返回的业务不明；环境与锁收尾由真实接口专项覆盖。
+        raw.setdefault("uncertaintyClass", "business")
     raw.setdefault("schemaVersion", 1)
     raw.setdefault("at", ledger.now_iso(ledger.tz_of(ledger.load_profile(ws))))
     raw.setdefault("account", ledger.default_account(ws, raw["platform"]))

@@ -53,7 +53,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 1. `notify poll` 取得 ownerId、chatId、sinceMs、larkProfile、readable。runtime 从 sinceMs 包含边界起按时间升序连续分页，用 `notify incoming --json <批次>` 入账；readable 为 false 时不读历史，先通过出站建立私聊和时间边界。没有 IM 能力时保留本地状态与待投递队列并报告，不另找通道、不声称没有答复。
 2. incoming 的 complete 为 false 或 poll.lastIncomplete 为 true 时报告「IM 未读完」。`notify status` 的 incomingRejected 提示冲突 / 编辑等拒收时请本人重新发一条新消息，不按被拒正文执行；ledger 损坏时普通答复保留 received（ledger_unreadable），不猜唯一事项，暂停等合法指令仍按核心处理。
 3. 排队通知、确认与追问统一 `notify outbox --claim` → 实际投递 → `notify receipt --key <K> --token <T> --result <结果>`。核对冻结 channel、ownerId、larkProfile、正文、replyTo、token、原 idempotencyKey。真实 messageId、chatId 才回 sent，可信 createTime 建立读取起点；明确未投递 failed（最多共 3 次），超时 unknown 不重发。handoff 无 receipt（含 stale）不重投，核对后用 unknown 收口。
-4. `notify replies --state received` 逐条按事项与含义处理：明确结论写入 inbox / ledger，再 `notify reply-state --message <消息ID> --state ready --decision <事项ID>`。不带引用的「已发出 / 未发出」也只能对应核心给出的既有 uncertain 候选，多个候选先澄清，不能扩大授权。
+4. `notify replies --state received` 逐条按事项与含义处理：明确结论写入 inbox / ledger，再 `notify reply-state --message <消息ID> --state ready --decision <事项ID>`。不带引用的「已发出 / 未发出」也只能对应核心给出的既有 uncertain 候选，多个候选先澄清，不能扩大授权。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
 5. 对应不上或含义不清先排队 clarify，走同一认领、投递、回执链；**clarify 已 sent 才标 clarifying**。queued、blocked、failed、unknown 均保留原回复状态并报告，不冒充已追问。
 
 本轮禁发或全局暂停仍可同步 IM 和落盘本人结论，只是不执行平台外发。send / test 只 queued，不等于 sent；channel 为 none 只保留 inbox 并汇报。
@@ -70,7 +70,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 ### 2.1 对账（每轮都做，本轮禁发时也做）
 
-持锁后先按 [ledger.md 的释放与对账契约](../../shared/ledger.md#释放与对账契约) 完成入口对账：即使 acquire 的 `reconciled` 为空，也用完整 `ledger threads` 的全部 `unresolved` 与 inbox 对账，补齐缺失的 uncertain 核对事项，再做以下 `pausedBy` 对账；不先执行任何已决定的外发。
+持锁后先按 [ledger.md 的释放与对账契约](../../shared/ledger.md#释放与对账契约) 完成入口对账：即使 acquire 的 `reconciled` 为空，也用完整 `ledger threads` 的全部 `unresolved` 与 inbox 对账，补齐缺失的 uncertain 核对事项，再做以下 `pausedBy` 对账；不先执行任何已决定的外发。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
 
 1. `inbox/decisions.md` 中每个涉及会话的「待决定」事项：`ledger threads --company <公司> --recruiter <招聘者>` 的 `pausedBy` 里没有该决策 ID 时，补记 `observe/paused`（带 `decision`）。
 2. `ledger threads` 中每个 `pausedBy` 里的决策 ID，在 inbox 里找不到对应事项时：用 `ledger decision --id <ID>` 返回的 `pausedRecords`（原因、时间、公司、招聘者）补写一条「待决定」事项，只写这些已知信息，不臆造选项和截止时间；在汇报中说明。
@@ -95,14 +95,14 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
    **只有外发动作才发消息**，不要为了让事项「完成」而编一条回复。
 
 2. 先看 `ledger decision --id <ID>`：
-   - `state` 为 `needs_review`：任一版本有 pending / uncertain，或存在缺步骤、归属冲突。**不要新建任何外发**，列出 attempts / unmappedAttempts 请本人核对；旧版本失效不能抹去未决。先在原 attempt 回填本人确认的 sent / failed_no_send；本人明确确认全部完成后，才记同 ID 的 `observe/unpaused`（`skill: user`，`reason` 引用本人原话）。缺步骤但已 sent 的历史记录仍展示，不猜成新版本步骤。
+   - `state` 为 `needs_review`：任一版本有 pending / uncertain，或存在缺步骤、归属冲突。**不要新建任何外发**，列出 attempts / unmappedAttempts 请本人核对；旧版本失效不能抹去未决。先在原 attempt 回填本人确认的 sent / failed_no_send；本人明确确认全部完成后，才记同 ID 的 `observe/unpaused`（`skill: user`，`reason` 引用本人原话）。缺步骤但已 sent 的历史记录仍展示，不猜成新版本步骤。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
    - 其他状态：看 `localActions`，已做过的本地动作可以跳过，再做一次也无害。
 3. 每个外发步骤按顺序处理，先查 `ledger decision --id <ID> --step <编号>` 的 `stepState`：
 
 | `stepState` | 处理 |
 |---|---|
 | `not_started` | 按第 5 节发送；check / prepare 的完整意图带 decision 与 step，脚本冻结有效 decisionVersion |
-| `pending` / `uncertain` | 未确认外发：只核对原 attempt，不新建尝试；看不清请本人核对，**这个事项到此为止** |
+| `pending` / `uncertain` | 未确认外发：只核对原 attempt，不新建尝试；看不清请本人核对，**这个事项到此为止** | 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
 | `sent` | 已发出，跳过，不要再发 |
 | `failed_no_send` | 上次明确未发出：本轮不重试，**这个事项到此为止**，在汇报中说明 |
 | `superseded` | 旧版本未执行步骤已失效，不执行；只看 active 版本 |
@@ -110,8 +110,8 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 4. 全部动作完成后，**最后**记 `observe/unpaused`（带 `decision`）。这条记录解除该会话暂停；须为有效版本执行后的收尾，所有相关目标解除暂停，且没有任何版本的未决尝试，才可返回 `done`。旧版本的完成标记不完成新版本。
 5. 在 inbox 该事项末尾追加「已执行：<时间>，<做了什么>」。
-6. `notify send --kind done --decision <ID>` 只排队结果通知：正文包含**这一结果版本**的实际执行结果，例如实际发送的文字，或失败 / 结果不明 / 暂停的原因和本人要做什么，不拿用户决定原文代替。首次排队前把稳定正文保存到 inbox（例如「结果：…」），同一结果版本补发复用保存的正文；已有该键则以 notify 冻结原文为准。结果改变（如 uncertain → done）时保存新版本再排队，不更改原条目。投递与回执按第 2.0 节；执行时会话有 HR 新消息按第 4 节一并处理。
-7. 该回复是 `ready` 的，执行完后 `notify reply-state --message <ID> --state consumed --decision <ID>`。若本轮被**全局暂停或显式禁发**，不要标 `consumed`，保留 `ready` 到恢复 / 下一轮。若动作被人工接管、`uncertain` / `failed_no_send` / `needs_review` 阻断，不要因状态恢复而自动重新外发：按原规则停下来，在汇报中说明，并把回复标 `consumed`（`--note` 写原因），避免 runtime 反复唤起；ledger 中的决定状态仍以 `ledger decision` 为准。产生 uncertain 时按[结果不明事项](../../shared/notify.md#结果不明事项)在原决定中补记 attemptId 与结果，不另开事项或重复暂停。
+6. `notify send --kind done --decision <ID>` 只排队结果通知：正文包含**这一结果版本**的实际执行结果，例如实际发送的文字，或失败 / 结果不明 / 暂停的原因和本人要做什么，不拿用户决定原文代替。首次排队前把稳定正文保存到 inbox（例如「结果：…」），同一结果版本补发复用保存的正文；已有该键则以 notify 冻结原文为准。结果改变（如 uncertain → done）时保存新版本再排队，不更改原条目。投递与回执按第 2.0 节；执行时会话有 HR 新消息按第 4 节一并处理。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
+7. 该回复是 `ready` 的，执行完后 `notify reply-state --message <ID> --state consumed --decision <ID>`。若本轮被**全局暂停或显式禁发**，不要标 `consumed`，保留 `ready` 到恢复 / 下一轮。若动作被人工接管、`uncertain` / `failed_no_send` / `needs_review` 阻断，不要因状态恢复而自动重新外发：按原规则停下来，在汇报中说明，并把回复标 `consumed`（`--note` 写原因），避免 runtime 反复唤起；ledger 中的决定状态仍以 `ledger decision` 为准。产生 uncertain 时按[结果不明事项](../../shared/notify.md#结果不明事项)在原决定中补记 attemptId 与结果，不另开事项或重复暂停。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
 
 中断后查有效版本及所有 attempts：partial 只续未开始步骤，needs_review 先核对；旧版本已 sent 不重发，旧未决不隐藏。完整字段与尾部派生见[派生说明](../../shared/derived.md)。
 
@@ -121,7 +121,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 1. 只按 inbox / ledger 中已经落盘的结论收尾。不要重新解释原始回复，不要执行第 2.2 节的外发步骤，**不向 HR 发任何消息**。
 2. 已决定且 `ledger decision` 为 `done`：若结果通知还没确认送达，使用 inbox 中保存的**最终结果正文**（不是用户决定原文）。缺失时先根据 ledger 事实（steps、attempts 状态、实际发送的文字或失败 / 不明原因）生成最终结果正文并保存到 inbox，再执行 `notify send --kind done --decision <ID>`；同一结果版本复用同一正文，若已有发送尝试以 `notify` 持久化原文为准。然后标 `consumed`。这一步只是补发结果通知，不算实际执行动作，因此**不发 `summary`**（第 9 节）。
-3. 已决定但不是 `done`：先看 `ledger decision` 的 `steps` 和 `stepState`。有 pending / uncertain / failed_no_send / needs_review 或 state:failed 时按第 2.2 节第 2、3 步停下并请本人核对（uncertain 的事项记录按[结果不明事项](../../shared/notify.md#结果不明事项)沿用原决定）；确认本轮不能继续时标 `consumed`（`--note` 写阻塞原因），避免 runtime 反复唤起，ledger 的决定状态不变。没有可执行动作但决定未收尾（例如「先不回」「无需动作」）时，在 inbox 写明保持暂停，标 `consumed`（`--note`），不要伪造 `unpaused`。**这种情况不发 `done`**：没有执行结果可报，发一条结果通知只会打扰本人；也**不发 `summary`**。
+3. 已决定但不是 `done`：先看 `ledger decision` 的 `steps` 和 `stepState`。有 pending / uncertain / failed_no_send / needs_review 或 state:failed 时按第 2.2 节第 2、3 步停下并请本人核对（uncertain 的事项记录按[结果不明事项](../../shared/notify.md#结果不明事项)沿用原决定）；确认本轮不能继续时标 `consumed`（`--note` 写阻塞原因），避免 runtime 反复唤起，ledger 的决定状态不变。没有可执行动作但决定未收尾（例如「先不回」「无需动作」）时，在 inbox 写明保持暂停，标 `consumed`（`--note`），不要伪造 `unpaused`。**这种情况不发 `done`**：没有执行结果可报，发一条结果通知只会打扰本人；也**不发 `summary`**。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
 4. 「待处理」事项：确认本人已完成（inbox 标题为「已处理」或本人说明），在事项末尾补「已执行」；没有外发动作，用这一结果版本保存的稳定正文发一条 `done` 说明已处理，然后标 `consumed`。
 5. 收尾只做一次：done 已有 sent 回执返回 `already_sent`，仅排队则 `already_queued`，不能当作已送达；consumed 后 runtime 不再因这条回复自动唤起，未投递通知仍由 outbox 保留。
 6. 全局暂停或本轮显式禁发时，第 2–5 步都不做，保留 `ready`；恢复 / 下一轮再收尾。
@@ -203,7 +203,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 
 ### 5.0 每次发送前的统一检查
 
-所有 runtime 按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护)、[证据与 guard](../../shared/execution.md#5-外发前-guard-与证据三分类) 执行。文字回复 / 跟进 / 已批准文字，先核对会话未被接管、最终文字非空，再完整读取 chat-input；这些检查在第 4 步 pending 之前完成。核对身份前不读写输入框；未知内容不清空，跳过、不写 pending 并汇报。no-send / L1 只起草时不碰聊天输入框（包括清草稿），搜索 / 筛选仅可改变显示。恢复后发前重新做去重和状态检查，不能用恢复规避 uncertain。
+所有 runtime 按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护)、[证据与 guard](../../shared/execution.md#5-外发前-guard-与证据三分类) 执行。文字回复 / 跟进 / 已批准文字，先核对会话未被接管、最终文字非空，再完整读取 chat-input；这些检查在第 4 步 pending 之前完成。核对身份前不读写输入框；未知内容不清空，跳过、不写 pending 并汇报。no-send / L1 只起草时不碰聊天输入框（包括清草稿），搜索 / 筛选仅可改变显示。恢复后发前重新做去重和状态检查，不能用恢复规避 uncertain。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
 
 回复、发简历、主动跟进、执行已决定事项，**每一次**发送都先过这几步，任何一步不通过就不发：
 
@@ -211,7 +211,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 2. `ledger check --run <runId> --json '<完整意图>'` 返回 allowed:true。意图含 kind、页面身份、text 或 resume、reason；执行决定还含 decision、step。使用[发送准备](../../shared/sending.md)的同一路径，不能只带事项字符串绕过暂停。
 3. 重读会话末尾：如果出现了新消息，回到第 4 节重新判断。
 4. `ledger prepare --run <runId> --json '<同一完整意图>'` 原子准备 pending，不传 status 或冻结字段。返回错误（如已失去运行锁、本轮禁发）时**立即停止整轮**。
-5. **每一次**可能把消息发出去的点击（「发送」「同意」「发简历」的确认按钮）之前，执行 `ledger guard --run <runId> --attempt <attemptId>`，返回 `allowed: true` 后**立即**点击，中间不做别的事。返回失败说明已失锁或该尝试已被改记，**立即停止整轮**：不点击，也不为同一条消息新建尝试；结果交给本人核对。中途有过等待、卡顿或工具超时，点击前重新读页面再 `guard`。
+5. **每一次**可能把消息发出去的点击（「发送」「同意」「发简历」的确认按钮）之前，执行 `ledger guard --run <runId> --attempt <attemptId>`，返回 `allowed: true` 后**立即**点击，中间不做别的事。返回失败说明已失锁或该尝试已被改记，**立即停止整轮**：不点击，也不为同一条消息新建尝试；结果交给本人核对。普通等待后重读页面再 guard；工具超时按[停止范围](../../shared/execution.md#结果不明时的停止范围)收尾，不自动续发。
 
 ### 5.1 回复
 
@@ -219,7 +219,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 2. 写法：第一人称、简短、一次一个重点，两三句以内。称呼对方公司用「贵公司」+ 岗位名，不点公司简称。不重复已答过的问题。同一条消息里最多带一个主动提问（如团队规模、自研还是项目交付、面试流程）。
 3. 过第 5.0 节的检查，`pending` 为 `kind: reply`，`text` 为拟发文字，`reason` 写对应的 `qa.yaml` 条目 id。
 4. 按平台通用页面要点和 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护) 写入，读回须与最终文字完全一致；不一致时不发送、不换输入方式，只清除能确认属于本次写入的草稿。无法安全清理保留现场并报告。发送前再次核对会话标题，再 guard 后立即点击。
-5. 确认已发出（会话中出现这条新消息且显示送达或已读）后追加 `sent`；不能确认记 `uncertain`，**该会话停止**，按[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox（含 attemptId、沿用原决定及旧事项待对账）；其他会话继续。
+5. 确认已发出（会话中出现这条新消息且显示送达或已读）后追加 `sent`；不能确认记 `uncertain`，按[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)及[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox（含 attemptId、沿用原决定及旧事项待对账）。
 
 ### 5.2 发简历
 
@@ -232,7 +232,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 |---|---|
 | 请求已发出，等待对方同意 | `sent`，`reason` 注明「请求待同意」；之后看到附件送达再记 `observe/resume_delivered` |
 | 附件直接送达（同意对方请求时常见） | `sent`，再记 `observe/resume_delivered` |
-| 无法判断是否发出 | `uncertain`，该会话停止，按[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox |
+| 无法判断是否发出 | `uncertain`，按[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)及[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox |
 | 明确失败（页面提示发送失败） | `failed_no_send`，本轮不重试 |
 
 5. 对方查看后记 `observe/resume_viewed`。请求发出不等于附件送达，汇报中分开写。
@@ -247,7 +247,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 
 ## 7. 上报
 
-**结果不明（`uncertain`）的外发**统一按[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox：记录 attemptId，执行原决定时沿用原 ID，不另开或重复暂停；旧事项关联先对账，核对选项为「已发出 / 未发出」。本人在 inbox 或对话中确认后，由 Agent 代为追加同一 `attemptId` 的 `sent` 或 `failed_no_send`，`skill` 记 `user`，`reason` 引用本人原话。只有本人明确说过结果才能这样记，Agent 自己看页面判断的不算。
+**结果不明（`uncertain`）的外发**统一按[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox：记录 attemptId，执行原决定时沿用原 ID，不另开或重复暂停；旧事项关联先对账，核对选项为「已发出 / 未发出」。本人在 inbox 或对话中确认后，由 Agent 代为追加同一 `attemptId` 的 `sent` 或 `failed_no_send`，`skill` 记 `user`，`reason` 引用本人原话。只有本人明确说过结果才能这样记，Agent 自己看页面判断的不算。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
 
 **运行锁被上一轮占着**（上一轮崩溃没有释放）时，默认等它过期。本人确认上一轮已经停止，可以让 Agent 执行 `ledger lock release --run <上一轮 runId>`，同样按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 处理 `reconciled` 与释放失败；Agent 不得自行判断后释放别人的锁。
 
@@ -268,7 +268,7 @@ L1 下，需要发送的一律改为起草，写入 inbox。
 
 **结束前必查**：运行环境受阻且 `im.channel` 为 `none`（或 IM 送达未确认）时，按 [环境受阻与恢复](../../shared/execution.md#7-环境受阻通知与恢复)，最终答复必须包含 **原因、环境恢复办法、恢复后如何重新发起** 三项；由本人重新发起本技能。结果待核对另行说明，不能代替恢复指引。
 
-所有 runtime 的任何停止分支（含读取失败）都先按 [尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 给本轮所有 pending 收尾；已有终态不覆盖，已见成功证据优先记 sent。unknown 或环境受阻时结束整轮，不再新建尝试，不靠同一 runId 重取锁降级（noSend 不会改变），不进入第 8 节等待。安全信号优先全局暂停；纯环境受阻不全局暂停，按共享通知规则分流 ready、分别排队环境提醒与按[结果不明事项](../../shared/notify.md#结果不明事项)记录的 uncertain 通知，不承诺自动续发。
+所有 runtime 的任何停止分支（含读取失败）都先按 [尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 给本轮所有 pending 收尾；已有终态不覆盖，已见成功证据优先记 sent。停止范围按[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)处理，不再新建尝试，不靠同一 runId 重取锁降级（noSend 不会改变），不进入第 8 节等待。安全信号优先全局暂停；纯环境受阻不全局暂停，按共享通知规则分流 ready、分别排队环境提醒与按[结果不明事项](../../shared/notify.md#结果不明事项)记录的 uncertain 通知，不承诺自动续发。
 
 本轮**实际处理过会话或执行过已决定事项**（含本地动作）时，`notify send --kind summary --run <runId>`：处理了多少会话、执行了哪些决定、还有哪些事项等本人答复。**只做第 2.3 节收尾的轮次不发 `summary`**——消费 `ready`、补发已 `done` 决定的结果通知、结论为「无需动作 / 先不回」时没有新的处理结果可汇报，发摘要只会制造噪声。收尾同步第 2.0 节（不重试未知投递、不因此新建平台尝试），然后执行 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 核对 `released`、`reconciled` 与释放失败，按平台、账号、attemptId 对照最新 unresolved / inbox、保留原决定 ID。释放后仅本地对账和通知，不再外发；IM 不可用不妨碍 pending 收尾或释放。
 

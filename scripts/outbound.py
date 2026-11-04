@@ -41,6 +41,35 @@ def declaration_check(L, ev, events, current=None):
     return None, latest["version"]
 
 
+def uncertainty_stop(L, events, run, ev):
+    business = []
+    for attempt in L.attempts_of(events).values():
+        if attempt["runId"] != run or not attempt["everPending"]:
+            continue
+        unclear = [e for e in attempt["events"] if e["status"] == "uncertain"]
+        if any(e.get("uncertaintyClass", "tool") == "tool" for e in unclear):
+            return deny("run_uncertain_limit", "本轮工具/环境结果不明，收尾后结束整轮")
+        if any(e.get("uncertaintyClass") == "business" for e in unclear):
+            business.append(attempt)
+    if len(business) >= 2:
+        return deny("run_uncertain_limit", "本轮第二次业务结果不明，收口不退回已发生次数")
+    for attempt in business:
+        if attempt["platform"] != ev["platform"] or attempt["account"] != ev["account"]:
+            continue
+        if attempt["kind"] in ("greet", "intro"):
+            if attempt.get("jobId") and ev.get("jobId"):
+                same = attempt["jobId"] == ev["jobId"]
+            else:
+                same = all(not attempt.get(field) or not ev.get(field) or L.norm_text(attempt[field]) == L.norm_text(ev[field])
+                           for field in ("company", "title"))
+        else:
+            same = all(not attempt.get(field) or not ev.get(field) or L.norm_text(attempt[field]) == L.norm_text(ev[field])
+                       for field in L.load_platform(ev["platform"])["conversationKey"])
+        if same:
+            return deny("unresolved", "本轮该目标发生过业务结果不明，先收口并停止本轮自动处理该目标")
+    return None
+
+
 def evaluate(L, ws, ev, run, lock, events, profile, current=None):
     """只计算结果，不写事件、不续锁；prepare 在同一协调区内使用此结果。"""
     now, tz = L.fsutil.now(L.tz_of(profile)), L.tz_of(profile)
@@ -129,6 +158,9 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
             return deny("already_contacted", "pending 的去重豁免已失效或目标/已占额度不符")
     if L.read_pause(ws):
         return deny("paused", "工作区已全局暂停")
+    stopped = uncertainty_stop(L, events, run, ev)
+    if stopped:
+        return stopped
     limits = L.effective_limits(profile, ev["platform"])
     for reason in L.stoplist_reasons(ws, ev["company"]):
         return deny(reason["type"], reason["detail"])
@@ -156,9 +188,6 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
         if wait > 0:
             return deny("interval", "同一平台账号的全部外发共用最小间隔", int(wait) + (wait != int(wait)))
     attempts = list(L.attempts_of(events).values())
-    uncertain = [a for a in attempts if a["runId"] == run and a["everPending"] and a["status"] == "uncertain"]
-    if len(uncertain) >= 2:
-        return deny("run_uncertain_limit", "本轮第二次业务结果不明，结束整轮")
     if kind == "greet":
         for reason in L.company_observation_reasons(events, ev["platform"], ev["account"], ev["company"]):
             return deny("company_risk" if reason["type"] == "risk" else "company_rejected", reason["detail"])

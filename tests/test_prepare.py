@@ -301,13 +301,15 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(self.prepare(kind="resume", resume="合成版本")[0], 0)
 
     def test_two_real_processes_compete_for_last_quota_or_same_company(self):
-        for quota in (True, False):
-            with self.subTest(quota=quota):
+        for mode in ("quota", "company", "restriction"):
+            with self.subTest(mode=mode):
                 self.reset_case()
-                self.profile["limits"]["greetsPerRun"] = 1 if quota else 10
+                self.profile["limits"]["greetsPerRun"] = 1 if mode == "quota" else 10
                 self.save_profile()
+                if mode == "restriction":
+                    self.assertEqual(self.acquire(self.restriction(kinds=["greet"], max=1))[0], 0)
                 processes = []
-                for company in (("并发甲", "并发乙") if quota else ("同一目标", "同一目标")):
+                for company in (("同一目标", "同一目标") if mode == "company" else ("并发甲", "并发乙")):
                     body = dict(self.f.identity, kind="greet", company=company, text="合成招呼", targetRole="开发", reason="合成依据")
                     processes.append(subprocess.Popen([sys.executable, "-I", str(test_tail.ROOT / "scripts/ledger.py"),
                         "--workspace", str(self.f.ws), "prepare", "--run", "run-prepare", "--json", json.dumps(body)],

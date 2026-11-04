@@ -85,7 +85,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 ### 5.1 发送前检查
 
 1. 运行超过 30 分钟时先 `ledger lock renew --run <runId>`；失败说明已失去运行锁，立即停止。`ledger quota --platform boss --run <runId>`：`canGreet` 为 `false` 时结束本轮；`waitSeconds` 大于 0 时先等待这么久。这是固定的最小间隔，不另加随机延时。
-2. `ledger check --run <runId> --json '<完整意图>'`（含 kind、页面身份、拟发 text、reason、targetRole）：不允许时记 `skipped`（`reason` 写 check 返回的原因），处理下一个。
+2. `ledger check --run <runId> --json '<完整意图>'`（含 kind、页面身份、拟发 text、reason、targetRole）：不允许时按[发送准备](../../shared/sending.md)及[停止范围](../../shared/execution.md#结果不明时的停止范围)处理；仅目标级拒绝可记 skipped 后处理下一目标，不把整轮阻断当成跳过。
 3. 重新确认详情仍符合硬条件、职位开放，目标公司和招聘者正确。
 4. 按平台首次沟通页面要点判断沟通按钮：显示已联系时追加 `already_contacted`，不点击。
 
@@ -114,11 +114,11 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 | 无法判断是否已发出 | 第 5 步 |
 
 3. 只有出现当前目标的明确发送成功提示，或会话中出现本次新发出的消息且没有失败、发送中标志，才追加 `sent`，`evidence` 写明看到了什么，`text` 记实际发出的文字。
-4. 仅在上面的正常流程放弃例外成立时，追加 `failed_no_send`，`evidence` 写明目标身份、完整空会话证据、阶段及原因，继续下一个职位；对象不符或身份丢失不是此例外，保守按 `uncertain` 收尾。
-5. 等待后仍无法确认：追加 `uncertain`，**停止本轮发送**，按[结果不明事项](../../shared/notify.md#结果不明事项)写入 `inbox/decisions.md`（含 attemptId、去重及旧事项待对账），请本人核对。
+4. 仅在上面的正常流程放弃例外成立时，追加 `failed_no_send`，`evidence` 写明目标身份、完整空会话证据、阶段及原因，继续下一个职位；对象不符或身份丢失不是此例外，保守按 `uncertain` 收尾。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
+5. 等待后仍无法确认：追加 `uncertain`，按[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)处理，再按[结果不明事项](../../shared/notify.md#结果不明事项)写入 `inbox/decisions.md`（含 attemptId、去重及旧事项待对账），请本人核对。
 6. 明确证明没有发出（如页面显示发送失败）：追加 `failed_no_send`，本轮不重试。
 
-`guard` 返回失败，说明本轮已失去运行锁，或这次尝试已被接管的一轮改记为 `uncertain`：**立即停止整轮**，不点击，也不为同一职位新建尝试。中途有过等待、卡顿或工具超时，点击前先重新读页面，再 `guard`。
+`guard` 返回失败，说明本轮已失去运行锁，或这次尝试已被接管的一轮改记为 `uncertain`：按[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)处理，不点击，也不为同一职位新建尝试。普通等待后重读页面再 guard；工具超时按统一停止范围收尾，不自动续发。
 
 每个写入 `pending` 的职位都占用一次额度，失败或结果不明也不补量。
 
@@ -128,7 +128,7 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 
 1. 第 5.2 步写好的招呼语不要重复默认招呼语已说过的内容，必要时调整。
 2. 先按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护) 核对会话、接管与空输入框（未知内容不清空、不建新尝试），以同一份完整 intro 意图重做 check，再用 `ledger prepare --run <runId> --json '<意图>'`（脚本生成新 attemptId，tags 记 greeting:dynamic），在同一会话中输入、读回核对，`guard` 通过后立即发送。
-3. 按第 5.3 步第 3 步确认，追加 `sent`、`uncertain` 或 `failed_no_send`。结果不明时不重发，记 `uncertain`，**停止整轮**并按[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox，与第 5.3 步一致。
+3. 按第 5.3 步第 3 步确认，追加 `sent`、`uncertain` 或 `failed_no_send`。结果不明时不重发，记 `uncertain`，按[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)及[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox，与第 5.3 步一致。
 
 补发不另占招呼额度。
 
@@ -144,15 +144,15 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 | `ledger` 返回退出码 2 | 立即停止发送；如果此前可能已发送，报告该目标待人工核对 |
 | 本人喊停、额度或预算用完、候选耗尽 | 保存进度并汇报，不自动开始下一批 |
 
-任何 runtime 无论如何结束，都先按 [尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 给本轮所有未终结尝试收尾：已有终态不覆盖、明确成功证据优先记 sent；读取出错也不能遗漏 pending。unknown 或环境受阻后结束整轮，不再新建尝试，不靠同一 runId 重取锁降级（原锁 noSend 不会改变）。然后执行 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 核对 `released`、`reconciled` 与释放失败，按平台、账号、attemptId 对照最新 unresolved 和 inbox、保留原决定 ID，释放后不再外发。
+任何 runtime 无论如何结束，都先按 [尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 给本轮所有未终结尝试收尾：已有终态不覆盖、明确成功证据优先记 sent；读取出错也不能遗漏 pending。停止范围统一按[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)，不再新建尝试，不靠同一 runId 重取锁降级（原锁 noSend 不会改变）。然后执行 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 核对 `released`、`reconciled` 与释放失败，按平台、账号、attemptId 对照最新 unresolved 和 inbox、保留原决定 ID，释放后不再外发。
 
-**结果不明（`uncertain`）的招呼**统一按[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox，记录 attemptId、沿用事项并处理旧事项关联，核对选项为「已发出 / 未发出」。本人确认后，由 Agent 代为追加同一 `attemptId` 的 `sent` 或 `failed_no_send`，`skill` 记 `user`，`reason` 引用本人原话。
+**结果不明（`uncertain`）的招呼**统一按[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox，记录 attemptId、沿用事项并处理旧事项关联，核对选项为「已发出 / 未发出」。本人确认后，由 Agent 代为追加同一 `attemptId` 的 `sent` 或 `failed_no_send`，`skill` 记 `user`，`reason` 引用本人原话。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
 
 **运行锁被上一轮占着**（上一轮崩溃没有释放）时，默认等它过期。本人确认上一轮已经停止，可以让 Agent 执行 `ledger lock release --run <上一轮 runId>`，同样按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 处理 `reconciled` 与释放失败；Agent 不得自行判断后释放别人的锁。
 
 ## 7. 汇报
 
-**结束前必查**：运行环境受阻且 `im.channel` 为 `none`（或 IM 送达未确认）时，按 [环境受阻与恢复](../../shared/execution.md#7-环境受阻通知与恢复)，最终答复必须包含 **原因、环境恢复办法、恢复后如何重新发起** 三项；由本人重新发起本技能。恢复后发前重做去重检查；结果待核对的事项另行说明，不能代替恢复指引或据恢复重发 uncertain。
+**结束前必查**：运行环境受阻且 `im.channel` 为 `none`（或 IM 送达未确认）时，按 [环境受阻与恢复](../../shared/execution.md#7-环境受阻通知与恢复)，最终答复必须包含 **原因、环境恢复办法、恢复后如何重新发起** 三项；由本人重新发起本技能。恢复后发前重做去重检查；结果待核对的事项另行说明，不能代替恢复指引或据恢复重发 uncertain。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
 
 - 本轮模式和实际使用的条件；哪些是本轮临时覆盖、哪些写回了 `profile.json`。
 - 读详情数、合格数、已发起沟通数、已联系跳过数、其他跳过数、待核对数；今日已用 / 剩余招呼额度。
@@ -160,4 +160,4 @@ description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位�
 - 因招聘者不活跃而跳过的数量。
 - 未达目标数量的原因、停止原因、写入 inbox 的事项。
 
-`pending`、`uncertain` 和历史记录不计入本轮成功数。示例结尾：「已发起沟通 6 个，1 个结果待核对（已写入 inbox），本轮已暂停；未发送简历。今日剩余招呼额度 23。」
+`pending`、`uncertain` 和历史记录不计入本轮成功数。示例结尾：「已发起沟通 6 个，1 个结果待核对（已写入 inbox），本轮已暂停；未发送简历。今日剩余招呼额度 23。」 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
