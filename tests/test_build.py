@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,19 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import build  # noqa: E402
+
+
+def require_symlinks(test):
+    # Windows 的链接权限因运行环境而异；有能力就运行，不按系统名跳过。
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        try:
+            (root / "file").write_text("probe", encoding="utf-8")
+            (root / "directory").mkdir()
+            (root / "file-link").symlink_to(root / "file")
+            (root / "directory-link").symlink_to(root / "directory", target_is_directory=True)
+        except (OSError, NotImplementedError) as error:
+            test.skipTest(f"需要文件及目录符号链接权限：{error}")
 
 
 def run_build(*argv):
@@ -188,6 +202,7 @@ class BuildSafetyTest(unittest.TestCase):
                 self.assertFalse((dest / "job-mate-apply").exists())
 
     def test_root_aliases_allowed_but_package_and_source_symlinks_rejected(self):
+        require_symlinks(self)
         outside = self.base / "outside"
         outside.mkdir()
         (outside / "CANARY").write_text("keep")
@@ -211,6 +226,7 @@ class BuildSafetyTest(unittest.TestCase):
         self.assertEqual(list(self.out.iterdir()), [])
 
     def test_dangling_and_nested_target_symlinks_are_not_followed(self):
+        require_symlinks(self)
         self.out.mkdir()
         dest = self.out / "job-mate-followup"
         dest.symlink_to(self.base / "missing", target_is_directory=True)
@@ -232,6 +248,7 @@ class BuildSafetyTest(unittest.TestCase):
         self.assertTrue((dest / "shared/rules.md").is_symlink())
 
     def test_source_directory_alias_and_external_link_fail_without_publication(self):
+        require_symlinks(self)
         shared = self.source / "shared"
         shared.rename(self.base / "shared-original")
         shared.symlink_to(self.base / "shared-original", target_is_directory=True)
@@ -262,6 +279,7 @@ class BuildSafetyTest(unittest.TestCase):
         self.assertEqual((dest / "CANARY").read_text(), "keep")
 
     def test_install_aliases_resolve_before_overlap_checks(self):
+        require_symlinks(self)
         for target in (self.out, self.out / "nested", self.base, self.source / "skills"):
             with self.subTest(target=target):
                 code, result = run_build("--out", str(self.out), "--install", str(target))
@@ -386,6 +404,7 @@ class BuildSafetyTest(unittest.TestCase):
         self.assertIsNone(result["commit"])
         self.assertIsNone(result["dirty"])
 
+    @unittest.skipUnless(shutil.which("git"), "需要 Git 创建包围合成源码的仓库")
     def test_vendored_source_does_not_claim_enclosing_repo_commit(self):
         def git(*args):
             return subprocess.run(["git", "-C", str(self.base), *args],
@@ -514,6 +533,7 @@ class BuildSafetyTest(unittest.TestCase):
         self.assertEqual((target / "job-mate-followup/shared/rules.md").read_text(), "new version")
 
     def test_cache_exclusion_does_not_follow_links_or_ignore_user_files(self):
+        require_symlinks(self)
         code, result = run_build("--out", str(self.out))
         self.assertEqual(code, 0, result)
         package = self.out / "job-mate-apply"
@@ -535,18 +555,25 @@ class BuildSafetyTest(unittest.TestCase):
         self.assertEqual(code, 2, result)
         self.assertTrue(pyc.is_symlink())
         pyc.unlink()
-        if hasattr(os, "mkfifo"):
-            for path in (pyc, package / ".DS_Store"):
-                os.mkfifo(path)
-                code, result = run_build("--out", str(self.out))
-                self.assertEqual(code, 2, result)
-                self.assertTrue(path.is_fifo())
-                path.unlink()
         note = cache / "notes.txt"
         note.write_text("user notes")
         code, result = run_build("--out", str(self.out))
         self.assertEqual(code, 2, result)
         self.assertEqual(note.read_text(), "user notes")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "需要 POSIX 命名管道（os.mkfifo）")
+    def test_cache_exclusion_rejects_posix_fifos(self):
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        package = self.out / "job-mate-apply"
+        cache = package / "scripts/__pycache__"
+        cache.mkdir()
+        for path in (cache / "demo.pyc", package / ".DS_Store"):
+            os.mkfifo(path)
+            code, result = run_build("--out", str(self.out))
+            self.assertEqual(code, 2, result)
+            self.assertTrue(path.is_fifo())
+            path.unlink()
 
     def test_manifest_paths_cannot_escape_package(self):
         code, result = run_build("--out", str(self.out))

@@ -41,7 +41,6 @@ class WorkspaceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         self.ws = self.root / "jobs"
 
     def tearDown(self):
@@ -326,7 +325,9 @@ class WorkspaceTest(unittest.TestCase):
         _, out = self.progress("record", "exclusions", "--status", "default")
         self.assertIsNone(out["current"])
 
+    @unittest.skipUnless(shutil.which("git"), "需要 Git 创建合成仓库来检查忽略文件不变")
     def test_init_and_progress_do_not_touch_repository_ignore_file(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         gi = self.root / ".gitignore"
         for initial in (None, "# 原有内容\n"):
             if initial is not None:
