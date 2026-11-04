@@ -469,12 +469,22 @@ def cmd_changed(args):
 
 # ---------- setup progress ----------
 
+def validate_im_answer(value, status):
+    """只校验配置结构，不认证本人、不定位或运行工具；跳过且无值表示不改。"""
+    if status == "skipped" and value is None:
+        return
+    try:
+        notify.im_config({"im": value})
+    except notify.NotifyError as error:
+        raise ValueError("im 步骤：" + str(error)) from error
+
+
 def read_progress(ws):
     path = ws / PROGRESS_FILE
     if not path.exists():
         raise WorkspaceError("没有 setup 草稿，请先 progress start")
     try:
-        draft = json.loads(path.read_text(encoding="utf-8"))
+        draft = config_schema.json_value(path.read_text(encoding="utf-8"))
         if not isinstance(draft, dict) or draft.get("schemaVersion") != 1:
             raise ValueError("不支持的草稿格式")
         if draft.get("mode") not in {"new", "resetup", "partial"}:
@@ -492,8 +502,10 @@ def read_progress(ws):
             if (step not in plan or not isinstance(answer, dict) or
                     answer.get("status") not in {"changed", "kept", "default", "skipped"}):
                 raise ValueError("无效的步骤回答")
+            if step == "im":
+                validate_im_answer(answer.get("value"), answer["status"])
         return draft
-    except (OSError, ValueError, KeyError, TypeError) as e:
+    except (OSError, ValueError, KeyError, TypeError, ledger.LedgerError) as e:
         raise WorkspaceError(f"setup 草稿损坏：{e}；请本人确认后用 progress clear 放弃草稿")
 
 
@@ -567,10 +579,6 @@ def start_progress(args, ws):
     return emit(progress_summary(draft))
 
 
-def reject_json_constant(value):
-    raise ValueError(f"不是合法 JSON：{value}")
-
-
 def cmd_progress(args):
     ws = ledger.find_workspace(args.workspace)
     path = ws / PROGRESS_FILE
@@ -615,9 +623,11 @@ def cmd_progress(args):
         if args.status == "skipped" and step["required"]:
             raise WorkspaceError(f"{step['name']} 是必答步骤，不能跳过")
         try:
-            value = json.loads(args.value, parse_constant=reject_json_constant) if args.value is not None else None
-        except ValueError as e:
+            value = config_schema.json_value(args.value) if args.value is not None else None
+        except (ValueError, ledger.LedgerError) as e:
             raise WorkspaceError(f"--value 不是合法 JSON：{e}")
+        if args.step == "im":
+            validate_im_answer(value, args.status)
         draft["answers"][args.step] = {"status": args.status, "value": value, "source": args.source,
                                       "at": fsutil.now().astimezone().isoformat(timespec="seconds")}
         if args.status == "changed":

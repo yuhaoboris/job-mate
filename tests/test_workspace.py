@@ -228,8 +228,10 @@ class WorkspaceTest(unittest.TestCase):
             with self.subTest(mode=mode):
                 out = self.start_reset(mode, select="candidate,qa,greeting,im")
                 for step in out["plan"]:
+                    # 设计12.1：IM 回答是配置对象，不用无结构占位符；其他复核断言不变。
+                    value = '{"channel":"none"}' if step == "im" else '"原值"'
                     code, out = self.progress("record", step, "--status", "kept",
-                                              "--value", '"原值"', "--source", "current")
+                                              "--value", value, "--source", "current")
                     self.assertEqual(code, 0, out)
                 self.assertIsNone(out["current"])
                 old_answers = out["answers"]

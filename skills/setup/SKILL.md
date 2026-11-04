@@ -1,11 +1,11 @@
 ---
 name: setup
-description: 建立、重新设置、部分重设、修改或体检 job-mate 求职工作区，可继续未完成的 setup。用于开始求职、重置、继续 setup、修改筛选条件或授权、配置飞书通知或定时运行，以及 apply/followup 报告工作区缺失或有问题时。访谈偏好与授权，整理个人事实、简历索引、问答库、停止名单与招呼语。不在招聘平台上外发。
+description: 建立、重新设置、部分重设、修改或体检 job-mate 求职工作区，可继续未完成的 setup。用于开始求职、重置、继续 setup、修改筛选条件或授权、配置飞书通知或定时运行，以及 apply/followup 报告工作区缺失或有问题时。访谈偏好、事实与授权，不在招聘平台上外发。
 ---
 
 # setup：建立、重新设置或修改求职工作区
 
-先读 [工作区格式](../../shared/workspace.md) 与 [通用执行契约](../../shared/execution.md)。产出供 apply、followup 使用的工作区，不在招聘平台外发。加锁前能力自检：能读写工作区并运行核心脚本才继续；缺能力时不写记录、不手工替代台账，只报告。纯配置不要求桌面能力；需要只读平台时另读 [浏览器入口](../../shared/browser/README.md) 与 [BOSS 页面要点](../../platforms/boss/common.md)，按既定偏好核对可见浏览器，不支持则不操作平台、不回退。遇待决定事项或要通知本人时再读 [通知契约](../../shared/notify.md)。
+先读 [工作区格式](../../shared/workspace.md) 与 [通用执行契约](../../shared/execution.md)。加锁前能力自检：能读写工作区、运行核心脚本才继续，缺能力不写记录、不手工替代台账。纯配置不要求桌面能力；需只读平台时另读 [浏览器入口](../../shared/browser/README.md) 与 [BOSS 页面要点](../../platforms/boss/common.md)，核对既定偏好及可见浏览器，不支持则不操作平台、不回退。待决定或通知时再读 [通知契约](../../shared/notify.md)；本技能不在招聘平台外发。
 
 下文 `ledger`、`workspace`、`notify`、`im_lark.py` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py`、`.../scripts/workspace.py`、`.../scripts/notify.py`、`.../scripts/im_lark.py`；先解析绝对路径，Windows 用 `py -3`。
 
@@ -93,7 +93,7 @@ restore 输出 `restoreSucceeded` / `restoreError` 是主体，`release` / `rele
 | 稍后再说 | 确保回答落盘，结束，提示下次说「继续 setup」 |
 | 放弃 | 本人确认后 progress clear，按 markerRemoved 报告 |
 
-草稿只用 workspace progress 原子读写；record 接受合法 JSON，生成文件的含义仍由 Agent 核对，来源也可为 resume。show 返回模式、计划、current、position/total、answers 与 added；重答后继续第一个未答项。草稿答案不自动改 profile，也不代表已授权发送。
+草稿只用 workspace progress 原子读写；record 接受合法 JSON，IM 另校验第 10 节的结构；含义由 Agent 核对，来源也可为 resume。重答后按脚本继续第一个未答项；草稿不改 profile，也不授予发送权限。
 
 ### 3.3 确认与写入
 
@@ -131,7 +131,7 @@ salary 合问区间、税前/税后、月薪/年薪及 matchRule；resumes 问�
 
 请本人选语气，再问长短（short/medium）、称呼（neutral/surname，姓氏必须页面可见）、是否允许 emoji、有没有不想出现的词 bannedWords。默认 polite、short、neutral、emoji:false、禁词精通；可回答「都用默认」，但默认不包含个人事实。
 
-从已确认的 candidate.md 提炼 2–3 条 selfIntro，每条展示依据位置，请本人确认；有据不足两条就只保留有据且确认的一条，没有就留缺失并告警，不为凑数量编造，不写空数组。显式内容须为 1–3 条非空短语。candidate 变更带入此步时只复核这些素材，其他风格设置保留；风格变化后的 greeting 重新给本人过目。
+据 candidate.md 提炼 2–3 条 selfIntro，每条展示依据位置，请本人确认；不足两条只保留有据且确认的一条，无依据则缺失告警，不编造、不写空数组。显式值须为 1–3 条非空短语。candidate 带入时只复核素材、保留其他风格；风格变后重看 greeting。
 
 ### 6.3 优先了解的信息（inquiry）
 
@@ -144,7 +144,7 @@ salary 合问区间、税前/税后、月薪/年薪及 matchRule；resumes 问�
 - nudge：说明「对方已读不回或未读时，至少隔一天才跟进；后续间隔默认 48 小时，最多连续 3 次，最后一次请对方给明确答复」，再问是否开启，缺省开启。默认每会话总共 6 次、每天 20 次；只在本人要求时调整数值，新建用脚本默认，重设仅改开关时保留原数值。record 的 default 同时给出授权开关与 nudge 参数，写回时分别合并到对应字段。
 - pacing：按脚本展示限额、平台覆盖、固定发送间隔与时段；典型采用默认，自定义逐项确认，不加随机抖动或模拟人工。
 
-四种 reply/nudge 组合都有效；不得重写 authorization.followup 整段而丢失兄弟开关。IM 测试同意不等于长期招聘平台授权；配置里 nudge:true 也不能越过尚未启用的发送策略或 prepare/guard。
+四种 reply/nudge 组合都有效；不得重写 authorization.followup 整段而丢失兄弟开关。nudge:true 不能越过尚未启用的发送策略或 prepare/guard。
 
 ## 7. 生成文件
 
@@ -168,17 +168,16 @@ salary 合问区间、税前/税后、月薪/年薪及 matchRule；resumes 问�
 
 ## 9. 数据边界
 
-只读本人明确提供的材料；事件由当前脚本维护，不导入其他格式，不以重设清空历史。需要补事实请本人确认，不把缺失推断为「没有」。
+事件只由当前脚本维护，不导入其他格式；不以重新设置清空历史。
 
 ## 10. IM 通知
 
-不需要通知时设 `{"channel":"none"}`。需要飞书时读 [飞书适配器](../../shared/im/lark.md)，核验同一应用下的本人 ownerId、配置档 larkProfile；bot.openId 不能当本人。waitMinutes 为 0–240，缺省 60；自动定位失败才按 doctor 提示配置 larkCommand，不安装或 shell 回退。
+先读 [飞书适配器](../../shared/im/lark.md)；需要收发时读 [通知契约](../../shared/notify.md)，按序执行：
 
-配置经事务写入后，`im_lark.py doctor` 检查机器人；只读通过不等于实际收发成功。经本人同意才测试：
-
-1. `notify test` 只排队（queued）；运行 `im_lark.py sync`。sent 无可信时间不能建立读取起点；unknown 不重发。
-2. 私聊可读后，请本人**引用测试消息回复「收到」**，再次 `im_lark.py sync`。未读完明确报告；普通业务答复仍 received，不因测试吞掉。
-3. 用 `notify replies --state test` 核对测试回复，`notify status` 核对私聊、队列及冲突；queued、handoff、blocked、failed、unknown 分开报告。能力不足就停，不换通道。
+1. 问是否需要飞书；不要则记 `{"channel":"none"}`。需要则经本人允许，按随包安全入口只读列配置档，以 name 请本人选 larkProfile，不猜 active。再核验同应用 auth 中已验证的本人身份，或按本人提供的姓名/邮箱查 open_id，展示姓名请本人确认 ownerId；多候选让本人选，不取第一项；bot.openId 不能当本人。身份、应用或结果不明就停。最后问 waitMinutes，整数 0–240、默认 60。
+2. 只读入口无法定位时按随包安全说明收集显式 larkCommand 数组，不安装、不 shell 回退。record 的 value 是完整 IM 对象，共用 im_config 校验；kept/default 也传对象，skipped 且无值表示不改，不是选 none。结构通过不证明身份或入口可用。经本人确认，按第 3.3 节暂存并 commit，保留未选字段与授权。
+3. **事务提交后** `im_lark.py doctor` 读正式工作区配置，验证所选路由的 bot；不填假 ownerId 提前 doctor、不绕事务。none 的 skipped:channel_none 只表示跳过，**不算机器人验证成功**。doctor 通过也不代表已收发；未通过不排队测试。
+4. bot 验证通过且本人**另行同意测试内容**才 `notify test`，只排队（queued）；再 `im_lark.py sync`。sent 无可信时间不能建立读取起点，补查失败不重发；unknown 不重发。私聊可读后请本人**引用测试消息回复「收到」**，再次 `im_lark.py sync`，用 `notify replies --state test` 与 `notify status` 核对测试、私聊、队列及冲突。普通业务答复仍 received；未读完明确报告。能力不足就停，不换通道；测试同意不增加长期授权。
 
 ## 11. 汇报
 
