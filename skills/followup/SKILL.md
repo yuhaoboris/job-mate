@@ -151,7 +151,7 @@ ledger 是技能判断的依据，inbox 是给本人看的。两者分开写入�
 
 ### 4.2 评估职位（新入站会话、已有会话中的新职位）
 
-打开对方关联的职位详情，按 `apply` 的筛选条件（正向条件须证实，排除项明确命中才排除，招聘者活跃度不适用于主动来信）和 `ledger check --platform boss --company <公司>` 评估。`check` 返回的原因中只看 `stoplist`、`stoplist_suspect`、`rejected`、`risk`；`same_company` 等首次联系去重的原因不适用于对方主动来信：
+打开对方关联的职位详情，按 `apply` 的筛选条件（正向条件须证实，排除项明确命中才排除，招聘者活跃度不适用于主动来信）和 `ledger screen-check --platform boss --company <公司>` 评估。只消费 reasons[].code 中的 `stoplist`、`stoplist_suspect`、`company_rejected`、`company_risk` 四类公司信号，首次联系去重信号不用于拒绝入站回复。命令无锁/禁发也可用，退出0只是筛查完成，无信号也不是发送许可；退出2报告失败、不发送。所有外发仍另走完整意图 check / prepare / guard：
 
 - **符合**：按第 4.3 节处理对方的消息；第一条回复表达对该职位的兴趣。会话原先因职位不符记过 `declined` 的，先记 `observe/reopened`（`reason` 写新职位和评估结论）。
 - **明确不符**：不回复，记 `observe/declined`（`reason` 写不符的条件），会话就此关闭，之后不会再代答或跟进；HR 以后推来另一个职位时重新评估。按不符条件的性质再区分：

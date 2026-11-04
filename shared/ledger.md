@@ -18,6 +18,7 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 | `lock release --run <runId>` / `lock status` | 释放并对账 / 只读持锁者 |
 | `pause on --reason <原因> [--by <谁>]` / `pause off` / `pause status` | 设置 / 解除 / 查询全局暂停 |
 | `check --run <runId> --json '<意图>'` | 与 prepare 同路径的只读完整预检，不消费额度 |
+| `screen-check --platform <平台> --company <公司> [--account <账号>] [--title <职位>] [--job-url <链接>] [--job-id <页面ID>] [--run <runId>]` | 只读公司/职位信号，无锁或禁发可用，不需要文字或授权 |
 | `prepare --run <runId> --json '<意图>'` | 唯一 pending 入口；全部门禁通过才原子写入，协议见[发送准备](sending.md) |
 | `append --json '<事件>'` | 记录终态、观察及筛选；禁止直接写动作 pending |
 | `tail --run <runId> --thread '<threadKey>' --read-at <ISO> [--base <tailId>] [--json '<输入>']` | 记录尾部指纹，不保存原文；输入也可走 stdin |
@@ -92,6 +93,8 @@ observed 可取：tail、handled、replied、decision、info、resume_requested�
 
 读取、比较、复核或 handled 前，读[尾部核对协议](tails.md)。账号歧义处理见[账号说明](accounts.md)。
 ## 去重
+
+只筛选及入站职位评估用 screen-check，输出 screeningOnly:true、原始 platform/account、company、派生 jobId 和 reasons:[{code,message}]；正常含信号退出0，输入/工作区错误退出2。原因码仅 stoplist、stoplist_suspect、company_rejected、company_risk、already_contacted、reposted_suspect；入站只消费前四种。--run 仅影响同轮明确未发的去重，不写事件、不续锁、不占额度。结果没有 allowed 或授权来源，不能替代完整发送 check / prepare / guard。
 
 首次联系检查停止名单、同平台账号历史联系与 rejected / risk。company 范围按公司，job 范围按 ID，缺 ID 比公司 + 职位；同公司同职位而 ID 不同报疑似重新发布。通过 check 后仍以当前页面为准：已联系记 already_contacted，不发送。本人逐个放行仅经绑定单职位的 dedup_once；它不是发送授权，不能越过其他门禁。
 

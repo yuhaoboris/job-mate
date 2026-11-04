@@ -1387,6 +1387,26 @@ def company_observation_reasons(events, platform, account, company):
     return out
 
 
+def cmd_screen_check(args, ws):
+    """公司/职位信号，不计算发送许可，也不需要发送意图或运行锁。"""
+    if not norm_company(args.company):
+        raise LedgerError("screen-check 须有可辨认的公司")
+    if args.job_id is not None and not args.job_id.strip():
+        raise LedgerError("screen-check --job-id 须为非空页面ID")
+    load_platform(args.platform)
+    events, _ = read_events(ws)
+    args.account = resolve_account(ws, args.platform, args.account, events)
+    scope = effective_limits(load_profile(ws), args.platform)["dedupScope"]
+    reasons = [{"code": r["type"], "message": r["detail"]} for r in stoplist_reasons(ws, args.company)]
+    reasons.extend({"code": "company_" + r["type"], "message": r["detail"]}
+                   for r in company_observation_reasons(events, args.platform, args.account, args.company))
+    contacts, job_id = first_contact_reasons(args, events, scope)
+    reasons.extend({"code": "reposted_suspect" if r["type"] == "reposted_suspect" else "already_contacted",
+                    "message": r["detail"]} for r in contacts)
+    return emit({"screeningOnly": True, "platform": args.platform, "account": args.account,
+                 "company": args.company, "jobId": job_id, "reasons": reasons})
+
+
 def first_contact_reasons(args, events, scope):
     """首次联系去重：所有动作建立的联系都算，不只 greet。"""
     reasons = []
@@ -1457,9 +1477,11 @@ def intent_event(ws, body, run, lock, profile, check_job_id=None):
     if "account" in ev and (not isinstance(ev["account"], str) or not ev["account"].strip()):
         raise LedgerError("显式 account 须为非空字符串")
     ev["account"] = resolve_account(ws, ev["platform"], ev.get("account"))
-    for field in ("text", "resume", "jobUrl"):
+    for field in ("text", "resume"):
         if field in ev and not isinstance(ev[field], str):
             raise LedgerError(f"{field} 须为字符串")
+    if ev.get("jobUrl") is not None and not isinstance(ev["jobUrl"], str):
+        raise LedgerError("jobUrl 须为字符串或 null")
     if ev["kind"] == "resume" and not ev.get("resume", "").strip():
         raise LedgerError("简历动作须有 resume 版本")
     if ev.get("jobUrl"):
@@ -2944,6 +2966,15 @@ def build_parser():
     tail.add_argument("--base")
     tail.add_argument("--json")
 
+    screen = sub.add_parser("screen-check", help="只读公司/职位筛查信号，不是发送许可")
+    screen.add_argument("--platform", required=True)
+    screen.add_argument("--company", required=True)
+    screen.add_argument("--account")
+    screen.add_argument("--title")
+    screen.add_argument("--job-id")
+    screen.add_argument("--job-url")
+    screen.add_argument("--run", help="仅影响同轮明确未发的去重信号，不要求持锁")
+
     c = sub.add_parser("check", help="外发前检查")
     c.add_argument("--platform")
     c.add_argument("--company")
@@ -3020,7 +3051,7 @@ def build_parser():
 
 
 COMMANDS = {
-    "validate": cmd_validate, "check": cmd_check, "decision": cmd_decision, "guard": cmd_guard,
+    "validate": cmd_validate, "check": cmd_check, "screen-check": cmd_screen_check, "decision": cmd_decision, "guard": cmd_guard,
     "append": cmd_append, "prepare": cmd_prepare, "tail": cmd_tail, "export": cmd_export,
     "quota": cmd_quota, "threads": cmd_threads, "stats": cmd_stats, "lock": cmd_lock,
     "pause": cmd_pause, "stoplist": cmd_stoplist,

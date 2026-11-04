@@ -21,6 +21,9 @@ MODULES = {"ledger": ledger, "notify": notify, "workspace": workspace}
 # 脚本、完整命令及影响副作用的参数、分类。参数值均为合成数据。
 ENTRY_CASES = [
     ("ledger", "validate", "read"),
+    ("ledger", "screen-check --platform boss --company 示例", "read"),
+    ("ledger", "screen-check --platform boss --company 示例 --account main --title 开发 --job-id page-id --run screen-run", "read"),
+    ("ledger", "screen-check --platform boss --company 示例 --job-url https://www.zhipin.com/job_detail/page-id.html", "read"),
     ("ledger", "check --platform boss --company 示例", "read"),
     ("ledger", "check --platform boss --account main --company 示例", "read"),
     ("ledger", "decision --id D-20260101-01", "read"),

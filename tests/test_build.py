@@ -131,6 +131,43 @@ class BuildTest(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
+    def test_each_built_ledger_runs_screen_check_and_nullable_prepare_without_repository(self):
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        for directory in map(Path, result["built"]):
+            with self.subTest(package=directory.name):
+                ws = Path(self.tmp.name) / ("workspace-" + directory.name)
+                def cli(script, *args):
+                    p = subprocess.run([sys.executable, "-B", "-I", str(directory / "scripts" / script), *args],
+                                       cwd=self.tmp.name, capture_output=True, text=True, encoding="utf-8", timeout=30)
+                    self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                    self.assertFalse(p.stderr, p.stderr)
+                    return json.loads(p.stdout)
+                cli("workspace.py", "init", str(ws), "--account", "boss:built:合成账号")
+                # 单独包、仓库外cwd、隔离Python，从无锁筛查到禁发筛查，再发送准备与guard。
+                def ledger(*args):
+                    return cli("ledger.py", "--workspace", str(ws), *args)
+                def snapshot():
+                    return {str(p.relative_to(ws)): p.read_bytes() for p in ws.rglob("*")
+                            if p.is_file() and not p.name.endswith(".mutex")}
+                for no_send in (False, True):
+                    if no_send:
+                        ledger("lock", "acquire", "--skill", "apply", "--run", "built-screen", "--no-send")
+                    before = snapshot()
+                    out = ledger("screen-check", "--platform", "boss", "--company", "合成公司")
+                    self.assertIs(out["screeningOnly"], True)
+                    self.assertEqual(out["account"], "built")
+                    self.assertEqual(out["reasons"], [])
+                    self.assertNotIn("allowed", out)
+                    self.assertEqual(snapshot(), before)
+                ledger("lock", "release", "--run", "built-screen")
+                ledger("lock", "acquire", "--skill", "followup", "--run", "built-send")
+                intent = {"kind": "reply", "platform": "boss", "company": "合成公司", "recruiter": "招聘者(HR)",
+                          "title": "开发", "jobUrl": None, "text": "合成回答", "reason": "合成依据"}
+                pending = ledger("prepare", "--run", "built-send", "--json", json.dumps(intent, ensure_ascii=False))
+                self.assertTrue(pending["allowed"])
+                self.assertTrue(ledger("guard", "--run", "built-send", "--attempt", pending["attemptId"])["allowed"])
+
     def test_quiet_close_sends_no_done_and_no_summary(self):
         """IM 实测 P8.5/P8.6 回归：只做收尾的轮次不得发 done / summary。
 
