@@ -62,8 +62,8 @@ class TailTest(unittest.TestCase):
         body.update(extra)
         return body
 
-    def tail(self, body=None, base=None, thread=None, stdin=False):
-        args = ["tail", "--run", "run-tail", "--thread", thread or self.thread,
+    def tail(self, body=None, base=None, thread=None, stdin=False, run="run-tail"):
+        args = ["tail", "--run", run, "--thread", thread or self.thread,
                 "--read-at", os.environ["JOB_MATE_NOW"]]
         if base:
             args += ["--base", base]
@@ -621,6 +621,211 @@ print(json.dumps({"count": len(events), "errors": errors}), flush=True)
                 child.communicate()
             for reader in readers:
                 reader.join(timeout=5)
+
+    def patch_tail(self, tail, **changes):
+        path = ledger.events_path(self.ws)
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").split("\n") if line]
+        for row in rows:
+            if row.get("tailId") == tail["tailId"] and row.get("observed") == "tail":
+                row.update(changes)
+        path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+
+    def assert_old_base_does_not_drop_withdrawn_pending(self, cross_run=False):
+        old = self.baseline()
+        extended = self.ok_tail(self.snapshot([self.message(), self.message("待处理B", "今天 11:00")]))
+        self.assertEqual(extended["result"], "extended")
+        run = "run-tail"
+        if cross_run:
+            self.assertEqual(self.run_cli("lock", "release", "--run", run)[0], 0)
+            run = "run-next"
+            self.assertEqual(self.run_cli("lock", "acquire", "--skill", "followup", "--run", run)[0], 0)
+        current = self.ok_tail(base=old["tailId"], run=run)
+        self.assertFalse(current["settled"])
+        self.assertEqual(self.handled(current, runId=run)[0], 2)
+        again = self.ok_tail(base=current["tailId"], run=run)
+        self.assertFalse(again["settled"])
+        self.assertTrue(ledger.tail_state(ledger.read_events(self.ws)[0], self.thread)["pending"])
+        self.assertEqual(self.handled(again, user=True, runId=run)[0], 0)
+
+    def test_old_handled_base_cannot_hide_withdrawn_pending_extension(self):
+        self.assert_old_base_does_not_drop_withdrawn_pending()
+
+    def test_old_handled_base_cannot_hide_pending_extension_across_runs(self):
+        self.assert_old_base_does_not_drop_withdrawn_pending(cross_run=True)
+
+    def test_old_base_is_safe_when_intermediate_pending_read_is_same(self):
+        base = self.baseline()
+        same = self.ok_tail()
+        self.assertEqual(same["result"], "same")
+        verified = self.ok_tail(base=base["tailId"])
+        self.assertTrue(verified["settled"])
+        self.assertEqual(self.handled(verified)[0], 0)
+        self.assertEqual(self.run_cli("validate")[0], 0)
+
+    def test_processed_extension_can_settle_with_complete_bridge(self):
+        self.baseline()
+        extra = self.message("实际处理B", "今天 11:00")
+        extended = self.ok_tail(self.snapshot([self.message(), extra]))
+        aid = self.send()
+        body = self.bridge_body(aid)
+        body["bridge"].insert(2, dict(extra, speaker="hr"))
+        verified = self.ok_tail(body, base=extended["tailId"])
+        self.assertTrue(verified["settled"])
+        self.assertEqual(self.handled(verified)[0], 0)
+        same = self.ok_tail(self.snapshot([], anchor=body["anchor"]), base=verified["tailId"])
+        self.assertTrue(same["settled"])
+        self.assertEqual(self.handled(same)[0], 0)
+        self.assertEqual(self.run_cli("validate")[0], 0)
+
+    def test_approved_text_roundtrips_all_unicode_line_separators(self):
+        text = " \t全角Ａ" + "|".join("前" + char + "后" for char in
+                    ("\u2028", "\u2029", "\u0085", "\v", "\f", "\x1c", "\x1d", "\x1e", "\r", "\n", "\r\n")) + "\n "
+        decision = "D-20261104-08"
+        code, out = self.append(kind="observe", observed="decision", decision=decision, version=1,
+                               steps=[{"step": "verbatim", "kind": "reply", "text": text}])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["event"]["steps"][0]["text"], text)
+        code, out = self.run_cli("validate")
+        self.assertEqual(code, 0, out)
+        rows, errors = ledger.read_events(self.ws)
+        self.assertFalse(errors)
+        self.assertEqual(rows[-1]["steps"][0]["text"], text)
+        self.assertEqual(self.run_cli("decision", "--id", decision)[0], 0)
+        self.assertEqual(ledger.read_events(self.ws)[0][-1]["steps"][0]["text"], text)
+
+    def test_history_rejects_same_and_extended_inconsistent_with_fingerprints(self):
+        base = self.baseline()
+        wrong = self.ok_tail(self.snapshot([self.message("不同B")]), base=base["tailId"])
+        original = ledger.events_path(self.ws).read_bytes()
+        for result, settled, count in (("same", True, 0), ("extended", False, 1)):
+            with self.subTest(result=result):
+                self.patch_tail(wrong, result=result, settled=settled, reviewRequired=False, reason=result, newCount=count)
+                code, out = self.run_cli("validate")
+                self.assertEqual(code, 2, out)
+                self.assertEqual(out["errors"][0]["line"], 4)
+                before = ledger.events_path(self.ws).read_bytes()
+                self.assertEqual(self.handled(wrong)[0], 2)
+                self.assertEqual(ledger.events_path(self.ws).read_bytes(), before)
+                ledger.events_path(self.ws).write_bytes(original)
+
+    def test_history_rejects_cleared_sticky_review_even_without_settled(self):
+        base = self.baseline()
+        body = self.snapshot([self.message("编辑后B")])
+        mismatch = self.ok_tail(body, base=base["tailId"])
+        same = self.ok_tail(body, base=mismatch["tailId"])
+        original = ledger.events_path(self.ws).read_bytes()
+        for settled in (False, True):
+            with self.subTest(settled=settled):
+                self.patch_tail(same, settled=settled, reviewRequired=False, newCount=0)
+                self.assertEqual(self.run_cli("validate")[0], 2)
+                self.assertEqual(self.handled(same)[0], 2)
+                ledger.events_path(self.ws).write_bytes(original)
+
+    def test_history_rejects_handled_referencing_polluted_snapshot(self):
+        base = self.ok_tail()
+        verified = self.ok_tail(base=base["tailId"])
+        self.assertEqual(self.handled(verified)[0], 0)
+        fp = ledger.read_events(self.ws)[0][-2]["fingerprints"][0].copy()
+        fp["digest"] = "0" * 16
+        self.patch_tail(verified, fingerprints=[fp])
+        code, out = self.run_cli("validate")
+        self.assertEqual(code, 2, out)
+        self.assertEqual([error["line"] for error in out["errors"]], [3, 4])
+        valid, _ = ledger.read_events(self.ws, strict=False)
+        self.assertFalse(any(ev.get("observed") == "handled" for ev in valid))
+
+    def test_history_rechecks_valid_bridge_and_rejects_changed_hr_fingerprint(self):
+        base = self.ok_tail()
+        verified = self.ok_tail(self.bridge_body(self.send()), base=base["tailId"])
+        self.assertTrue(verified["settled"])
+        self.assertEqual(self.run_cli("validate")[0], 0)
+        bridge = ledger.read_events(self.ws)[0][-1]["bridge"]
+        bridge[1] = dict(bridge[1], digest="0" * 16)
+        self.patch_tail(verified, bridge=bridge)
+        self.assertEqual(self.run_cli("validate")[0], 2)
+        self.assertEqual(self.handled(verified)[0], 2)
+
+    def test_history_rechecks_bridge_with_stable_ids_without_hr_raw_text(self):
+        self.identity["platform"] = "testplat"
+        self.assertEqual(self.append(kind="observe", observed="replied")[0], 0)
+        thread = "testplat|test-main|合成公司|招聘者(hr)"
+        anchor = self.message("仅输入的旧我方内容", "today 10:00", speaker="us", id="us-old")
+        hr = self.message("仅输入的HR内容", "today 10:32", id="hr-A")
+        base = self.ok_tail(self.snapshot([hr], anchor=anchor), thread=thread)
+        aid = self.send()
+        sent = self.message("本人批准的 回复", "today 12:00", speaker="us", id="us-new", attemptId=aid)
+        body = self.snapshot([], anchor=sent, bridge=[anchor, dict(hr, speaker="hr"), sent], bridgeComplete=True)
+        verified = self.ok_tail(body, base=base["tailId"], thread=thread)
+        self.assertTrue(verified["settled"])
+        self.assertEqual(self.run_cli("validate")[0], 0)
+        raw = ledger.events_path(self.ws).read_text(encoding="utf-8")
+        self.assertNotIn(hr["text"], raw)
+        saved = ledger.read_events(self.ws)[0][-1]
+        original = ledger.events_path(self.ws).read_bytes()
+        proof = saved["bridgeEvidence"]
+        proof[-1]["digest"] = "0" * 16
+        self.patch_tail(verified, bridgeEvidence=proof)
+        self.assertEqual(self.run_cli("validate")[0], 2)
+        ledger.events_path(self.ws).write_bytes(original)
+        bridge = saved["bridge"]
+        bridge[1] = {"id": "hr-unhandled"}
+        self.patch_tail(verified, bridge=bridge)
+        self.assertEqual(self.run_cli("validate")[0], 2)
+        ledger.events_path(self.ws).write_bytes(original)
+        self.assertEqual(self.handled(verified)[0], 0)
+
+    def test_history_rejects_corrupt_bridge_sender_proof(self):
+        base = self.ok_tail()
+        verified = self.ok_tail(self.bridge_body(self.send()), base=base["tailId"])
+        saved = ledger.read_events(self.ws)[0][-1]
+        original = ledger.events_path(self.ws).read_bytes()
+        for field, value in (("attemptId", "unknown"), ("digest", "0" * 16), ("type", "card"),
+                             ("pageAt", "2026-11-04T09:00:00+08:00"), ("speaker", "hr")):
+            with self.subTest(field=field):
+                proof = json.loads(json.dumps(saved["bridgeEvidence"]))
+                proof[-1][field] = value
+                self.patch_tail(verified, bridgeEvidence=proof)
+                self.assertEqual(self.run_cli("validate")[0], 2)
+                self.assertEqual(self.handled(verified)[0], 2)
+                ledger.events_path(self.ws).write_bytes(original)
+        self.patch_tail(verified, bridgeEvidence=None)
+        self.assertEqual(self.run_cli("validate")[0], 2)
+        ledger.events_path(self.ws).write_bytes(original)
+        # 历史用冻结的页面绝对时间，不随当前时区重新解释旧标签。
+        with patch.object(ledger, "tz_of", return_value=ledger.parse_at("2026-11-04T00:00:00+00:00").tzinfo):
+            self.assertEqual(self.run_cli("validate")[0], 0)
+        self.assertEqual(self.handled(verified)[0], 0)
+
+    def test_history_cannot_clear_review_while_a_send_is_unresolved(self):
+        base = self.ok_tail()
+        self.assertEqual(self.append(kind="reply", status="pending", text="合成待核对发送")[0], 0)
+        current = self.ok_tail(base=base["tailId"])
+        self.assertFalse(current["settled"])
+        self.patch_tail(current, reviewRequired=False, settled=True, reason="same", newCount=0)
+        self.assertEqual(self.run_cli("validate")[0], 2)
+        self.assertEqual(self.handled(current)[0], 2)
+
+    def test_unknown_bridge_attempt_input_is_not_copied_into_evidence(self):
+        base = self.ok_tail()
+        body = self.bridge_body(self.send())
+        secret = "误填在attemptId中的HR私人原文"
+        body["bridge"][-1]["attemptId"] = secret
+        current = self.ok_tail(body, base=base["tailId"])
+        self.assertFalse(current["settled"])
+        self.assertEqual(current["reason"], "bridge_unconfirmed_send")
+        self.assertNotIn(secret, ledger.events_path(self.ws).read_text(encoding="utf-8"))
+        self.assertEqual(self.run_cli("validate")[0], 0)
+
+    def test_history_checks_explicit_base_marker_as_well_as_results(self):
+        self.baseline()
+        current = self.ok_tail()
+        self.assertFalse(current["settled"])
+        original = ledger.events_path(self.ws).read_bytes()
+        for value in (True, None, "yes"):
+            with self.subTest(value=value):
+                self.patch_tail(current, baseExplicit=value)
+                self.assertEqual(self.run_cli("validate")[0], 2)
+                ledger.events_path(self.ws).write_bytes(original)
 
     def test_validate_reports_new_field_line_number_and_duplicate_event_id(self):
         ev = dict(ledger.read_events(self.ws)[0][0])

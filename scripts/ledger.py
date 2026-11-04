@@ -615,14 +615,16 @@ def validate_history_event(events, ev):
     if ev["kind"] != "observe":
         return
     if ev["observed"] == "tail":
-        prior_tails = [e for e in events if e["kind"] == "observe" and e["observed"] == "tail"]
-        if any(e["tailId"] == ev["tailId"] for e in prior_tails):
+        if any(e["kind"] == "observe" and e["observed"] == "tail" and e["tailId"] == ev["tailId"] for e in events):
             raise LedgerError("tailId 重复")
-        thread_tails = [e for e in prior_tails if e["threadKey"] == ev["threadKey"]]
-        if ev["baseTailId"] and not any(e["tailId"] == ev["baseTailId"] for e in thread_tails):
+        state = tail_state(events, ev["threadKey"])
+        if ev["baseTailId"] and ev["baseTailId"] not in state["tails"]:
             raise LedgerError("baseTailId 不属于该会话")
-        if thread_tails and parse_at(ev["readAt"]) < parse_at(thread_tails[-1]["readAt"]):
+        if state["latest"] and parse_at(ev["readAt"]) < parse_at(state["latest"]["readAt"]):
             raise LedgerError("readAt 早于该会话最新读取")
+        outcome = tail_outcome(events, ev, state)
+        if any(ev.get(key) != value for key, value in outcome.items()):
+            raise LedgerError("tail 比较结果或未决状态与持久化证据矛盾")
     if ev["observed"] == "decision":
         prior = [e for e in events if e["kind"] == "observe" and e["observed"] == "decision"
                  and e.get("decision") == ev["decision"]]
@@ -653,7 +655,7 @@ def read_events(ws, strict=True):
         return events, errors
     # 只取最内层事件锁形成完整字节快照，不把只读升级为业务写入。
     with file_mutex(path.with_name(".events.mutex")):
-        lines = fsutil.read_text(path).splitlines()
+        lines = fsutil.read_text(path).split("\n")
     for no, line in enumerate(lines, 1):
         if not line.strip():
             continue
@@ -1410,9 +1412,34 @@ def fingerprint_valid(fp):
     return fp["precision"] == ("none" if fp["date"] is None else "minute" if fp["minute"] else "day")
 
 
+def validate_bridge_evidence(ev):
+    """ID 指纹没有角色/内容/时间；只补本轮发送核验必需的最小事实。"""
+    proof, bridge = ev.get("bridgeEvidence"), ev.get("bridge")
+    if not isinstance(proof, list) or not isinstance(bridge, list) or len(proof) != len(bridge):
+        return ["tail.bridgeEvidence 须与 bridge 逐项对应"]
+    for item in proof:
+        if not isinstance(item, dict) or item.get("speaker") not in ("us", "hr"):
+            return ["tail.bridgeEvidence 发言方无效"]
+        if set(item) == {"speaker"}:
+            continue
+        if (set(item) != {"speaker", "attemptId", "type", "digest", "pageAt"} or item["speaker"] != "us"
+                or item["type"] not in ("text", "card") or not isinstance(item["digest"], str)
+                or not re.fullmatch(r"[0-9a-f]{16}", item["digest"])
+                or (item["attemptId"] is not None and (not isinstance(item["attemptId"], str) or not item["attemptId"].strip()))):
+            return ["tail.bridgeEvidence 发送证据无效"]
+        if item["pageAt"] is not None:
+            try:
+                at = parse_at(item["pageAt"])
+                if at.second or at.microsecond:
+                    raise ValueError("须为分钟时间")
+            except (ValueError, TypeError):
+                return ["tail.bridgeEvidence.pageAt 须为带时区的分钟时间或 null"]
+    return []
+
+
 def validate_tail_record(ev):
     errors = []
-    for key in ("complete", "anchorUnique", "settled", "reviewRequired"):
+    for key in ("complete", "anchorUnique", "baseExplicit", "settled", "reviewRequired"):
         if type(ev.get(key)) is not bool:
             errors.append(f"tail.{key} 须为布尔值")
     if ev.get("result") not in ("same", "extended", "new_anchor", "mismatch"):
@@ -1431,8 +1458,12 @@ def validate_tail_record(ev):
         errors.append("tail.readAt 无效")
     if ev.get("newCount") is not None and (type(ev["newCount"]) is not int or ev["newCount"] < 0):
         errors.append("tail.newCount 须为非负整数或 null")
-    if "bridge" in ev and type(ev.get("bridgeComplete")) is not bool:
-        errors.append("tail.bridgeComplete 须为布尔值")
+    if "bridge" in ev:
+        if type(ev.get("bridgeComplete")) is not bool:
+            errors.append("tail.bridgeComplete 须为布尔值")
+        errors.extend(validate_bridge_evidence(ev))
+    elif "bridgeEvidence" in ev or "bridgeComplete" in ev:
+        errors.append("tail.bridge 证据缺少指纹序列")
     if ev.get("settled") and ev.get("result") == "new_anchor" and (not ev.get("bridge") or not ev.get("bridgeComplete")):
         errors.append("new_anchor settled 缺少完整 bridge")
     if "text" in ev or "messages" in ev:
@@ -1521,18 +1552,38 @@ def compare_tail(base, anchor, messages, complete, unique):
     return "extended", len(messages) - len(prior), "extended"
 
 
-def bridge_verified(events, base, anchor, messages, raw_bridge, bridge, complete, run, read_at, tz, platform, thread):
-    """验证连续覆盖、目标、内容和发送时间；编号本身不构成成功证据。"""
+def bridge_evidence(raw_bridge, base, read_at, tz, platform, known_attempts):
+    proof = []
+    for i, message in enumerate(raw_bridge):
+        item = {"speaker": message["speaker"]}
+        old_anchor = i == 0 and base is not None and base["anchor"] != "start"
+        if message["speaker"] == "us" and not old_anchor:
+            when = resolve_time_label(message.get("label"), read_at, tz, platform)
+            page_at = (datetime.fromisoformat(when["date"] + "T" + when["minute"]).replace(tzinfo=tz).isoformat()
+                       if when["date"] and when["minute"] else None)
+            # 未匹配引用仅记 null，防止把误填的页面原文作为编号写入证据。
+            aid = message.get("attemptId")
+            item.update(attemptId=aid if aid in known_attempts else None, type=message["type"],
+                        digest=content_digest(message["text"]), pageAt=page_at)
+        proof.append(item)
+    return proof
+
+
+def bridge_verified(atts, base, anchor, messages, bridge, proof, complete, run, read_at, platform, thread):
+    """只用持久化指纹及发送证据验证连续覆盖；写入和重读共用，不依赖原文。"""
     if not complete or not bridge:
         return False, True, "incomplete_bridge"
     start = 0 if base["anchor"] == "start" else 1
-    if start and (raw_bridge[0]["speaker"] != "us" or not fingerprints_equal(bridge[0], base["anchor"])):
+    if start and (proof[0]["speaker"] != "us" or not fingerprints_equal(bridge[0], base["anchor"])):
         return False, True, "bridge_anchor_mismatch"
     if not all(definite_fingerprint(fp) for fp in bridge):
         return False, True, "bridge_time_ambiguity"
     if start and sum(fingerprints_equal(fp, base["anchor"]) for fp in bridge) != 1:
         return False, True, "bridge_anchor_ambiguity"
-    us = [i for i in range(start, len(bridge)) if raw_bridge[i]["speaker"] == "us"]
+    for fp, item in zip(bridge, proof):
+        if "id" not in fp and fp["speaker"] != item["speaker"]:
+            return False, True, "bridge_role_mismatch"
+    us = [i for i in range(start, len(bridge)) if proof[i]["speaker"] == "us"]
     if not us or not fingerprints_equal(bridge[us[-1]], anchor):
         return False, True, "bridge_current_anchor_mismatch"
     if sum(fingerprints_equal(fp, anchor) for fp in bridge) != 1:
@@ -1540,16 +1591,16 @@ def bridge_verified(events, base, anchor, messages, raw_bridge, bridge, complete
     ids = [fp["id"] for fp in bridge if "id" in fp]
     if len(ids) != len(set(ids)):
         return False, True, "bridge_identity_ambiguity"
-    before = [bridge[i] for i in range(start, us[0]) if raw_bridge[i]["speaker"] == "hr"]
+    before = [bridge[i] for i in range(start, us[0]) if proof[i]["speaker"] == "hr"]
     if not sequence_equal(before, base["fingerprints"]):
         return False, True, "bridge_hr_before_send_changed"
-    after = [bridge[i] for i in range(us[-1] + 1, len(bridge)) if raw_bridge[i]["speaker"] == "hr"]
+    after = [bridge[i] for i in range(us[-1] + 1, len(bridge)) if proof[i]["speaker"] == "hr"]
     if not sequence_equal(after, messages):
         return False, True, "bridge_tail_mismatch"
-    all_hr = [bridge[i] for i in range(start, len(bridge)) if raw_bridge[i]["speaker"] == "hr"]
-    atts, used = attempts_of(events), set()
+    all_hr = [bridge[i] for i in range(start, len(bridge)) if proof[i]["speaker"] == "hr"]
+    used = set()
     for i in us:
-        message = raw_bridge[i]
+        message = proof[i]
         attempt_id = message.get("attemptId")
         attempt = atts.get(attempt_id)
         if not attempt or attempt_id in used or attempt["runId"] != run or attempt["status"] != "sent":
@@ -1566,22 +1617,63 @@ def bridge_verified(events, base, anchor, messages, raw_bridge, bridge, complete
                 return False, True, "bridge_target_mismatch"
         payload = sent.get("resume") if sent["kind"] == "resume" else sent.get("text")
         expected_type = "card" if sent["kind"] == "resume" else "text"
-        if (message["type"] != expected_type or not isinstance(payload, str)
-                or content_digest(payload) != content_digest(message["text"])):
+        if (message.get("type") != expected_type or not isinstance(payload, str)
+                or content_digest(payload) != message.get("digest")):
             return False, True, "bridge_content_mismatch"
-        when = resolve_time_label(message.get("label"), read_at, tz, platform)
-        if not when["date"] or not when["minute"]:
+        if message.get("pageAt") is None:
             return False, True, "bridge_time_ambiguity"
-        page_at = datetime.fromisoformat(when["date"] + "T" + when["minute"]).replace(tzinfo=tz)
+        page_at = parse_at(message["pageAt"])
+        fp = bridge[i]
+        if "id" not in fp and (fp["type"] != message["type"] or fp["digest"] != message["digest"]
+                or fp["date"] != page_at.date().isoformat() or fp["minute"] != page_at.strftime("%H:%M")):
+            return False, True, "bridge_send_evidence_mismatch"
         sent_at = parse_at(sent["at"])
         if (not parse_at(base["readAt"]) <= sent_at <= read_at
                 or not page_at - timedelta(minutes=2) <= sent_at < page_at + timedelta(minutes=3)):
             return False, True, "bridge_send_time_mismatch"
     if not sequence_equal(all_hr, base["fingerprints"]):
         # 新锚点之后仍可见的新 HR 留给下一次处理；跨锚点丢失则只能本人核对。
-        hidden = [bridge[i] for i in range(start, us[-1]) if raw_bridge[i]["speaker"] == "hr"]
+        hidden = [bridge[i] for i in range(start, us[-1]) if proof[i]["speaker"] == "hr"]
         return False, not sequence_equal(hidden, base["fingerprints"]), "bridge_new_hr"
     return True, False, "bridge_verified"
+
+
+def tail_outcome(events, ev, state=None):
+    """线性处理历史前缀；比较与未决语义不信任事件自报的结果布尔。"""
+    thread = ev["threadKey"]
+    state = state if state is not None else tail_state(events, thread)
+    base = state["tails"].get(ev["baseTailId"])
+    explicit = ev["baseExplicit"]
+    if explicit and base is None:
+        raise LedgerError("显式 baseTailId 不属于该会话")
+    if not explicit and ev["baseTailId"] != (state["handled"]["tailId"] if state["handled"] else None):
+        raise LedgerError("默认 baseTailId 须为该会话最近 handled")
+    result, count, reason = compare_tail(base, ev["anchor"], ev["fingerprints"], ev["complete"], ev["anchorUnique"])
+    review = state["review"] or result == "mismatch"
+    settled = explicit and result == "same"
+    # 每次判定只聚合一次尝试；bridge 内逐条引用，不逐消息重扫全表。
+    atts = attempts_of(events)
+    thread_atts = [a for a in atts.values() if event_keys(a)[0] == thread]
+    if ev["anchor"] == "start" and any(a["status"] == "sent" for a in thread_atts):
+        result, count, reason, review, settled = "mismatch", None, "start_conflicts_with_sent", True, False
+    if base and result == "new_anchor":
+        settled, failed, reason = bridge_verified(atts, base, ev["anchor"], ev["fingerprints"],
+            ev.get("bridge", []), ev.get("bridgeEvidence", []), ev.get("bridgeComplete", False),
+            ev["runId"], parse_at(ev["readAt"]), ev["platform"], thread)
+        settled = explicit and settled
+        review |= failed
+    if state["pending"]:
+        if not explicit:
+            review, settled, reason = True, False, "pending_base_required"
+        elif state["latest"]["tailId"] != base["tailId"] and compare_tail(base,
+                state["latest"]["anchor"], state["latest"]["fingerprints"],
+                state["latest"]["complete"], state["latest"]["anchorUnique"])[0] != "same":
+            # 旧 base 不能跳过已观察的待处理内容；中间等同读取则不扩大覆盖范围。
+            review, settled, reason = True, False, "pending_base_not_covering_latest"
+    if any(a["status"] in ("pending", "uncertain") for a in thread_atts):
+        review, settled, reason = True, False, "unresolved_send"
+    return {"result": result, "newCount": None if review else count, "reason": reason,
+            "settled": bool(settled and not review), "reviewRequired": bool(review)}
 
 
 def cmd_tail(args, ws):
@@ -1628,32 +1720,18 @@ def cmd_tail(args, ws):
         if base and read_at < parse_at(base["readAt"]):
             raise LedgerError("readAt 不能早于基准读取时间")
         complete, unique = body.get("complete", False), body.get("anchorUnique", False)
-        result, count, reason = compare_tail(base, anchor, messages, complete, unique)
-        review = state["review"] or result == "mismatch"
-        settled = bool(args.base and result == "same")
-        if anchor == "start" and any(a["status"] == "sent" and event_keys(a)[0] == args.thread for a in attempts_of(events).values()):
-            result, count, reason, review, settled = "mismatch", None, "start_conflicts_with_sent", True, False
-        if base and result == "new_anchor":
-            settled, failed, reason = bridge_verified(events, base, anchor, messages, raw_bridge, bridge,
-                                                       body.get("bridgeComplete", False), args.run, read_at, tz, platform, args.thread)
-            settled = bool(args.base and settled)
-            review |= failed
-        if state["pending"] and not args.base:
-            review, settled, reason = True, False, "pending_base_required"
-        if any(a["status"] in ("pending", "uncertain") and event_keys(a)[0] == args.thread for a in attempts_of(events).values()):
-            review, settled, reason = True, False, "unresolved_send"
-        settled = settled and not review
-        if review:
-            count = None
         ev = {key: source.get(key) for key in ("platform", "account", "company", "title", "location", "recruiter", "jobId", "targetRole")}
         ev.update(schemaVersion=SCHEMA_VERSION, runId=args.run, skill=lock["skill"], kind="observe", observed="tail",
-                  at=fsutil.now(tz).isoformat(), attemptId="att-" + uuid.uuid4().hex[:12], reason=reason, evidence=None,
+                  at=fsutil.now(tz).isoformat(), attemptId="att-" + uuid.uuid4().hex[:12], evidence=None,
                   tailId="tail-" + uuid.uuid4().hex[:12], baseTailId=base["tailId"] if base else None,
-                  result=result, newCount=count, anchor=anchor, fingerprints=messages, readAt=args.read_at,
-                  complete=complete, anchorUnique=unique, settled=settled, reviewRequired=review)
+                  baseExplicit=bool(args.base), anchor=anchor, fingerprints=messages, readAt=args.read_at,
+                  complete=complete, anchorUnique=unique)
         if "bridge" in body:
-            ev.update(bridge=bridge, bridgeComplete=body.get("bridgeComplete", False))
+            ev.update(bridge=bridge, bridgeComplete=body.get("bridgeComplete", False),
+                      bridgeEvidence=bridge_evidence(raw_bridge, base, read_at, tz, platform,
+                          {e["attemptId"] for e in events if e["kind"] in ACTION_KINDS}))
         ev = prepare_event(ev)
+        ev.update(tail_outcome(events, ev, state))
         errors = validate_event(ev)
         if errors:
             raise LedgerError("尾部事件无效：" + "；".join(errors))
