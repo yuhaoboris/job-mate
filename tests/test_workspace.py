@@ -919,8 +919,8 @@ class WorkspaceIsolationTest(unittest.TestCase):
         event["runId"] = no_send
         self.assertEqual(self.led("prepare", "--run", no_send, "--json", json.dumps(intent))[0], 1)
         code, out = self.led("guard", "--run", no_send, "--attempt", attempt)
-        self.assertEqual(code, 2)
-        self.assertIn("禁发", out["error"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out["reasons"][0]["code"], "lock_invalid")  # 原尝试已收尾且属于上一轮
 
     def test_reacquire_same_run_never_changes_no_send(self):
         for no_send in (False, True):

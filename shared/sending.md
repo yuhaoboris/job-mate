@@ -21,6 +21,10 @@ check 接收同一份完整 JSON 意图及 run，只读调用同一判定路径�
 
 status、runId、skill、at、各ID、派生键、authorizedBy、decisionVersion、dedupGrant、profileRev、styleRev、内部绑定均由脚本生成。prepare 不收这些字段；append 终态只带原 attemptId 与已见事实，冻结字段由原 pending 继承，不能自行覆盖。本人批准原文含空白、换行、全角字符时逐字输入，不 trim、不规范化。
 
+## 点击前复查
+
+guard 只复核原 pending：当前有效锁/账号、本轮限制、原授权来源及绑定、全局/会话暂停、接管、关闭、停止名单、其他未决、决定有效版本或 ack 的同目标邀约与去重。自身 pending 不算其他未决，额度包含自身但不二次扣减；已用等于上限仍可执行该 pending。原来源失效不另选 grant 或长期授权；被新版废止的 pending 保留待核对，不抹去。dedupGrant 也须仍存在、绑定匹配且恰已占用一次。拒绝返回相同的 reasons/code/message 结构、退出1；参数或损坏数据退出2。通过才续锁并立即操作，等待或工具异常后重读页面重新 guard。
+
 ## 本轮限制先于授权
 
 取锁前先问清动作、目标及数量。只看不发用 --no-send；明确收窄要求用单次 --restrict：

@@ -116,12 +116,12 @@ class AccountTest(unittest.TestCase):
         aid = "att-duplicate"
         self.x.event(kind="reply", status="pending", attemptId=aid)
         self.current("second")
-        self.x.event(kind="reply", status="pending", attemptId=aid)
+        self.x.event(kind="reply", status="pending", attemptId=aid, authorizedBy="long_term", text="合成待发")
         self.assertEqual(self.f.run_cli("guard", "--run", "run-tail", "--attempt", aid)[0], 2)
         self.assertEqual(self.f.run_cli("guard", "--run", "run-tail", "--attempt", aid,
                                        "--platform", "boss", "--account", "second")[0], 0)
         self.assertEqual(self.f.run_cli("guard", "--run", "run-tail", "--attempt", aid,
-                                       "--platform", "boss", "--account", "boss-main")[0], 2)
+                                       "--platform", "boss", "--account", "boss-main")[0], 1)
 
     def test_release_preserves_both_colliding_local_ids(self):
         for key in ("boss-main", "second"):

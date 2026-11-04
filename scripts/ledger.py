@@ -1638,10 +1638,11 @@ def cmd_decision(args, ws):
 # ---------- 命令：guard ----------
 
 def cmd_guard(args, ws):
-    """可能外发的每次 UI 操作（点击沟通、发送、同意）之前调用：确认仍持锁、尝试仍待定，并续期。"""
-    tz = tz_of(load_profile(ws))
+    """点击前只复查同一 pending；不重选权限、不再次占额。"""
     with lock_mutex(ws):
-        require_live_lock(ws, args.run, tz, renew=True)
+        profile = load_profile(ws)
+        tz = tz_of(profile)
+        lock = read_lock(ws)
         events, _ = read_events(ws)
         candidates = [a for a in attempts_of(events).values() if a["attemptId"] == args.attempt
                       and (args.platform is None or a["platform"] == args.platform)
@@ -1653,14 +1654,21 @@ def cmd_guard(args, ws):
             raise LedgerError(f"找不到 attempt {args.attempt}")
         if len(candidates) != 1:
             raise LedgerError("attemptId 存在多个命名空间，请明确 --platform 和 --account")
-        a = candidates[0]
-        resolve_account(ws, a["platform"], a["account"])
-        if a["runId"] != args.run:
-            return emit({"allowed": False, "reason": f"attempt 属于 {a['runId']}，不是本轮"}, 1)
-        if a["status"] != "pending":
-            return emit({"allowed": False,
-                         "reason": f"attempt 当前为 {a['status']}，不能再操作；重新核对页面，不新建尝试"}, 1)
-    return emit({"allowed": True, "attempt": args.attempt, "platform": a["platform"], "account": a["account"]})
+        attempt = candidates[0]
+        if attempt["runId"] != args.run or attempt["status"] != "pending":
+            return emit(outbound.deny("lock_invalid", f"attempt 不属于本轮 pending（当前 {attempt['status']}）"), 1)
+        try:
+            resolve_account(ws, attempt["platform"], attempt["account"])
+        except LedgerError:
+            return emit(outbound.deny("lock_invalid", "原 pending 的平台账号不匹配当前配置"), 1)
+        first = next(e for e in attempt["events"] if e["status"] == "pending")
+        if lock and first.get("runPolicyRev") not in (None, run_policy_rev(lock)):
+            return emit(outbound.deny("lock_invalid", "原 pending 的本轮冻结策略已改变"), 1)
+        result = outbound.evaluate(sys.modules[__name__], ws, first, args.run, lock, events, profile, current=first)
+        if result["allowed"]:
+            require_live_lock(ws, args.run, tz, renew=True)
+            result.update(attempt=args.attempt, platform=attempt["platform"], account=attempt["account"])
+        return emit(result, 0 if result["allowed"] else 1)
 
 
 # ---------- 命令：append ----------

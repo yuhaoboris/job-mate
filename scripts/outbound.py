@@ -11,7 +11,7 @@ def deny(code, message, retry=None):
     return out
 
 
-def declaration_check(L, ev, events):
+def declaration_check(L, ev, events, current=None):
     decision, step = ev.get("decision"), ev.get("step")
     declarations = [e for e in events if e["kind"] == "observe" and e.get("observed") == "decision"
                     and e.get("decision") == decision]
@@ -21,8 +21,10 @@ def declaration_check(L, ev, events):
     owner = next((e for e in declarations if any(s["step"] == step for s in e["steps"])), None)
     if owner is None:
         return deny("decision_not_registered", "该步骤未登记"), None
-    if owner is not latest:
-        return deny("decision_superseded", "该步骤不属于有效决定版本"), None
+    if owner is not latest or (current is not None and current.get("decisionVersion") != latest["version"]):
+        return deny("decision_superseded", "该步骤不属于冻结的有效决定版本"), None
+    if current is not None and latest.get("_line", 0) >= current.get("_line", 0):
+        return deny("decision_not_registered", "该决定并未在原 pending 前登记"), None
     attempts = [a for a in L.attempts_of(events).values() if any(e.get("decision") == decision for e in a["events"])]
     if any(a["status"] in ("pending", "uncertain") for a in attempts):
         return deny("decision_unresolved", "该事项仍有未决尝试，先本人核对"), None
@@ -39,9 +41,14 @@ def declaration_check(L, ev, events):
     return None, latest["version"]
 
 
-def evaluate(L, ws, ev, run, lock, events, profile):
+def evaluate(L, ws, ev, run, lock, events, profile, current=None):
     """只计算结果，不写事件、不续锁；prepare 在同一协调区内使用此结果。"""
     now, tz = L.fsutil.now(L.tz_of(profile)), L.tz_of(profile)
+    checking = current is not None
+    other_events = [e for e in events if not (checking and e["kind"] in L.ACTION_KINDS
+                    and L.attempt_key(e) == L.attempt_key(current))]
+    def exhausted(used, maximum):
+        return maximum != "unlimited" and (used > maximum if checking else used >= maximum)
     if not lock or lock.get("runId") != run or lock.get("releasing") or L.lock_expired(lock, now) or lock.get("skill") == "setup":
         if lock and lock.get("mode") == "recovery":
             return deny("recovery_lock_only", "恢复锁不能外发")
@@ -57,7 +64,7 @@ def evaluate(L, ws, ev, run, lock, events, profile):
             return deny("run_kind_restricted", "动作不在本轮允许集合")
         if not L.scope_covers(rule, bindings.get("restriction", []), ev):
             return deny("run_scope_restricted", "目标不在本轮冻结范围")
-        if rule["max"] != "unlimited" and L.pending_uses(events, run, rule["kinds"]) >= rule["max"]:
+        if exhausted(L.pending_uses(events, run, rule["kinds"]), rule["max"]):
             return deny("run_limit_exhausted", "本轮全部授权来源合计次数已满")
     kind, decision, step = ev["kind"], ev.get("decision"), ev.get("step")
     dedup_grant = None
@@ -78,11 +85,12 @@ def evaluate(L, ws, ev, run, lock, events, profile):
     source, version = None, None
     if ack:
         invitation = next((e for e in events if e["kind"] == "observe" and e.get("observed") == "interview_invited"
-                           and e.get("decision") == decision and L.thread_scope(e) == L.thread_scope(ev)), None)
+                           and e.get("decision") == decision and L.thread_scope(e) == L.thread_scope(ev)
+                           and (not checking or e.get("_line", 0) < current.get("_line", 0))), None)
         if kind != "reply" or invitation is None or L.attempt_target_conflict(
                 {"platform": ev["platform"], "events": [ev]}, invitation):
             return deny("ack_invalid_invitation", "ack 必须关联同一原始目标的已登记邀约")
-        if any(a["step"] == "ack" and a["decision"] == decision for a in L.attempts_of(events).values()):
+        if any(a["step"] == "ack" and a["decision"] == decision for a in L.attempts_of(other_events).values()):
             return deny("ack_duplicate", "该事项已有 ack 尝试，不重复发送")
         text = unicodedata.normalize("NFKC", ev.get("text") or "")
         if re.search(r"\d", text) or any(word in text for word in ("点", "号", "周", "星期", "今天", "明天", "后天", "上午", "下午", "晚上")):
@@ -90,24 +98,35 @@ def evaluate(L, ws, ev, run, lock, events, profile):
     elif approved:
         if kind not in ("reply", "resume"):
             return deny("not_authorized", "此动作不能通过本人事项决定授权")
-        problem, version = declaration_check(L, ev, events)
+        problem, version = declaration_check(L, ev, other_events, current)
         if problem:
             return problem
         source = f"decision:{decision}@v{version}"
     if source is None:
         long_term = apply.get("send", False) if kind in ("greet", "intro") else followup.get("reply", "L2") == "L2"
-        if long_term:
+        frozen_source = current.get("authorizedBy") if checking else None
+        if checking and frozen_source == "long_term" and not long_term:
+            return deny("not_authorized", "原长期授权已失效，不更换授权来源")
+        if long_term and (not checking or frozen_source == "long_term"):
             source = "long_term"
         else:
             item = "apply_send" if kind in ("greet", "intro") else "reply"
-            grants = [g for g in lock.get("grants", []) if g["item"] == item]
+            grants = [g for g in lock.get("grants", []) if g["item"] == item
+                      and (not checking or frozen_source == "grant:" + g["id"])]
             covered = [g for g in grants if L.scope_covers(g, bindings.get(g["id"], []), ev)]
-            usable = [g for g in covered if g["max"] == "unlimited"
-                      or L.pending_uses(events, run, authorized_by="grant:" + g["id"]) < g["max"]]
+            usable = [g for g in covered if not exhausted(L.pending_uses(events, run, authorized_by="grant:" + g["id"]), g["max"])]
             if not usable:
                 code = "grant_exhausted" if covered else "grant_out_of_scope" if grants else "not_authorized"
                 return deny(code, "缺少覆盖目标且仍有额度的发送授权")
             source = "grant:" + usable[0]["id"]
+    if checking and source != current.get("authorizedBy"):
+        return deny("not_authorized", "pending 的冻结授权来源无效，不能重新选源")
+    if checking and current.get("dedupGrant"):
+        dedup_grant = current["dedupGrant"]
+        grant = next((g for g in lock.get("grants", []) if g["id"] == dedup_grant and g["item"] == "dedup_once"), None)
+        if (not grant or not L.scope_covers(grant, bindings.get(dedup_grant, []), ev)
+                or L.pending_uses(events, run, dedup_grant=dedup_grant) != 1):
+            return deny("already_contacted", "pending 的去重豁免已失效或目标/已占额度不符")
     if L.read_pause(ws):
         return deny("paused", "工作区已全局暂停")
     limits = L.effective_limits(profile, ev["platform"])
@@ -130,7 +149,7 @@ def evaluate(L, ws, ev, run, lock, events, profile):
             maximum = 150 if kind == "reply" else 100 if style.get("length") == "medium" else 60
             if len(text) > maximum:
                 return deny("too_long", f"文字超过 {maximum} 个 Unicode 字符")
-    same_account = [e for e in events if e["platform"] == ev["platform"] and e["account"] == ev["account"]]
+    same_account = [e for e in other_events if e["platform"] == ev["platform"] and e["account"] == ev["account"]]
     latest = [L.parse_at(e["at"]) for e in same_account if e["kind"] in L.ACTION_KINDS and e["status"] in ("pending", "sent")]
     if latest:
         wait = limits["minSendIntervalSeconds"] - (now - max(latest)).total_seconds()
@@ -143,7 +162,7 @@ def evaluate(L, ws, ev, run, lock, events, profile):
     if kind == "greet":
         for reason in L.company_observation_reasons(events, ev["platform"], ev["account"], ev["company"]):
             return deny("company_risk" if reason["type"] == "risk" else "company_rejected", reason["detail"])
-    threads = L.build_threads(events, ev["platform"], profile, ev["account"])
+    threads = L.build_threads(other_events, ev["platform"], profile, ev["account"])
     thread = threads.get(L.thread_key(ev))
     if thread:
         if thread["manual"]:
@@ -161,20 +180,22 @@ def evaluate(L, ws, ev, run, lock, events, profile):
     if kind == "greet":
         args = argparse.Namespace(platform=ev["platform"], account=ev["account"], company=ev["company"],
                                   title=ev.get("title"), job_id=ev.get("jobId"), job_url=ev.get("jobUrl"), run=run)
-        reasons, _ = L.first_contact_reasons(args, events, limits["dedupScope"])
+        reasons, _ = L.first_contact_reasons(args, other_events, limits["dedupScope"])
         page = ev.get("pageState", {})
         if not isinstance(page, dict) or ("contacted" in page and type(page["contacted"]) is not bool):
             raise L.LedgerError("pageState 须为对象，contacted 为页面已联系状态的布尔值")
         if page.get("contacted"):
             return deny("already_contacted", "平台页面已联系，不能再次点击首次沟通")
         if reasons:
-            unresolved_keys = {L.attempt_key(a) for a in attempts if a["status"] in ("pending", "uncertain")}
+            unresolved_keys = {L.attempt_key(a) for a in L.attempts_of(other_events).values() if a["status"] in ("pending", "uncertain")}
             unresolved_events = [e for e in events if e["kind"] in L.ACTION_KINDS and L.attempt_key(e) in unresolved_keys]
             if L.first_contact_reasons(args, unresolved_events, limits["dedupScope"])[0]:
                 return deny("unresolved", "去重相关目标仍有未确认外发，不能使用豁免")
             waiver = next((g for g in lock.get("grants", []) if g["item"] == "dedup_once"
                            and L.scope_covers(g, bindings.get(g["id"], []), ev)
-                           and L.pending_uses(events, run, dedup_grant=g["id"]) < 1), None)
+                           and ((checking and current.get("dedupGrant") == g["id"]
+                                 and L.pending_uses(events, run, dedup_grant=g["id"]) == 1)
+                                or (not checking and L.pending_uses(events, run, dedup_grant=g["id"]) < 1))), None)
             if waiver:
                 dedup_grant = waiver["id"]
             else:
@@ -182,9 +203,9 @@ def evaluate(L, ws, ev, run, lock, events, profile):
                 return deny("reposted_suspect" if reason["type"] == "reposted_suspect" else "already_contacted", reason["detail"])
         greets = [a for a in attempts if a["platform"] == ev["platform"] and a["account"] == ev["account"]
                   and a["kind"] == "greet" and a["everPending"]]
-        if sum(a["runId"] == run for a in greets) >= limits["greetsPerRun"]:
+        if exhausted(sum(a["runId"] == run for a in greets), limits["greetsPerRun"]):
             return deny("quota_run", "本轮招呼配额已满")
-        if sum(L.parse_at(a["firstAt"]).astimezone(tz).date() == now.date() for a in greets) >= limits["greetsPerDay"]:
+        if exhausted(sum(L.parse_at(a["firstAt"]).astimezone(tz).date() == now.date() for a in greets), limits["greetsPerDay"]):
             return deny("quota_day", "当日招呼配额已满")
         hours = profile.get("schedule", {}).get("activeHours", {"weekdays": [1, 2, 3, 4, 5], "start": "09:00", "end": "18:00"})
         active = now.isoweekday() in hours["weekdays"] and hours["start"] <= now.strftime("%H:%M") < hours["end"]
