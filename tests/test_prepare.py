@@ -57,7 +57,7 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(ledger.events_path(self.f.ws).read_bytes(), before)
 
     def test_restriction_precedes_authorization_and_never_grants_permission(self):
-        ledger.write_atomic(self.f.ws / "profile.json", json.dumps({"authorization": {"followup": {"reply": "L1"}}}))
+        ledger.write_atomic(self.f.ws / "profile.json", json.dumps({"schemaVersion": 1, "authorization": {"followup": {"reply": "L1"}}}))
         self.assertEqual(self.acquire(self.restriction(scope={"companies": ["甲公司"]}))[0], 0)
         code, out = self.prepare(company="乙公司")
         self.assertEqual(code, 1, out)
@@ -69,7 +69,7 @@ class PrepareTest(unittest.TestCase):
     def reset_case(self):
         self.f.tearDown()
         self.f.setUp()
-        self.profile = {"authorization": {"apply": {"send": True}, "followup": {"reply": "L2"}},
+        self.profile = {"schemaVersion": 1, "authorization": {"apply": {"send": True}, "followup": {"reply": "L2"}},
                         "limits": {"minSendIntervalSeconds": 0}}
         self.save_profile()
         self.assertEqual(self.acquire()[0], 0)

@@ -70,7 +70,7 @@ class NotifyTest(unittest.TestCase):
         im.update(changes)
         if im["channel"] == "none":
             im = {"channel": "none"}
-        (self.ws / "profile.json").write_text(json.dumps({"schemaVersion": 2, "im": im}))
+        (self.ws / "profile.json").write_text(json.dumps({"schemaVersion": 1, "im": im}))
 
     def inbox(self, *items):
         (self.ws / "inbox" / "decisions.md").write_text("# 待本人决定\n\n" + "\n".join(f"## {i} {s}\n\n- 问题：示例\n" for i, s in items))
@@ -665,7 +665,7 @@ class NotifyTest(unittest.TestCase):
 
     def test_explicit_null_im_and_invalid_wait_rejected(self):
         for im in (None, [], False, "runtime", {"channel": None}, {"channel": []}):
-            (self.ws / "profile.json").write_text(json.dumps({"im": im}))
+            (self.ws / "profile.json").write_text(json.dumps({"schemaVersion": 1, "im": im}))
             code, out = self.run_cmd("poll")
             self.assertEqual(code, 2, out)
             self.assertIn("error", out)

@@ -13,7 +13,7 @@ import test_prepare
 W, L = test_workspace.workspace, test_workspace.ledger
 C = W.config_schema
 ROOT = Path(__file__).resolve().parents[1]
-BASE = {"schemaVersion": 2, "targetRoles": ["合成开发岗位"], "locations": [],
+BASE = {"schemaVersion": 1, "targetRoles": ["合成开发岗位"], "locations": [],
         "authorization": {"apply": {"send": False}}}
 
 
@@ -30,6 +30,22 @@ def changed(path, value):
 
 
 class ProfileTest(unittest.TestCase):
+    def test_profile_format_1_only_without_conversion_or_boolean_coercion(self):
+        """设计4：此前沿用2并把1判错；现以唯一格式1为正例，其他版本不迁移。"""
+        for version in (1, 2, 0, 3, True, False, 1.0, "1", None):
+            with self.subTest(version=version):
+                p = changed("schemaVersion", version)
+                before = copy.deepcopy(p)
+                if type(version) is int and version == 1:
+                    C.profile(p)
+                    self.assertEqual(L.effective_profile(p)["schemaVersion"], 1)
+                else:
+                    with self.assertRaises(L.LedgerError):
+                        C.profile(p)
+                    with self.assertRaises(L.LedgerError):
+                        L.effective_profile(p)
+                self.assertEqual(p, before)
+
     def test_each_typed_rule_accepts_and_rejects(self):
         rules = (
             ("style.tone", ["polite", "friendly", "concise"], ["formal", 1, None, []]),
@@ -83,7 +99,7 @@ class ProfileTest(unittest.TestCase):
                     self.assertTrue(C.profile_issues(p))
                     with self.assertRaises(L.LedgerError):
                         L.effective_profile(p)
-        for path, value in (("unknown", {}), ("schemaVersion", True), ("schemaVersion", 1),
+        for path, value in (("unknown", {}), ("schemaVersion", True), ("schemaVersion", 2),
                             ("authorization.followup.level", "L2"), ("authorization.followup", {"reply": "L3"}),
                             ("targetRoles", []), ("targetRoles", [True]), ("locations", [None])):
             with self.subTest(path=path):
@@ -158,7 +174,7 @@ class ProfileTest(unittest.TestCase):
                 L.effective_profile({"nudge": {"intervalHours": 0, "platforms": {"boss": {"intervalHours": 1}}}}, "boss")
 
     def test_strict_json_rejects_duplicate_and_nonfinite_numbers(self):
-        for raw in ('{"schemaVersion":2,"schemaVersion":2}', '{"x":NaN}', '{"x":Infinity}', '{"x":1e999}'):
+        for raw in ('{"schemaVersion":1,"schemaVersion":1}', '{"x":NaN}', '{"x":Infinity}', '{"x":1e999}'):
             with self.subTest(raw=raw), self.assertRaises((L.LedgerError, ValueError)):
                 C.json_value(raw)
 

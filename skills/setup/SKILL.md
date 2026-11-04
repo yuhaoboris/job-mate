@@ -55,7 +55,7 @@ description: 建立、重新设置、部分重设、修改或体检 job-mate 求
 
 新建共 22 步。典型模式预记 browser、activity、inquiry、pacing 为 default，汇总展示、本人可改；自定义全部逐步问。nudge 在两种模式都要问独立开关，不能预答。重新设置不含 directory；部分重设按所选阶段/步骤与依赖生成计划，不扩大写入范围。
 
-依赖复核：candidate 改后复核 qa、style.selfIntro、greeting；roles 或 style 改后复核 greeting。部分选择 style 即带入 greeting。按脚本返回顺序插入，清除有关的已答项、保留其他回答，以 added 说明来源。candidate 带入 style 时只复核 selfIntro，保留已有语气、长短、称呼、禁词和 emoji；不能顺便重置其他风格或授权。保留、不改事实不触发新复核。最后汇总与提交不另算步骤。
+依赖复核：candidate 改后复核 qa、style.selfIntro、greeting；roles 或 style 改后复核 greeting。部分选择 style 即带入 greeting。按脚本返回顺序插入，清除有关的已答项、保留其他回答，以 added 说明来源。candidate 带入 style 时只复核 selfIntro，保留已有语气、长短、称呼、禁词和 emoji；不能顺便重置其他风格或授权。changed/default 均按潜在变更复核；kept 不触发。最后汇总与提交不另算步骤。
 
 ## 3. 引导流程
 

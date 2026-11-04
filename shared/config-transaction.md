@@ -11,7 +11,7 @@ python3 <技能目录>/scripts/workspace.py --workspace <工作区> commit --sta
 ```
 
 - 白名单：job-mate.json、profile.json、stoplist.yaml、candidate.md、qa.yaml、rules.md、resumes/index.yaml。暂存只含本次要替换的文件，未选配置不改；不含草稿、简历附件、事件、脚本或额外目录。首次新增配置也可提交。只有停止名单操作时可用空暂存目录。
-- 文件是完整内容，不是 JSON patch。JSON 拒绝重复键、未知字段、未知 schemaVersion 和非法值；profile 使用当前 schemaVersion:2 的完整结构。YAML 使用工作区说明中的逐条键值/内联数组格式，拒绝未知字段；简历索引的 uploaded 用内联映射。字段校验不代替 `progress finish` 的完整工作区体检。
+- 文件是完整内容，不是 JSON patch。JSON 拒绝重复键、未知字段、未知 schemaVersion 和非法值；profile 仅接受 schemaVersion:1 的完整结构，不兼容或迁移其他版本。YAML 使用工作区说明中的逐条键值/内联数组格式，拒绝未知字段；简历索引的 uploaded 用内联映射。字段校验不代替 `progress finish` 的完整工作区体检。
 - 脚本不依赖当前 profile/停止名单可解析：只校验暂存内容，时区读不出用 Asia/Shanghai。暂存字节在校验前读入并冻结，提交期间换掉源文件不会换掉已校验内容。
 - 成功退出0，返回 committed、txnId、backup、files；读回核对再收尾。错误退出2。普通提交成功时才把较低 suiteVersion 升级到脚本版本，不降级，不在备份前改标记。失败回滚保护提交前原字节。
 

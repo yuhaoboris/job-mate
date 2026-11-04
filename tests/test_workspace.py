@@ -17,7 +17,7 @@ import workspace  # noqa: E402
 import ledger  # noqa: E402
 
 PROFILE = {
-    "schemaVersion": 2,
+    "schemaVersion": 1,
     "targetRoles": ["前端开发"],
     "locations": ["深圳"],
     "salary": {"currency": "CNY", "period": "month", "taxBasis": "pre_tax",

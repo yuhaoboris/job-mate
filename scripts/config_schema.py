@@ -90,6 +90,10 @@ def default_profile():
                          "activeHours": {"weekdays": [1, 2, 3, 4, 5], "start": "09:00", "end": "18:00"}}}
 
 
+def profile_version(value):
+    require(type(value) is int and value == 1, "profile.schemaVersion 应为 1；不读取其他格式")
+
+
 def profile_issues(p, partial=False):
     """体检、事务和运行时共用字段规则；partial 只允许省略必填项，不放宽显式值。"""
     issues = []
@@ -114,7 +118,7 @@ def profile_issues(p, partial=False):
         for key in ("schemaVersion", "targetRoles", "locations", "authorization"):
             need(key, key in p, "缺少必填字段")
     if "schemaVersion" in p:
-        need("schemaVersion", type(p["schemaVersion"]) is int and p["schemaVersion"] == 2, "应为 2")
+        check("schemaVersion", lambda: profile_version(p["schemaVersion"]))
     for key in ("targetRoles", "locations", "hardRequirements"):
         if key in p:
             need(key, strings(p[key]) and (key != "targetRoles" or bool(p[key])), "须为字符串数组，目标职位不可为空")

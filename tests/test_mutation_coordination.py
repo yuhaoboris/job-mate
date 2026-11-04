@@ -123,7 +123,7 @@ class MutationCoordinationTest(unittest.TestCase):
         ws = self.base / f"合成 工作区 {self.number}"
         if create:
             workspace.init_workspace(ws)
-            ledger.write_atomic(ws / "profile.json", json.dumps({"schemaVersion": 2, "im": {
+            ledger.write_atomic(ws / "profile.json", json.dumps({"schemaVersion": 1, "im": {
                 "channel": "lark", "ownerId": "synthetic-owner", "larkProfile": "synthetic-profile"}}))
             ledger.write_atomic(ws / "setup-progress.json", json.dumps({"schemaVersion": 1,
                 "mode": "partial", "plan": ["browser"], "answers": {}, "current": "browser", "added": {}}))

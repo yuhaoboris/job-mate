@@ -25,7 +25,7 @@ class Workspace:
             "schemaVersion": 1, "suiteVersion": "1.0.0", "accounts": {"boss": {"accountKey": "zhipin-test"}},
         }))
         # 生命周期旧用例固定在可发送配置下；授权缺省/真值表由 test_prepare 单独测试。
-        (self.path / "profile.json").write_text(json.dumps({"schemaVersion": 2,
+        (self.path / "profile.json").write_text(json.dumps({"schemaVersion": 1,
             "authorization": {"apply": {"send": True}}, "limits": {"minSendIntervalSeconds": 0},
             "schedule": {"activeHours": {"weekdays": [1, 2, 3, 4, 5, 6, 7], "start": "00:00", "end": "23:59"}}}))
 
@@ -223,7 +223,7 @@ class LedgerTest(unittest.TestCase):
 
     def test_quota_counts_attempts_not_successes(self):
         (self.ws.path / "profile.json").write_text(json.dumps(
-            {"limits": {"greetsPerRun": 2, "greetsPerDay": 3, "minSendIntervalSeconds": 0}}))
+            {"schemaVersion": 1, "limits": {"greetsPerRun": 2, "greetsPerDay": 3, "minSendIntervalSeconds": 0}}))
         self.ws.greet(company="甲")
         self.ws.greet(final="uncertain", company="乙")
         code, out = self.ws.run("quota", "--platform", "boss", "--run", "run-1")
@@ -602,7 +602,7 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(self.ws.run("stoplist", "remove", "--name", "乙公司")[0], 1)
 
     def test_quota_interval_uses_latest_send(self):
-        (self.ws.path / "profile.json").write_text(json.dumps({"limits": {"minSendIntervalSeconds": 5}}))
+        (self.ws.path / "profile.json").write_text(json.dumps({"schemaVersion": 1, "limits": {"minSendIntervalSeconds": 5}}))
         earlier = (datetime.now(TZ) - timedelta(seconds=20)).isoformat(timespec="seconds")
         aid = self.ws.greet(final=None, at=earlier)
         self.ws.append(status="sent", attemptId=aid)

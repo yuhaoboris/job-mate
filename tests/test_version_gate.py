@@ -158,7 +158,7 @@ class VersionGateTest(unittest.TestCase):
         meta = ledger.read_json(ws / ledger.MARKER)
         meta["suiteVersion"] = version
         ledger.write_atomic(ws / ledger.MARKER, json.dumps(meta))
-        ledger.write_atomic(ws / "profile.json", json.dumps({"schemaVersion": 2, "im": {"channel": "none"}}))
+        ledger.write_atomic(ws / "profile.json", json.dumps({"schemaVersion": 1, "im": {"channel": "none"}}))
         ledger.write_atomic(ws / "rules.md", "当前规则")
         ledger.write_atomic(ws / "setup-progress.json", json.dumps({
             "schemaVersion": 1, "mode": "partial", "plan": ["browser"], "answers": {},

@@ -86,7 +86,7 @@ class AccountTest(unittest.TestCase):
         self.x.action(kind="greet")
         self.x.event(kind="observe", observed="rejected")
         self.current("second")
-        ledger.write_atomic(self.f.ws / "profile.json", json.dumps({"authorization": {"apply": {"send": True}}}))
+        ledger.write_atomic(self.f.ws / "profile.json", json.dumps({"schemaVersion": 1, "authorization": {"apply": {"send": True}}}))
         code, out = self.f.run_cli("check", "--platform", "boss", "--company", "合成公司", "--run", "run-tail",
                                    "--text", "合成招呼", "--target-role", "开发")
         self.assertEqual(code, 0, out)

@@ -228,8 +228,8 @@ def read_json(path, default=None):
         raise LedgerError(f"{path.name} 不是有效 JSON：{e}")
 
 
-def load_profile(ws):
-    # 保留原始显式字段，避免全局缺省遮住平台 defaultLimits；消费处再合并。
+def read_profile(ws):
+    # 体检读取原始字段以报告格式问题，不把缺省值或错误格式写回。
     import config_schema
     path = ws / "profile.json"
     if not path.exists():
@@ -240,6 +240,20 @@ def load_profile(ws):
         return result
     except (config_schema.ledger.LedgerError, ValueError) as error:
         raise LedgerError("profile.json 无效：" + str(error)) from error
+
+
+def load_profile(ws):
+    # 缺文件仍允许骨架/恢复场景；存在的正式 profile 必须明确使用唯一格式1。
+    if not (ws / "profile.json").exists():
+        return {}
+    result = read_profile(ws)
+    import config_schema
+    try:
+        config_schema.profile_version(result.get("schemaVersion"))
+    except config_schema.ledger.LedgerError as error:
+        raise LedgerError(str(error)) from error
+    # 保留原始显式字段，消费处再合并，避免全局缺省遮住平台 defaultLimits。
+    return result
 
 
 def effective_profile(profile, platform_id=None):

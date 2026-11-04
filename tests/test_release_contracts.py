@@ -95,7 +95,7 @@ class ReleaseRecoveryDataTest(unittest.TestCase):
         self.ws = Path(self.tmp.name)
         (self.ws / "job-mate.json").write_text(json.dumps({
             "schemaVersion": 1, "suiteVersion": "1.0.0", "accounts": {"boss": {"accountKey": "synthetic"}}}))
-        (self.ws / "profile.json").write_text(json.dumps({"schemaVersion": 2}))
+        (self.ws / "profile.json").write_text(json.dumps({"schemaVersion": 1}))
         (self.ws / "inbox").mkdir()
         self.inbox = self.ws / "inbox/decisions.md"
         self.inbox.write_text("# 合成工作区，无待决定事项\n")

@@ -175,7 +175,7 @@ class PlatformTest(unittest.TestCase):
         url = "https://jobs.example.invalid/jobs/AB-12?keep=yes#section"
         ev = {"platform": "testplat", "runId": "synthetic", "skill": "apply", "kind": "greet",
               "status": "pending", "company": "合成公司", "title": "合成岗位", "reason": "离线合成测试", "jobUrl": url}
-        ledger.write_atomic(ws / "profile.json", json.dumps({"authorization": {"apply": {"send": True}},
+        ledger.write_atomic(ws / "profile.json", json.dumps({"schemaVersion": 1, "authorization": {"apply": {"send": True}},
             "limits": {"minSendIntervalSeconds": 0}, "schedule": {"activeHours": {
                 "weekdays": [1, 2, 3, 4, 5, 6, 7], "start": "00:00", "end": "23:59"}}}))
         intent = {k: v for k, v in ev.items() if k in ledger.INTENT_FIELDS}

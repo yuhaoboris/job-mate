@@ -262,7 +262,7 @@ def check_workspace(ws, include_progress=True):
             if not (isinstance(acc, dict) and acc.get("accountKey") and acc.get("displayName")):
                 problems.append({"file": MARKER, "field": f"accounts.{plat}", "problem": "需要 accountKey 与 displayName"})
         if (ws / "profile.json").exists():
-            check_profile(ledger.load_profile(ws), problems, warnings)
+            check_profile(ledger.read_profile(ws), problems, warnings)
     except ledger.LedgerError as e:
         problems.append({"problem": str(e)})
     if (ws / "qa.yaml").exists():
@@ -630,7 +630,8 @@ def cmd_progress(args):
             validate_im_answer(value, args.status)
         draft["answers"][args.step] = {"status": args.status, "value": value, "source": args.source,
                                       "at": fsutil.now().astimezone().isoformat(timespec="seconds")}
-        if args.status == "changed":
+        if args.status in {"changed", "default"}:
+            # 默认值也可能改变原值；保守复核依赖，不碰无关回答或正式配置。
             for review in step.get("review", []):
                 if review not in draft["plan"]:
                     draft["plan"].append(review)

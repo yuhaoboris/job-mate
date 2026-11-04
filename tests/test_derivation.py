@@ -33,7 +33,7 @@ class DerivationTest(unittest.TestCase):
         return next(t for t in self.threads()["threads"] if t["recruiter"] == self.f.identity["recruiter"])
 
     def profile(self, priority):
-        ledger.write_atomic(self.f.ws / "profile.json", json.dumps({"inquiry": {"priority": priority}}))
+        ledger.write_atomic(self.f.ws / "profile.json", json.dumps({"schemaVersion": 1, "inquiry": {"priority": priority}}))
 
     def action(self, final="sent", **fields):
         fields = {"kind": "reply", "text": "合成问题", **fields}
@@ -329,7 +329,7 @@ class DerivationTest(unittest.TestCase):
 
     def test_invalid_inquiry_is_a_structured_error_not_silently_changed_priority(self):
         for inquiry in (None, [], {"priority": "hours"}, {"priority": ["unknown"]}):
-            ledger.write_atomic(self.f.ws / "profile.json", json.dumps({"inquiry": inquiry}))
+            ledger.write_atomic(self.f.ws / "profile.json", json.dumps({"schemaVersion": 1, "inquiry": inquiry}))
             code, out = self.f.run_cli("threads")
             self.assertEqual(code, 2, out)
             self.assertIn("inquiry", out["error"])

@@ -90,7 +90,7 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "updatedAt": "2026-10-28T10:00:00+08:00",
   "targetRoles": ["AI 应用工程师", "前端开发工程师"],
   "locations": ["杭州", "上海"],
@@ -130,7 +130,7 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
 ```
 
 - `browser` 只允许 `headedInput` 布尔值，缺省 false；表示是否允许占用键盘鼠标的前台输入，不记录工具名，不授予外发权限。能力另按执行契约自检。
-- 缺可选字段给 warnings；显式非法值、未知字段给 problems，不用默认掩盖。体检、事务与 ledger 共用 `effective_profile()`，只读合并、不写回；profile 格式版本仍为 2。
+- 缺可选字段给 warnings；显式非法值、未知字段给 problems，不用默认掩盖。体检、事务与 ledger 共用 `effective_profile()`，只读合并、不写回；profile 仅支持格式版本 1，不兼容或迁移其他版本。
 - `targetRoles`、`locations` 按优先级排列；明确不限地点时用空数组，并在 `rules.md` 说明。
 - `salary.matchRule`：`overlap` 两区间有交集；`lower_bound` 岗位下限不低于 `min`；`contained` 岗位区间完全落在用户区间内。可写成数组，表示同时满足。不限薪资时 `salary` 为 `null`；缺上限时 `max` 为 `null`。
 - `recruiterActivity.maxAgeDays`：招聘者最近活跃距今超过这么多天的职位不打招呼（多半已暂停招聘、只是没关职位）。平台活跃标签与天数的对应见各平台说明；缺省 7（一周以上不活跃的不打招呼）。
