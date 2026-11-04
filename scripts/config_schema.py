@@ -1,4 +1,5 @@
 """配置事务的封闭字段校验；只校验传入内容，不读取当前损坏配置。"""
+import copy
 import json
 import math
 import re
@@ -32,7 +33,11 @@ def json_value(raw):
         return result
     def constant(value):
         raise ValueError("非法 JSON 常量 " + value)
-    return json.loads(raw, object_pairs_hook=unique, parse_constant=constant)
+    def finite(value):
+        result = float(value)
+        require(math.isfinite(result), "JSON 非有限数值")
+        return result
+    return json.loads(raw, object_pairs_hook=unique, parse_constant=constant, parse_float=finite)
 
 
 def text(value):
@@ -69,76 +74,199 @@ def marker(p):
         ledger.parse_at(p["createdAt"])
 
 
-def profile(p):
-    object_fields(p, {"schemaVersion", "updatedAt", "targetRoles", "locations", "salary", "hardRequirements", "exclusions",
-                      "browser", "recruiterActivity", "authorization", "greeting", "limits", "im", "schedule", "style", "inquiry", "nudge"},
-                  {"schemaVersion", "targetRoles", "locations", "authorization"})
-    require(type(p["schemaVersion"]) is int and p["schemaVersion"] == 2, "不支持的 profile 格式，请核对或更新 job-mate")
+def default_profile():
+    """只含政策缺省，不含职位、个人事实或招呼语正文；每次返回独立副本。"""
+    return {"hardRequirements": [],
+            "exclusions": {k: [] for k in ("roleTypes", "employmentTypes", "workSchedules", "keywords")},
+            "recruiterActivity": {"maxAgeDays": 7}, "browser": {"headedInput": False},
+            "style": {"tone": "polite", "length": "short", "address": "neutral",
+                      "bannedWords": ["精通"], "emoji": False},
+            "inquiry": {"priority": list(ledger.DEFAULT_INQUIRY_PRIORITY), "maxPerMessage": 2},
+            "greeting": {"mode": "dynamic"},
+            "authorization": {"apply": {"send": False}, "followup": {"reply": "L2", "nudge": True}},
+            "limits": dict(ledger.DEFAULT_LIMITS, platforms={}), "nudge": dict(ledger.DEFAULT_NUDGE, platforms={}),
+            "im": {"channel": "none"},
+            "schedule": {"timezone": ledger.DEFAULT_TZ,
+                         "activeHours": {"weekdays": [1, 2, 3, 4, 5], "start": "09:00", "end": "18:00"}}}
+
+
+def profile_issues(p, partial=False):
+    """体检、事务和运行时共用字段规则；partial 只允许省略必填项，不放宽显式值。"""
+    issues = []
+
+    def check(field, fn):
+        try:
+            return fn()
+        except (ledger.LedgerError, notify.NotifyError, ValueError) as error:
+            issues.append({"file": "profile.json", "field": field, "problem": str(error)})
+            return None
+
+    def need(field, ok, message="取值无效"):
+        check(field, lambda: require(ok, field + "：" + message))
+
+    if not isinstance(p, dict):
+        need("profile", False, "须为对象")
+        return issues
+    allowed = {*default_profile(), "schemaVersion", "updatedAt", "targetRoles", "locations", "salary"}
+    for key in sorted(set(p) - allowed):
+        need(key, False, "未知字段，请核对或更新 job-mate")
+    if not partial:
+        for key in ("schemaVersion", "targetRoles", "locations", "authorization"):
+            need(key, key in p, "缺少必填字段")
+    if "schemaVersion" in p:
+        need("schemaVersion", type(p["schemaVersion"]) is int and p["schemaVersion"] == 2, "应为 2")
     for key in ("targetRoles", "locations", "hardRequirements"):
         if key in p:
-            require(strings(p[key]) and (key != "targetRoles" or bool(p[key])), key + " 须为字符串数组，目标职位不可为空")
+            need(key, strings(p[key]) and (key != "targetRoles" or bool(p[key])), "须为字符串数组，目标职位不可为空")
     if "updatedAt" in p:
-        require(text(p["updatedAt"]), "updatedAt 须为时间字符串")
-        ledger.parse_at(p["updatedAt"])
-    if p.get("salary") is not None:
-        sal = object_fields(p["salary"], {"currency", "period", "taxBasis", "min", "max", "matchRule"}, {"matchRule"})
-        for key in ("min", "max"):
-            require(sal.get(key) is None or number(sal[key]), "salary 数值无效")
-        require(sal.get("min") is None or sal.get("max") is None or sal["min"] <= sal["max"], "salary 区间倒置")
-        require("currency" not in sal or text(sal["currency"]), "currency 为空")
-        require("period" not in sal or sal["period"] in ("hour", "day", "week", "month", "year"), "period 无效")
-        require("taxBasis" not in sal or sal["taxBasis"] in ("pre_tax", "post_tax"), "taxBasis 无效")
-        rules = sal["matchRule"] if isinstance(sal["matchRule"], list) else [sal["matchRule"]]
-        require(bool(rules) and all(isinstance(v, str) and v in ("overlap", "lower_bound", "contained") for v in rules), "matchRule 无效")
-    exc = object_fields(p.get("exclusions", {}), {"roleTypes", "employmentTypes", "workSchedules", "keywords"})
-    require(all(strings(v) for v in exc.values()), "exclusions 须为字符串数组")
-    object_fields(p.get("browser", {}), set())
-    auth = object_fields(p["authorization"], {"apply", "followup"}, {"apply"})
-    apply = object_fields(auth["apply"], {"send"}, {"send"})
-    require(type(apply["send"]) is bool, "apply.send 须为布尔")
-    follow = object_fields(auth.get("followup", {}), {"reply", "nudge"})
-    require(follow.get("reply", "L2") in ("L1", "L2") and type(follow.get("nudge", True)) is bool, "followup 授权无效")
-    greeting = object_fields(p.get("greeting", {}), {"mode", "text"})
-    require(greeting.get("mode", "dynamic") in ("dynamic", "static"), "greeting.mode 无效")
-    if "text" in greeting:
-        require(text(greeting["text"]) and len(greeting["text"]) <= 80, "招呼语为空或超过80字")
-    require(greeting.get("mode") != "static" or text(greeting.get("text")), "static 缺少文字")
-    ra = object_fields(p.get("recruiterActivity", {}), {"maxAgeDays"})
-    require("maxAgeDays" not in ra or type(ra["maxAgeDays"]) is int and ra["maxAgeDays"] >= 0, "maxAgeDays 无效")
-    for field, defaults, evaluate in (("limits", ledger.DEFAULT_LIMITS, ledger.effective_limits), ("nudge", ledger.DEFAULT_NUDGE, ledger.effective_nudge)):
-        cfg = object_fields(p.get(field, {}), {*defaults, "platforms"})
+        check("updatedAt", lambda: ledger.parse_at(p["updatedAt"]) if text(p["updatedAt"]) else require(False, "须为时间字符串"))
+    if "salary" in p and p["salary"] is not None:
+        sal = check("salary", lambda: object_fields(p["salary"], {"currency", "period", "taxBasis", "min", "max", "matchRule"}, {"matchRule"}))
+        if sal is not None:
+            for key in ("min", "max"):
+                need("salary." + key, sal.get(key) is None or number(sal[key]), "须为有限非负数或 null")
+            if number(sal.get("min")) and number(sal.get("max")):
+                need("salary", sal["min"] <= sal["max"], "区间倒置")
+            for key, choices in (("period", ("hour", "day", "week", "month", "year")), ("taxBasis", ("pre_tax", "post_tax"))):
+                if key in sal:
+                    need("salary." + key, sal[key] in choices)
+            if "currency" in sal:
+                need("salary.currency", text(sal["currency"]))
+            rules = sal["matchRule"] if isinstance(sal["matchRule"], list) else [sal["matchRule"]]
+            need("salary.matchRule", strings(rules) and bool(rules) and all(v in ("overlap", "lower_bound", "contained") for v in rules))
+    for field, keys in (("exclusions", {"roleTypes", "employmentTypes", "workSchedules", "keywords"}),
+                        ("browser", {"headedInput"}), ("authorization", {"apply", "followup"}),
+                        ("greeting", {"mode", "text"}), ("recruiterActivity", {"maxAgeDays"}),
+                        ("schedule", {"timezone", "activeHours"}),
+                        ("style", {"tone", "length", "address", "selfIntro", "bannedWords", "emoji"}),
+                        ("inquiry", {"priority", "maxPerMessage"})):
+        if field not in p:
+            continue
+        cfg = check(field, lambda: object_fields(p[field], keys))
+        if cfg is None:
+            continue
+        if field == "exclusions":
+            for key, value in cfg.items():
+                need(field + "." + key, strings(value), "须为字符串数组")
+        elif field == "browser":
+            need(field, "headedInput" not in cfg or type(cfg["headedInput"]) is bool, "headedInput 须为布尔")
+        elif field == "authorization":
+            if not partial:
+                need("authorization.apply.send", isinstance(cfg.get("apply"), dict) and "send" in cfg["apply"], "缺少明确的布尔授权")
+            for key, fields in (("apply", {"send"}), ("followup", {"reply", "nudge"})):
+                if key not in cfg:
+                    continue
+                entry = check(field + "." + key, lambda: object_fields(cfg[key], fields))
+                if entry is not None:
+                    for name, value in entry.items():
+                        need(field + "." + key + "." + name, value in ("L1", "L2") if name == "reply" else type(value) is bool)
+        elif field == "greeting":
+            if "mode" in cfg:
+                need("greeting.mode", cfg["mode"] in ("dynamic", "static"))
+            if "text" in cfg or cfg.get("mode") == "static":
+                need("greeting.text", text(cfg.get("text")) and len(cfg["text"]) <= 80, "须为 1–80 字原文")
+        elif field == "recruiterActivity":
+            if "maxAgeDays" in cfg:
+                need(field + ".maxAgeDays", type(cfg["maxAgeDays"]) is int and cfg["maxAgeDays"] >= 0)
+        elif field == "schedule":
+            if "timezone" in cfg:
+                check("schedule.timezone", lambda: fsutil.tz_from_name(cfg["timezone"]) if text(cfg["timezone"]) else require(False, "时区为空"))
+            if "activeHours" in cfg:
+                hours = check("schedule.activeHours", lambda: object_fields(cfg["activeHours"], {"weekdays", "start", "end"}, {"weekdays", "start", "end"}))
+                if hours is not None:
+                    days = hours["weekdays"]
+                    need("schedule.activeHours.weekdays", isinstance(days, list) and bool(days) and all(type(v) is int and 1 <= v <= 7 for v in days) and len(set(days)) == len(days))
+                    need("schedule.activeHours", all(isinstance(hours[k], str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", hours[k]) for k in ("start", "end")) and hours["start"] < hours["end"])
+        elif field == "style":
+            for key, choices in (("tone", ("polite", "friendly", "concise")), ("length", ("short", "medium")), ("address", ("neutral", "surname"))):
+                if key in cfg:
+                    need(field + "." + key, cfg[key] in choices)
+            for key in ("selfIntro", "bannedWords"):
+                if key in cfg:
+                    need(field + "." + key, strings(cfg[key]) and (key != "selfIntro" or 1 <= len(cfg[key]) <= 3), "须为字符串数组；selfIntro 须为 1–3 条非空短语")
+            if "emoji" in cfg:
+                need("style.emoji", type(cfg["emoji"]) is bool)
+        elif field == "inquiry":
+            if "priority" in cfg:
+                priority = cfg["priority"]
+                need("inquiry.priority", strings(priority) and len(set(priority)) == len(priority) and all(v in ledger.INFO_GROUPS for v in priority))
+            if "maxPerMessage" in cfg:
+                need("inquiry.maxPerMessage", type(cfg["maxPerMessage"]) is int and cfg["maxPerMessage"] in (1, 2))
+    for field, defaults in (("limits", ledger.DEFAULT_LIMITS), ("nudge", ledger.DEFAULT_NUDGE)):
+        if field not in p:
+            continue
+        cfg = check(field, lambda: object_fields(p[field], {*defaults, "platforms"}))
+        if cfg is None:
+            continue
         overrides = cfg.get("platforms", {})
-        require(isinstance(overrides, dict), field + ".platforms 须为对象")
-        for platform, override in overrides.items():
-            ledger.load_platform(platform)
-            object_fields(override, set(defaults))
-            evaluate(p, platform)
-        evaluate(p, "boss")
-    schedule = object_fields(p.get("schedule", {}), {"timezone", "activeHours"})
-    if "timezone" in schedule:
-        require(text(schedule["timezone"]), "timezone 无效")
-        fsutil.tz_from_name(schedule["timezone"])
-    if "activeHours" in schedule:
-        hours = object_fields(schedule["activeHours"], {"weekdays", "start", "end"}, {"weekdays", "start", "end"})
-        require(isinstance(hours["weekdays"], list) and bool(hours["weekdays"]) and all(type(v) is int and 1 <= v <= 7 for v in hours["weekdays"])
-                and len(set(hours["weekdays"])) == len(hours["weekdays"]), "weekdays 无效")
-        require(all(isinstance(hours[k], str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", hours[k]) for k in ("start", "end"))
-                and hours["start"] < hours["end"], "activeHours 时间区间无效")
-    style = object_fields(p.get("style", {}), {"tone", "length", "address", "selfIntro", "bannedWords", "emoji"})
-    for key, values in (("tone", ("polite", "friendly", "concise")), ("length", ("short", "medium")), ("address", ("neutral", "surname"))):
-        require(key not in style or style[key] in values, "style." + key + " 无效")
-    for key in ("selfIntro", "bannedWords"):
-        require(key not in style or strings(style[key]), "style." + key + " 须为字符串数组")
-    require("selfIntro" not in style or 1 <= len(style["selfIntro"]) <= 3, "selfIntro 须为1–3条")
-    require("emoji" not in style or type(style["emoji"]) is bool, "emoji 须为布尔")
-    inquiry = object_fields(p.get("inquiry", {}), {"priority", "maxPerMessage"})
-    priority = inquiry.get("priority", [])
-    require(strings(priority) and len(set(priority)) == len(priority) and all(v in ledger.INFO_GROUPS for v in priority), "inquiry.priority 无效")
-    require(type(inquiry.get("maxPerMessage", 2)) is int and 1 <= inquiry.get("maxPerMessage", 2) <= 2, "maxPerMessage 无效")
-    try:
-        notify.im_config(p)
-    except notify.NotifyError as error:
-        raise ledger.LedgerError(str(error)) from error
+        if not isinstance(overrides, dict):
+            need(field + ".platforms", False, "须为对象")
+            continue
+        blocks = [(field, {k: v for k, v in cfg.items() if k != "platforms"})]
+        for platform, entry in overrides.items():
+            if check(field + ".platforms." + platform, lambda: ledger.load_platform(platform)) is not None:
+                entry = check(field + ".platforms." + platform, lambda: object_fields(entry, defaults))
+                if entry is not None:
+                    blocks.append((field + ".platforms." + platform, entry))
+        for path, block in blocks:
+            for key, value in block.items():
+                valid = value in ("company", "job") if key == "dedupScope" else type(value) is int and value >= (1 if field == "nudge" else 0)
+                need(path + "." + key, valid, "须为正整数" if field == "nudge" else "限额无效")
+            if field == "nudge":
+                merged = {**defaults, **blocks[0][1], **block}
+                a, b = merged["maxPerSilence"], merged["maxPerThread"]
+                need(path, type(a) is int and type(b) is int and 1 <= a <= 3 and a <= b <= 9, "连续次数须为 1–3，总次数须在连续次数至 9 之间")
+    check("im", lambda: notify.im_config(p))
+    return issues
+
+
+def profile(p, partial=False):
+    issues = profile_issues(p, partial=partial)
+    if issues:
+        raise ledger.LedgerError(issues[0]["field"] + "：" + issues[0]["problem"])
+
+
+def profile_warnings(p):
+    if not isinstance(p, dict):
+        return []
+    warnings = []
+
+    def missing(raw, defaults, prefix=""):
+        for key, value in defaults.items():
+            field = prefix + key
+            if key not in raw:
+                warnings.append({"file": "profile.json", "field": field,
+                                 "warning": "缺少，将使用默认值 " + json.dumps(value, ensure_ascii=False)})
+            elif isinstance(value, dict) and isinstance(raw[key], dict):
+                missing(raw[key], value, field + ".")
+    missing(p, default_profile())
+    if isinstance(p.get("style", {}), dict) and "selfIntro" not in p.get("style", {}):
+        warnings.append({"file": "profile.json", "field": "style.selfIntro",
+                         "warning": "缺少个人介绍素材；由 setup 据 candidate.md 起草并请本人确认，不生成默认个人事实"})
+    return warnings
+
+
+def effective_profile(p, platform_id=None):
+    profile(p, partial=True)
+    result = default_profile()
+    if platform_id is not None:
+        result["limits"].update(ledger.load_platform(platform_id)["defaultLimits"])
+
+    def merge(base, raw):
+        for key, value in raw.items():
+            if isinstance(value, dict) and isinstance(base.get(key), dict):
+                merge(base[key], value)
+            else:
+                base[key] = copy.deepcopy(value)
+    merge(result, p)
+    if platform_id is not None:
+        for field in ("limits", "nudge"):
+            overrides = result[field].pop("platforms", {})
+            result[field].update(copy.deepcopy(overrides.get(platform_id, {})))
+    if result["im"]["channel"] == "lark":
+        cfg = notify.im_config(result)
+        result["im"]["waitMinutes"] = cfg["waitMinutes"]
+    return result
 
 
 def records(raw, indent, allowed, required):

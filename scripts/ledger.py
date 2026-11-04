@@ -229,42 +229,34 @@ def read_json(path, default=None):
 
 
 def load_profile(ws):
-    return read_json(ws / "profile.json", {}) or {}
+    # 保留原始显式字段，避免全局缺省遮住平台 defaultLimits；消费处再合并。
+    import config_schema
+    path = ws / "profile.json"
+    if not path.exists():
+        return {}
+    try:
+        result = config_schema.json_value(path.read_text(encoding="utf-8"))
+        config_schema.require(isinstance(result, dict), "profile 须为对象")
+        return result
+    except (config_schema.ledger.LedgerError, ValueError) as error:
+        raise LedgerError("profile.json 无效：" + str(error)) from error
 
 
-def platform_settings(profile, field, platform, defaults):
-    if not isinstance(profile, dict):
-        raise LedgerError("profile 须为对象")
-    base = profile.get(field, {})
-    if not isinstance(base, dict) or not isinstance(base.get("platforms", {}), dict):
-        raise LedgerError(f"{field} 及其 platforms 须为对象")
-    override = base.get("platforms", {}).get(platform, {})
-    if not isinstance(override, dict):
-        raise LedgerError(f"{field}.platforms.{platform} 须为对象")
-    return {**defaults, **{k: v for k, v in base.items() if k != "platforms"}, **override}
+def effective_profile(profile, platform_id=None):
+    import config_schema
+    try:
+        return config_schema.effective_profile(profile, platform_id)
+    except config_schema.ledger.LedgerError as error:
+        # ledger.py 也可作为 __main__ 运行；统一到本入口的错误类型，不泄漏 traceback。
+        raise LedgerError(str(error)) from error
 
 
 def effective_limits(profile, platform_id):
-    defaults = dict(DEFAULT_LIMITS, **load_platform(platform_id)["defaultLimits"])
-    result = platform_settings(profile, "limits", platform_id, defaults)
-    for key, value in result.items():
-        if key not in DEFAULT_LIMITS or (key == "dedupScope" and value not in ("company", "job")) or (
-                key != "dedupScope" and (type(value) is not int or value < 0)):
-            raise LedgerError(f"limits.{key} 无效")
-    return result
+    return effective_profile(profile, platform_id)["limits"]
 
 
 def effective_nudge(profile, platform_id):
-    load_platform(platform_id)
-    result = platform_settings(profile, "nudge", platform_id, DEFAULT_NUDGE)
-    for key, value in result.items():
-        if key not in DEFAULT_NUDGE or isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value < float("inf"):
-            raise LedgerError(f"nudge.{key} 无效")
-    if (type(result["maxPerSilence"]) is not int or not 1 <= result["maxPerSilence"] <= 3
-            or type(result["maxPerThread"]) is not int or not result["maxPerSilence"] <= result["maxPerThread"] <= 9
-            or type(result["perDay"]) is not int):
-        raise LedgerError("nudge 次数范围无效")
-    return result
+    return effective_profile(profile, platform_id)["nudge"]
 
 
 def recovery_tz(ws):
@@ -1218,12 +1210,7 @@ def build_threads(events, platform=None, profile=None, account=None):
                and (account is None or t["account"] == account)}
     atts = attempts_of(events)
     sent = {aid: sent_metadata(a) for aid, a in atts.items()}
-    inquiry = (profile or {}).get("inquiry", {})
-    if not isinstance(inquiry, dict):
-        raise LedgerError("inquiry 须为对象")
-    priority = inquiry.get("priority", DEFAULT_INQUIRY_PRIORITY)
-    if not isinstance(priority, (list, tuple)) or any(not isinstance(x, str) or x not in INFO_GROUPS for x in priority):
-        raise LedgerError("inquiry.priority 须为信息大类数组")
+    priority = effective_profile({} if profile is None else profile)["inquiry"]["priority"]
     jobs, rounds, counts, tails, related, contexts = {}, {}, {}, {}, {}, {}
     for key, thread in threads.items():
         thread.update(threadKey=None, account=None, currentJobKey=None, stage=None, interviewIntentStages=[],

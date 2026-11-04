@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fsutil  # noqa: E402
 import ledger  # noqa: E402
 import notify  # noqa: E402
+import config_schema  # noqa: E402
 import config_txn  # noqa: E402
 
 MARKER = ledger.MARKER
@@ -37,7 +38,7 @@ STEPS = [
     {"id": "exclusions", "phase": "criteria", "name": "排除条件", "required": False},
     {"id": "companies", "phase": "criteria", "name": "排除的公司", "required": False},
     {"id": "activity", "phase": "criteria", "name": "招聘者活跃度", "required": False,
-     "default": {"maxAgeDays": 7}},
+     "default": config_schema.default_profile()["recruiterActivity"]},
     {"id": "candidate", "phase": "facts", "name": "个人事实", "required": True,
      "depends": ["materials"], "review": ["qa", "greeting"]},
     {"id": "resumes", "phase": "facts", "name": "简历版本", "required": True,
@@ -47,27 +48,12 @@ STEPS = [
     {"id": "applyAuth", "phase": "outreach", "name": "发起沟通授权", "required": False},
     {"id": "followupLevel", "phase": "outreach", "name": "代答级别", "required": False},
     {"id": "pacing", "phase": "outreach", "name": "限额与时段", "required": False,
-     "default": {"limits": dict(ledger.DEFAULT_LIMITS),
-                 "schedule": {"timezone": ledger.DEFAULT_TZ,
-                              "activeHours": {"weekdays": [1, 2, 3, 4, 5],
-                                              "start": "09:00", "end": "18:00"}}}},
+     "default": {k: config_schema.default_profile()[k] for k in ("limits", "schedule")}},
     {"id": "im", "phase": "notify", "name": "IM 通知", "required": False},
 ]
 STEP_BY_ID = {s["id"]: s for s in STEPS}
 
-GREETING_MODES = {"dynamic", "static"}
-FOLLOWUP_LEVELS = {"L1", "L2"}
-MATCH_RULES = {"overlap", "lower_bound", "contained"}
-DEDUP_SCOPES = {"company", "job"}
-LIMIT_KEYS = ["greetsPerRun", "greetsPerDay", "detailsPerRun", "minSendIntervalSeconds"]
-# 新版本加入的 profile 字段：缺少时技能按默认值运行，体检给出提示，重新设置时补上。
-PROFILE_DEFAULTS = {
-    "recruiterActivity": {"maxAgeDays": 7},
-    "greeting": {"mode": "dynamic"},
-    "limits": dict(ledger.DEFAULT_LIMITS),
-    "schedule": {"timezone": ledger.DEFAULT_TZ},
-    "im": {"channel": "none"},
-}
+effective_profile = ledger.effective_profile
 
 
 class WorkspaceError(Exception):
@@ -152,70 +138,11 @@ def cmd_init(args):
 # ---------- check ----------
 
 def check_profile(p, problems, warnings):
-    def bad(field, msg):
-        problems.append({"file": "profile.json", "field": field, "problem": msg})
-
-    for k, default in PROFILE_DEFAULTS.items():
-        if k not in p:
-            warnings.append({"file": "profile.json", "field": k,
-                             "warning": f"缺少，将使用默认值 {json.dumps(default, ensure_ascii=False)}"})
-
-    if p.get("schemaVersion") != 2:
-        bad("schemaVersion", "应为 2")
-    for k in ("targetRoles", "locations"):
-        if not isinstance(p.get(k), list):
-            bad(k, "应为数组")
-    if isinstance(p.get("targetRoles"), list) and not p["targetRoles"]:
-        bad("targetRoles", "为空：apply 不知道搜什么")
-    sal = p.get("salary")
-    if sal is not None:
-        if not isinstance(sal, dict):
-            bad("salary", "应为对象或 null")
-        else:
-            rules = sal.get("matchRule")
-            rules = rules if isinstance(rules, list) else [rules]
-            if not rules or any(r not in MATCH_RULES for r in rules):
-                bad("salary.matchRule", f"应为 {sorted(MATCH_RULES)} 之一或其数组")
-            for k in ("min", "max"):
-                if sal.get(k) is not None and not isinstance(sal.get(k), (int, float)):
-                    bad(f"salary.{k}", "应为数字或 null")
-    auth = p.get("authorization") or {}
-    if not isinstance((auth.get("apply") or {}).get("send"), bool):
-        bad("authorization.apply.send", "应为 true 或 false")
-    followup = auth.get("followup") or {}
-    if "level" in followup or followup.get("reply", "L2") not in FOLLOWUP_LEVELS:
-        bad("authorization.followup.reply", f"应为 {sorted(FOLLOWUP_LEVELS)} 之一；level 已废止")
-    if type(followup.get("nudge", True)) is not bool:
-        bad("authorization.followup.nudge", "应为 true 或 false")
-    g = p.get("greeting") or {}
-    if g.get("mode", "dynamic") not in GREETING_MODES:
-        bad("greeting.mode", f"应为 {sorted(GREETING_MODES)} 之一")
-    if g.get("mode") == "static" and not g.get("text"):
-        bad("greeting.text", "static 方式需要招呼语原文")
-    if g.get("text") and len(g["text"]) > 80:
-        bad("greeting.text", f"超过 80 字（{len(g['text'])}）")
-    limits = p.get("limits") or {}
-    for k in LIMIT_KEYS:
-        if k in limits and (type(limits[k]) is not int or limits[k] < 0):
-            bad(f"limits.{k}", "应为非负整数")
-    if limits.get("dedupScope", "company") not in DEDUP_SCOPES:
-        bad("limits.dedupScope", f"应为 {sorted(DEDUP_SCOPES)} 之一")
-    ra = (p.get("recruiterActivity") or {}).get("maxAgeDays")
-    if ra is not None and (not isinstance(ra, int) or ra < 0):
-        bad("recruiterActivity.maxAgeDays", "应为非负整数")
-    check_browser(p, bad, warnings)
-    check_im(p, bad, warnings)
-    tz = (p.get("schedule") or {}).get("timezone")
-    if tz:
-        try:
-            fsutil.tz_from_name(tz)
-        except Exception:
-            bad("schedule.timezone", f"无法识别：{tz}")
-
-
-def check_browser(p, bad, warnings):
-    if "browser" in p and (not isinstance(p["browser"], dict) or p["browser"]):
-        bad("browser", "当前只允许空对象或缺失")
+    issues = config_schema.profile_issues(p)
+    problems.extend(issues)
+    warnings.extend(config_schema.profile_warnings(p))
+    if not issues:
+        effective_profile(p)  # 与运行时相同的默认合并；不写回、不生成个人事实。
 
 
 def check_im(p, bad, warnings):

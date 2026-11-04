@@ -105,8 +105,10 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
     "workSchedules": ["单休"],
     "keywords": []
   },
-  "browser": {},
+  "browser": {"headedInput": false},
   "recruiterActivity": {"maxAgeDays": 7},
+  "style": {"tone": "polite", "length": "short", "address": "neutral", "bannedWords": ["精通"], "emoji": false},
+  "inquiry": {"priority": ["salary", "hours", "location", "leave"], "maxPerMessage": 2},
   "authorization": {
     "apply": {"send": false},
     "followup": {"reply": "L2", "nudge": true}
@@ -114,8 +116,11 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
   "greeting": {"mode": "dynamic", "text": "您好，我有 N 年……，期待沟通。"},
   "limits": {
     "greetsPerRun": 10, "greetsPerDay": 30, "detailsPerRun": 50,
-    "minSendIntervalSeconds": 5, "dedupScope": "company"
+    "minSendIntervalSeconds": 5, "dedupScope": "company",
+    "inboundScanDays": 14, "inboundScanPerRun": 30, "inboundRecheckHours": 24, "platforms": {}
   },
+  "nudge": {"afterReadHours": 24, "afterUnreadHours": 24, "intervalHours": 48,
+            "maxPerSilence": 3, "maxPerThread": 6, "perDay": 20, "platforms": {}},
   "im": {"channel": "lark", "ownerId": "<本人确认ID>", "larkProfile": "default", "waitMinutes": 60},
   "schedule": {
     "timezone": "Asia/Shanghai",
@@ -124,8 +129,8 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
 }
 ```
 
-- browser 暂时只允许空对象或缺失；其他结构报 problems。浏览器能力按执行契约自检，不写控制工具配置。
-- 不需要通知时只写 `{"channel":"none"}`；缺少 im 等同 none。未知结构报 problems。
+- `browser` 只允许 `headedInput` 布尔值，缺省 false；表示是否允许占用键盘鼠标的前台输入，不记录工具名，不授予外发权限。能力另按执行契约自检。
+- 缺可选字段给 warnings；显式非法值、未知字段给 problems，不用默认掩盖。体检、事务与 ledger 共用 `effective_profile()`，只读合并、不写回；profile 格式版本仍为 2。
 - `targetRoles`、`locations` 按优先级排列；明确不限地点时用空数组，并在 `rules.md` 说明。
 - `salary.matchRule`：`overlap` 两区间有交集；`lower_bound` 岗位下限不低于 `min`；`contained` 岗位区间完全落在用户区间内。可写成数组，表示同时满足。不限薪资时 `salary` 为 `null`；缺上限时 `max` 为 `null`。
 - `recruiterActivity.maxAgeDays`：招聘者最近活跃距今超过这么多天的职位不打招呼（多半已暂停招聘、只是没关职位）。平台活跃标签与天数的对应见各平台说明；缺省 7（一周以上不活跃的不打招呼）。
@@ -133,11 +138,12 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
 - 正向条件（`targetRoles`、`locations`、`salary`、`hardRequirements`）须从 JD 证实，无法确认时列为待确认、不自动联系；`exclusions` 中的项明确命中才排除，无法确认时可以沟通后核实，但不断言「不含」。公司排除只写在 `stoplist.yaml`。
 - `authorization` 长期有效，只在本人明确表态后写入，不从历史行为推断。本轮指令的否定和限制（「只看看」「这次别发」）优先；本轮指令要求超出授权时，本轮可按指令执行，不写回。
 - `greeting.mode`：`dynamic`（默认）读完详情后针对职位生成招呼语；`static` 每次发 `text` 原文。招呼语由 Agent 作为第一条消息发送，需在平台关闭自动打招呼，见 `apply` 技能。`text` 是 `setup` 设计、本人认可的通用招呼语，`dynamic` 时作为找不到对应点时的基础。
-- `limits` 缺省时用上面的默认值。
+- `style`：tone 为 polite/friendly/concise，length 为 short/medium，address 为 neutral/surname，emoji 为布尔，bannedWords 为字符串数组（成员非空）。上例为政策默认；`selfIntro` 无事实默认，setup 据 candidate.md 提炼、本人确认后写 1–3 条非空短语。缺少只告警，不生成空数组或事实。
+- `inquiry.priority` 是 salary/hours/location/leave/employment 的不重复子集；`maxPerMessage` 为整数 1 或 2，指子项数。缺省见上例。
+- `limits` 为非负整数（dedupScope 仅 company/job）；生效顺序为内置 → 平台 defaultLimits → 全局 → platforms 平台覆盖。`nudge` 同样支持平台覆盖；各数值为正整数，maxPerSilence 为 1–3，maxPerThread 为 maxPerSilence–9。跟进缺省 true 与 reply 缺省 L2 独立；跟进发送策略尚未启用。
 - `schedule.activeHours` 约束 `apply` 和主动跟进；回复 HR 不受限。
-- `im`：与本人沟通的通道，见 [notify.md](notify.md)。`channel` 为 `none`（只写本地 inbox，缺省）或 `lark`（飞书）；`waitMinutes` 为处理完会话后由 runtime 等待本人答复的最长分钟数，0–240 的整数（非布尔值），`0` 表示不等待。
-- 飞书配置需要非空 ownerId 与 larkProfile；waitMinutes 为 0–240 的整数，缺省 60。可选 larkCommand 为非空字符串数组。体检与 notify 使用同一校验函数，不按 ID 前缀猜身份。
-- 不需要通知时只写 `{"channel":"none"}`；缺少 im 等同 none。未知结构报 problems。
+- `im` 见 [notify.md](notify.md)：channel 为 none（只写 inbox，缺省）或 lark。waitMinutes 是 runtime 等待本人答复的最长分钟数，整数 0–240（非布尔），缺省 60；0 不等待。
+- 飞书需要非空 ownerId 与 larkProfile；可选 larkCommand 为非空字符串数组。体检与 notify 共用校验，不按 ID 前缀猜身份。无需通知写 `{"channel":"none"}`，缺少 im 等同 none。
 - `progress` 仅保存访谈答案，不把答案自动应用到 profile。部分重新设置只合并所选领域的本人确认变更；未选字段与授权均保留。IM 与定时运行不能新增授权或修改求职条件。
 
 setup 更新流程：读取 → 仅合并本人明确要求长期保存的变更到暂存 → 持锁 commit → 读回核对。「这次」的修改只用于本轮，不写回。文件损坏或版本不识别时停止并请本人处理，不用空文件覆盖。

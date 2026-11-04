@@ -122,7 +122,7 @@ description: 引导建立、重新设置、部分重新设置或修改 job-mate 
 
 ### 6.1 浏览器操作（browser）
 
-先读 [浏览器入口](../../shared/browser/README.md) 与 [加锁前能力自检](../../shared/execution.md#1-加锁前能力自检)。只确认可见浏览器与辅助功能 / 桌面操作能力；当前 browser 仅允许空对象或缺失，不配置控制工具。BOSS 只用本人日常已登录的可见浏览器，不使用 CDP / Playwright 或内部接口；能力不足时不操作平台、不回退。长期授权与本轮禁发另设。
+先读 [浏览器入口](../../shared/browser/README.md) 与 [加锁前能力自检](../../shared/execution.md#1-加锁前能力自检)。`browser` 只记录布尔 `headedInput`（缺省 false）：前台输入会占用键盘鼠标，问本人是否允许，不问工具名。BOSS 只用本人日常已登录的可见浏览器与辅助功能 / 桌面操作，不使用 CDP / Playwright 或内部接口；能力不足就停。此前台许可不是外发授权，长期授权与本轮禁发另设。
 
 ## 7. 生成文件
 

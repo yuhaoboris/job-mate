@@ -816,9 +816,12 @@ class WorkspaceIsolationTest(unittest.TestCase):
         return self.work("progress", "start", "--mode", "partial", "--select", "browser",
                          "--base-backup", backup["backup"])
 
-    def test_browser_accepts_only_empty_object_or_missing(self):
+    def test_browser_accepts_boolean_headed_input_and_rejects_unknown_fields(self):
+        """设计5.2、T9.1：前台输入布尔许可，不保存工具配置。"""
         self.assertEqual(self.work("check")[0], 0)
-        for value, expected in (({}, 0), (None, 1), ([], 1), ("agent", 1), ({"unknown": True}, 1)):
+        for value, expected in (({}, 0), ({"headedInput": False}, 0), ({"headedInput": True}, 0),
+                                ({"headedInput": 1}, 1), ({"headedInput": "false"}, 1),
+                                (None, 1), ([], 1), ("agent", 1), ({"unknown": True}, 1)):
             self.profile["browser"] = value
             self.save_profile()
             self.assertEqual(self.work("check")[0], expected)

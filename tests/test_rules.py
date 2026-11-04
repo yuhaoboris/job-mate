@@ -364,7 +364,7 @@ class ExecutionRulesTest(unittest.TestCase):
         # 保留纯配置、禁发锁与运行隔离回归，统一放在工作区测试中。
         maintained = ast.parse((ROOT / "tests/test_workspace.py").read_text(encoding="utf-8"))
         methods = {node.name for node in ast.walk(maintained) if isinstance(node, ast.FunctionDef)}
-        self.assertTrue({"test_browser_accepts_only_empty_object_or_missing",
+        self.assertTrue({"test_browser_accepts_boolean_headed_input_and_rejects_unknown_fields",
                          "test_new_browser_after_account_not_preanswered",
                          "test_browser_partial_skip_keep_and_resume_do_not_write_profile",
                          "test_no_send_lock_rejects_pending_and_guard",

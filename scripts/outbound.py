@@ -95,22 +95,15 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
             return deny("run_scope_restricted", "目标不在本轮冻结范围")
         if exhausted(L.pending_uses(events, run, rule["kinds"]), rule["max"]):
             return deny("run_limit_exhausted", "本轮全部授权来源合计次数已满")
+    profile = L.effective_profile(profile, ev["platform"])
     kind, decision, step = ev["kind"], ev.get("decision"), ev.get("step")
     dedup_grant = None
     ack = step == "ack"
     approved = bool(decision and not ack)
     if kind == "nudge":
         return deny("not_authorized", "跟进策略尚未启用")
-    authorization = profile.get("authorization", {})
-    if not isinstance(authorization, dict):
-        raise L.LedgerError("authorization 须为对象")
-    apply = authorization.get("apply", {})
-    followup = authorization.get("followup", {})
-    if not isinstance(apply, dict) or not isinstance(followup, dict):
-        raise L.LedgerError("authorization.apply / followup 须为对象")
-    if ("level" in followup or type(apply.get("send", False)) is not bool
-            or followup.get("reply", "L2") not in ("L1", "L2") or type(followup.get("nudge", True)) is not bool):
-        raise L.LedgerError("发送授权结构无效；不接受旧 level 或 L3 推断授权")
+    authorization = profile["authorization"]
+    apply, followup = authorization["apply"], authorization["followup"]
     source, version = None, None
     if ack:
         invitation = next((e for e in events if e["kind"] == "observe" and e.get("observed") == "interview_invited"
@@ -131,7 +124,7 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
             return problem
         source = f"decision:{decision}@v{version}"
     if source is None:
-        long_term = apply.get("send", False) if kind in ("greet", "intro") else followup.get("reply", "L2") == "L2"
+        long_term = apply["send"] if kind in ("greet", "intro") else followup["reply"] == "L2"
         frozen_source = current.get("authorizedBy") if checking else None
         if checking and frozen_source == "long_term" and not long_term:
             return deny("not_authorized", "原长期授权已失效，不更换授权来源")
@@ -160,7 +153,7 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
     stopped = uncertainty_stop(L, events, run, ev)
     if stopped:
         return stopped
-    limits = L.effective_limits(profile, ev["platform"])
+    limits = profile["limits"]
     for reason in L.stoplist_reasons(ws, ev["company"]):
         return deny(reason["type"], reason["detail"])
     if kind != "resume":
@@ -168,16 +161,12 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
         if not isinstance(text, str) or not text.strip():
             return deny("empty_text", "拟发送文字不能为空")
         if not approved:
-            style = profile.get("style", {})
-            if not isinstance(style, dict) or style.get("length", "short") not in ("short", "medium"):
-                raise L.LedgerError("style 结构或 length 无效")
-            banned = style.get("bannedWords", [])
-            if not isinstance(banned, list) or any(not isinstance(word, str) or not word.strip() for word in banned):
-                raise L.LedgerError("style.bannedWords 须为非空文字数组")
+            style = profile["style"]
+            banned = style["bannedWords"]
             normalize = lambda s: re.sub(r"\s+", "", unicodedata.normalize("NFKC", s)).lower()
             if any(normalize(word) in normalize(text) for word in ["精通", *banned]):
                 return deny("banned_word", "自拟文字含系统或本人禁用词")
-            maximum = 150 if kind == "reply" else 100 if style.get("length") == "medium" else 60
+            maximum = 150 if kind == "reply" else 100 if style["length"] == "medium" else 60
             if len(text) > maximum:
                 return deny("too_long", f"文字超过 {maximum} 个 Unicode 字符")
     same_account = [e for e in other_events if e["platform"] == ev["platform"] and e["account"] == ev["account"]]
@@ -238,7 +227,7 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
             return deny("quota_run", "本轮招呼配额已满")
         if exhausted(sum(L.parse_at(a["firstAt"]).astimezone(tz).date() == now.date() for a in greets), limits["greetsPerDay"]):
             return deny("quota_day", "当日招呼配额已满")
-        hours = profile.get("schedule", {}).get("activeHours", {"weekdays": [1, 2, 3, 4, 5], "start": "09:00", "end": "18:00"})
+        hours = profile["schedule"]["activeHours"]
         active = now.isoweekday() in hours["weekdays"] and hours["start"] <= now.strftime("%H:%M") < hours["end"]
         if not active and not any(g["item"] == "hours" and L.scope_covers(g, bindings.get(g["id"], []), ev)
                                   for g in lock.get("grants", [])):
