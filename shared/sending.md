@@ -27,6 +27,8 @@ status、runId、skill、at、各ID、派生键、authorizedBy、decisionVersion
 
 ## 点击前复查
 
+阻断按原始 platform/account 隔离，再按平台 conversationKey 的分量分别规范化：任一侧身份未知时须检查全部兼容候选的接管、关闭、暂停和未决；不同已知分量不合并。guard 仅排除自身 attempt。兼容候选仅用于保守阻断，不能证明授权或豁免暂停。intro 的同轮 greet sent 资格须有完整、逐项相同的会话身份，null 键相等或公司相同不算证明。
+
 guard 只复核原 pending：当前有效锁/账号、本轮限制、原授权来源及绑定、全局/会话暂停、接管、关闭、停止名单、其他未决、决定有效版本或 ack 的同目标邀约与去重。自身 pending 不算其他未决，额度包含自身但不二次扣减；已用等于上限仍可执行该 pending。原来源失效不另选 grant 或长期授权；被新版废止的 pending 保留待核对，不抹去。dedupGrant 也须仍存在、绑定匹配且恰已占用一次。拒绝返回相同的 reasons/code/message 结构、退出1；参数或损坏数据退出2。通过才续锁并立即操作；正常等待后重读页面重新 guard，工具异常则按[停止范围](execution.md#结果不明时的停止范围)收尾，不自动续发。
 
 ## 本轮限制先于授权
@@ -64,6 +66,6 @@ item 为 apply_send / reply / nudge / hours / dedup_once。scope 必须且仅为
 
 ## 本人决定与系统回执
 
-本人决定先 observe/decision 登记 version、steps 及原文/简历版本，再 prepare。有效版本以外步骤拒绝；任一版本存在 pending/uncertain 时先核对；同 decision + step 已 sent 不重发。成功准备后冻结 decisionVersion 与 authorizedBy=decision:<ID>@v<版本>。本人批准文字免自拟禁用词/字数检查，但不免其他安全门禁，不免本轮限制。
+本人决定先 observe/decision 登记 version、steps 及原文/简历版本，再 prepare。声明中已知的目标分量（含原始 platform/account/jobId、公司、招聘者、职位、地点及平台会话分量）必须在执行意图中出现并一致，不能省略后再补成其他目标；历史审计的“无已知冲突”不是当前授权证明。有效版本以外步骤拒绝；任一版本存在 pending/uncertain 时先核对；同 decision + step 已 sent 不重发。成功准备后冻结 decisionVersion 与 authorizedBy=decision:<ID>@v<版本>。本人批准文字免自拟禁用词/字数检查，但不免其他安全门禁，不免本轮限制。
 
-系统 ack 必须 reply + decision:D + step:ack，并有同一原始平台/账号/会话的 interview_invited(D)。先登记邀约及 paused(D)、写待决定与通知，再准备中性回执；ack 只认 L2 或 reply grant，不是本人决定，不带决定版本。文字不含数字、点/号/周/星期/今天/明天/后天/上午/下午/晚上。同事项只有一次 ack 尝试。它仅可越过 paused(D)，不解除暂停；其他事项、无ID暂停及会话任何未决仍阻断。准备/回执失败不影响已持久化上报。
+系统 ack 必须 reply + decision:D + step:ack，并有同一原始平台/账号/会话的 interview_invited(D)。先登记邀约及 paused(D)、写待决定与通知，再准备中性回执；ack 只认 L2 或 reply grant，不是本人决定，不带决定版本。文字不含数字、点/号/周/星期/今天/明天/后天/上午/下午/晚上。同事项只有一次 ack 尝试。有效本人决定与 ack 都仅可越过完整同目标的 paused(D)，不解除暂停；其他事项、无ID暂停及会话任何未决仍阻断。准备/回执失败不影响已持久化上报。

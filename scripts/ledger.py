@@ -1099,6 +1099,17 @@ def thread_key(ev):
     return (ev["platform"], ev["account"], *values)
 
 
+def compatible_thread_keys(left, right):
+    """仅用于负向阻断：任一侧未知时，不能据此排除候选。"""
+    return (left[:2] == right[:2] and len(left) == len(right)
+            and all(not a or not b or a == b for a, b in zip(left[2:], right[2:])))
+
+
+def same_complete_thread_keys(left, right):
+    """正向会话证明：原始命名空间相同、全部身份分量已知且分别一致。"""
+    return bool(left[2:]) and all(left[2:]) and all(right[2:]) and left == right
+
+
 def thread_identity(ev, attempts):
     identity = dict(ev)
     if ev["kind"] in ACTION_KINDS:
@@ -1524,6 +1535,24 @@ def attempt_target_conflict(attempt, target):
                 e.get(field) is not None and normalize(e[field]) != normalize(target[field]) for e in attempt["events"]):
             return True
     return False
+
+
+def known_target_matches(request, declaration):
+    """当前授权须正向覆盖声明的已知目标；不同于历史审计的无已知冲突。"""
+    if (request["platform"], request["account"]) != (declaration["platform"], declaration["account"]):
+        return False
+    if not norm_company(declaration.get("company")):
+        return False
+    fields = {"company", "title", "recruiter", "location", "jobId",
+              *load_platform(declaration["platform"])["conversationKey"]}
+    for field in fields:
+        expected = declaration.get(field)
+        normalize = (lambda value: value) if field == "jobId" else norm_company if field == "company" else norm_text
+        if expected is not None and normalize(expected):
+            actual = request.get(field)
+            if actual is None or normalize(actual) != normalize(expected):
+                return False
+    return True
 
 
 def decision_attempt(attempt, decision, owners, effective, invitations, positions):

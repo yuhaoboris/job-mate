@@ -36,7 +36,7 @@ def declaration_check(L, ev, events, current=None):
     definition = next(s for s in latest["steps"] if s["step"] == step)
     field = "resume" if definition["kind"] == "resume" else "text"
     if (ev["kind"] != definition["kind"] or ev.get(field) != definition[field]
-            or L.attempt_target_conflict({"platform": ev["platform"], "events": [ev]}, latest)):
+            or not L.known_target_matches(ev, latest)):
         return deny("decision_text_mismatch", "动作、目标或原文与本人登记步骤不一致"), None
     return None, latest["version"]
 
@@ -114,10 +114,9 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
     source, version = None, None
     if ack:
         invitation = next((e for e in events if e["kind"] == "observe" and e.get("observed") == "interview_invited"
-                           and e.get("decision") == decision and L.thread_scope(e) == L.thread_scope(ev)
+                           and e.get("decision") == decision and L.same_complete_thread_keys(L.thread_key(e), L.thread_key(ev))
                            and (not checking or e.get("_line", 0) < current.get("_line", 0))), None)
-        if kind != "reply" or invitation is None or L.attempt_target_conflict(
-                {"platform": ev["platform"], "events": [ev]}, invitation):
+        if kind != "reply" or invitation is None or not L.known_target_matches(ev, invitation):
             return deny("ack_invalid_invitation", "ack 必须关联同一原始目标的已登记邀约")
         if any(a["step"] == "ack" and a["decision"] == decision for a in L.attempts_of(other_events).values()):
             return deny("ack_duplicate", "该事项已有 ack 尝试，不重复发送")
@@ -192,19 +191,22 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None):
         for reason in L.company_observation_reasons(events, ev["platform"], ev["account"], ev["company"]):
             return deny("company_risk" if reason["type"] == "risk" else "company_rejected", reason["detail"])
     threads = L.build_threads(other_events, ev["platform"], profile, ev["account"])
-    thread = threads.get(L.thread_key(ev))
-    if thread:
+    requested_key = L.thread_key(ev)
+    candidates = [(key, thread) for key, thread in threads.items() if L.compatible_thread_keys(key, requested_key)]
+    for key, thread in candidates:
         if thread["manual"]:
             return deny("thread_manual", "本人已接管")
         if thread["closed"]:
             return deny("thread_closed", "目标会话已结束")
         if thread["unresolved"]:
             return deny("unresolved", "目标有未确认外发，先核对")
-        if any(d != decision or not (approved or ack) for d in thread["pausedBy"]):
+        if any(d != decision or not (approved or ack) or not L.same_complete_thread_keys(key, requested_key)
+               for d in thread["pausedBy"]):
             return deny("thread_paused", "存在不属于当前有效决定/邀约的暂停")
     if kind == "intro":
-        if not any(a["kind"] == "greet" and a["status"] == "sent" and a["runId"] == run
-                   and L.thread_scope(a) == L.thread_scope(ev) for a in attempts):
+        if not any(a["kind"] == "greet" and a["status"] == "sent" and a["runId"] == run and not a["identityConflicts"]
+                   and L.same_complete_thread_keys(L.thread_key(L.thread_identity(L.sent_metadata(a)[0], {L.attempt_key(a): a})),
+                                                  requested_key) for a in attempts):
             return deny("not_authorized", "本轮同一会话尚无平台首次招呼已发送事实")
     if kind == "greet":
         args = argparse.Namespace(platform=ev["platform"], account=ev["account"], company=ev["company"],

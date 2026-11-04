@@ -18,4 +18,3 @@
 - 脚本内部生成 baseExplicit 与 bridgeEvidence：逐项 speaker，新增我方项再记 attemptId、type、digest、带时区分钟 pageAt，不存原文。validate 按历史前缀重算比较、bridge 和未决语义，不信任结果布尔。JSONL 仅按 LF 分行，批准文字逐字符保留。
 - append 禁写 observe/tail。handled 带 tailId、baseTailId，只引用最新完整、唯一定位快照；须 settled:true 或 skill:user 加非空 evidence。脚本复制指纹。可选 listMark 为 `{label,digest,unread}`：列表时间标签、16 位摘要、非负未读数，不存摘要原文。
 - 中断后先核对待处理快照及历史外发，以待处理快照复核，不从新锚点重开或重复外发。
-

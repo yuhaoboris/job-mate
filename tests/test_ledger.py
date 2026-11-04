@@ -637,8 +637,10 @@ class LedgerTest(unittest.TestCase):
         self.ws.append(kind="observe", observed="manual", **common)
         self.ws.append(kind="observe", observed="decision", version=1, decision="D-20261028-01",
                        steps=[{"step": "reply1", "kind": "reply", "text": "合成文字"}], **common)
-        code, out = self.ws.run("check", "--platform", "boss", "--kind", "reply", "--company", "接管样例",
-                                "--recruiter", "赵先生(HR)", "--decision", "D-20261028-01", "--step", "reply1")
+        # 决定目标已声明职位/地点，预检也须完整证明它们；保留接管必阻断的原断言。
+        intent = dict(platform="boss", company="接管样例", recruiter="赵先生(HR)", title="前端开发", location="东莞",
+                      kind="reply", text="合成文字", reason="合成", decision="D-20261028-01", step="reply1")
+        code, out = self.ws.run("check", "--run", "run-1", "--json", json.dumps(intent, ensure_ascii=False))
         self.assertEqual(code, 1)
         self.assertIn("thread_manual", [r["code"] for r in out["reasons"]])
 
