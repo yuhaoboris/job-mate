@@ -1205,7 +1205,8 @@ def reply_catalog(events, key):
             if part == "bridge":
                 bridge_entries = entries
             locations[(event["tailId"], part)] = entries
-    return locations, consumed
+    boundaries, unresolved = reply_order_index(events, key, locations)
+    return {"locations": locations, "consumed": consumed, "boundaries": boundaries, "unresolved": unresolved}
 
 
 def replied_proof(events, ev):
@@ -1230,8 +1231,9 @@ def replied_proof(events, ev):
         raise LedgerError("该 tail 不能自动确认新增 HR，须本人核对明确位置")
     elif tail["result"] == "extended":
         start, count = len(tail["fingerprints"]) - tail["newCount"], tail["newCount"]
-    locations, consumed = reply_catalog(events, key)
-    entries = locations.get((tail["tailId"], part), [])
+    catalog = reply_catalog(events, key)
+    consumed = catalog["consumed"]
+    entries = catalog["locations"].get((tail["tailId"], part), [])
     if not count or start + count > len(entries) or any(x is None for x in entries[start:start + count]):
         raise LedgerError("newHr 没有对应的可见 HR 位置")
     items = []
@@ -1244,30 +1246,100 @@ def replied_proof(events, ev):
     return {"version": 1, "items": items}
 
 
-def reply_boundary(events, item):
-    """观察位置固定；桥中已证明在后续我方外发前的 HR 不能退还该尝试。"""
+def reply_bridge_limits(event, base, attempts, positions, manual):
+    """完整桥的顺序只以真实匹配的 sent 证明；任意编号或错误桥不能定位分界。"""
+    bridge, proof = event["bridge"], event["bridgeEvidence"]
+    if (base is None or not same_complete_thread_keys(thread_key(base), thread_key(event))
+            or not event["complete"] or not event["anchorUnique"] or not event["bridgeComplete"]):
+        return None
+    start = 0 if base["anchor"] == "start" else 1
+    if start and (proof[0]["speaker"] != "us" or not fingerprints_equal(bridge[0], base["anchor"])
+                  or sum(fingerprints_equal(fp, base["anchor"]) for fp in bridge) != 1):
+        return None
+    if not all(definite_fingerprint(fp) or manual and item["speaker"] == "hr" for fp, item in zip(bridge, proof)):
+        return None
+    if any("id" not in fp and fp["speaker"] != item["speaker"] for fp, item in zip(bridge, proof)):
+        return None
+    ids = [fp["id"] for fp in bridge if "id" in fp]
+    us = [i for i in range(start, len(bridge)) if proof[i]["speaker"] == "us"]
+    if (len(ids) != len(set(ids)) or not us or not fingerprints_equal(bridge[us[-1]], event["anchor"])
+            or sum(fingerprints_equal(fp, event["anchor"]) for fp in bridge) != 1
+            or bridge[us[-1] + 1:] != event["fingerprints"]):
+        return None
+    limits, used = {}, set()
+    for index in us:
+        step, fp = proof[index], bridge[index]
+        aid = step.get("attemptId")
+        attempt = attempts.get((event["platform"], event["account"], aid))
+        if (attempt is None or aid in used or attempt["status"] != "sent" or attempt["identityConflicts"]
+                or attempt["runId"] != event["runId"] or not same_complete_thread_keys(
+                    thread_key(thread_identity(attempt["events"][0], attempts)), thread_key(event))):
+            return None
+        used.add(aid)
+        sent = next(e for e in reversed(attempt["events"]) if e["status"] == "sent")
+        pending = next((e for e in attempt["events"] if e["status"] == "pending"), None)
+        payload = sent.get("resume") if sent["kind"] == "resume" else sent.get("text")
+        expected = "card" if sent["kind"] == "resume" else "text"
+        if (pending is None or sent["runId"] != event["runId"] or step.get("type") != expected
+                or not isinstance(payload, str) or content_digest(payload) != step.get("digest") or not step.get("pageAt")):
+            return None
+        page_at, sent_at = parse_at(step["pageAt"]), parse_at(sent["at"])
+        if ("id" not in fp and (fp["type"] != step["type"] or fp["digest"] != step["digest"]
+                or fp["date"] != page_at.date().isoformat() or fp["minute"] != page_at.strftime("%H:%M"))):
+            return None
+        if (not parse_at(base["readAt"]) <= sent_at <= parse_at(event["readAt"])
+                or not -120 <= (sent_at - page_at).total_seconds() < 180
+                or positions[sent["eventId"]] >= positions[event["eventId"]]):
+            return None
+        limits[index] = positions[pending["eventId"]] - 1
+    return limits
+
+
+def reply_order_index(events, key, locations):
+    """每次 catalog 一次汇总所有补桥；身份 origin 不变，可信边界只取 min。"""
     positions = {e["eventId"]: i for i, e in enumerate(events)}
-    source = next(e for e in events if e["eventId"] == item["eventId"])
-    boundary = positions[source["eventId"]]
-    if item["part"] == "bridge":
-        attempts = attempts_of(events)
-        for step in source["bridgeEvidence"][item["index"] + 1:]:
-            attempt = attempts.get((source["platform"], source["account"], step.get("attemptId")))
-            if (step["speaker"] != "us" or attempt is None or attempt["status"] != "sent" or attempt["identityConflicts"]
-                    or not same_complete_thread_keys(thread_key(thread_identity(attempt["events"][0], attempts)), thread_key(source))):
+    bounds = {(origin["eventId"], origin["part"], origin["index"]): position
+              for entries in locations.values() for entry in entries if entry is not None for origin, position in [entry]}
+    attempts = attempts_of(events)
+    tails = {e["tailId"]: e for e in events if e["kind"] == "observe" and e["observed"] == "tail"
+             and same_complete_thread_keys(thread_key(e), key)}
+    manual = {e["tailId"] for e in events if e["kind"] == "observe" and e["skill"] == "user"
+              and e["observed"] == "replied" and (e.get("newHr") or {}).get("part") == "bridge"
+              and isinstance(e.get("evidence"), str) and e["evidence"].strip()}
+    manual.update(e["tailId"] for e in events if e["kind"] == "observe" and e["observed"] == "handled"
+                  and e["skill"] == "user" and isinstance(e.get("evidence"), str) and e["evidence"].strip())
+    uncertain, reliable = set(), set()
+    for event in tails.values():
+        entries = locations.get((event["tailId"], "bridge"))
+        if entries is None:
+            continue
+        limits = reply_bridge_limits(event, tails.get(event["baseTailId"]), attempts, positions, event["tailId"] in manual)
+        following = None
+        for index in reversed(range(len(entries))):
+            if event["bridgeEvidence"][index]["speaker"] == "us":
+                if limits is not None and index in limits:
+                    following = limits[index] if following is None else min(following, limits[index])
                 continue
-            pending = next((e for e in attempt["events"] if e["status"] == "pending"), None)
-            if pending is not None:
-                boundary = min(boundary, positions[pending["eventId"]] - 1)
-                break
-    return boundary
+            origin, _ = entries[index]
+            identity = (origin["eventId"], origin["part"], origin["index"])
+            if limits is None:
+                uncertain.add(identity)
+            else:
+                reliable.add(identity)
+                if following is not None:
+                    bounds[identity] = min(bounds[identity], following)
+    unresolved = uncertain - reliable
+    return bounds, unresolved
 
 
 def nudge_state(events, key, profile):
     """计数按唯一首次 pending；回复分界按证明的首次观察位置，非 replied 的 append 时间。"""
     positions = {e["eventId"]: i for i, e in enumerate(events)}
     replies = [e for e in events if e["kind"] == "observe" and e["observed"] == "replied" and thread_key(e) == key]
-    boundary = max((reply_boundary(events, p) for e in replies for p in e["replyProof"]["items"]), default=-1)
+    catalog = reply_catalog(events, key)
+    boundary = max((catalog["boundaries"][(p["eventId"], p["part"], p["index"])]
+                    for e in replies for p in e["replyProof"]["items"]
+                    if (p["eventId"], p["part"], p["index"]) not in catalog["unresolved"]), default=-1)
     attempts = attempts_of(events)
     pending = [next(e for e in a["events"] if e["status"] == "pending") for a in attempts.values()
                if a["kind"] == "nudge" and a["everPending"] and compatible_thread_keys(thread_key(thread_identity(a["events"][0], attempts)), key)]
@@ -1490,6 +1562,7 @@ def nudge_turn(events, key):
         cut, cut_at = owner
     prefix, latest, hr = [], None, False
     sources = {e["eventId"]: e for e in events}
+    catalog = reply_catalog(events, key)
 
     def after(source):
         read = parse_at(source.get("readAt", source["at"]))
@@ -1504,7 +1577,10 @@ def nudge_turn(events, key):
                     latest = current
             if e["observed"] == "replied":
                 for item in e["replyProof"]["items"]:
-                    bound = reply_boundary(events, item)
+                    identity = (item["eventId"], item["part"], item["index"])
+                    if identity in catalog["unresolved"]:
+                        return last, "unresolved"
+                    bound = catalog["boundaries"][identity]
                     source = sources[item["eventId"]]
                     if (bound >= positions[cut["eventId"]] if bound < positions[source["eventId"]] else after(source)):
                         hr = True

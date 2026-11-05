@@ -31,4 +31,4 @@
 
 脚本生成 replyProof，结构为 `{version:1,items:[{eventId,part,index}]}`，调用方不得提供它、计数或 reset 字段。每项指向该 HR 身份首次出现在持久化观察中的真实位置。身份按指纹及可见顺序 occurrence 去重：同一分钟、同文的同锚点第二条用第二 occurrence；稳定消息 ID 只对应一次。完整 bridge 用跨锚点连续 HR 顺序保留 occurrence；换锚点或快照 ID 本身不创造新身份。时间补精或 ID 表示改变仅作保守复用，不能借此取得第二个重置身份；须有更多同时可见的位置/条数才能证明另一条。无 bridge 且无法证明同文是新的另一条时保守复用旧身份，须补读可区分的位置/数量，不凭任意 confirmationId 解锁。
 
-同一身份只消费一次；重复 tail、新 tail 重读同内容、旧 base 再次 extended、人工复用 count/index 都不能再重置。迟到 replied 按首次观察位置划分连续次数，该位置之后已经占用的 nudge 不退款。首次仅在完整 bridge 中发现、且位于已确认我方外发之前的 HR，还按该外发首次 pending 之前保守定位；不能因桥读取较晚退还已经发生的跟进或解除其后的 silent。handled、released 不等于新 HR；累计次数不清零。append 与 validate 重读都计算相同凭据，缺少、伪造、冲突均拒绝；只保存已有指纹与位置，不保存 HR 原文。
+同一身份只消费一次；重复 tail、新 tail 重读同内容、旧 base 再次 extended、人工复用 count/index 都不能再重置。迟到 replied 按首次观察位置划分连续次数，该位置之后已经占用的 nudge 不退款。无论首次 origin 在 tail 还是 bridge，同一身份后续完整桥给出的可信先后约束都参与定位：位于已证实我方 sent 之前的 HR，分界不晚于该外发首次 pending 之前；多个补证取最保守值，不改身份、不扩大配额。桥中位置/occurrence 须与 catalog 一致，我方发送须匹配同原始账号完整会话、正文类型/摘要、时间及真实尝试；任意 ID 或错误桥不能证明顺序，无法确认保持核对。补桥发生在 replied 前后均须重算已有 pending 的预算/意图，不因补读较晚退款或解除其后的 silent。handled、released 不等于新 HR；累计次数不清零。append 与 validate 重读都计算相同凭据，缺少、伪造、冲突均拒绝；只保存已有指纹与位置，不保存 HR 原文。
