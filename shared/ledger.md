@@ -1,12 +1,12 @@
 # 事件记录
 
-`ledger/events.jsonl` 是唯一的追加式事实来源。**只通过 `scripts/ledger.py` 读写**；不整体改写、不删行。脚本路径先解析为绝对路径：
+`ledger/events.jsonl` 是唯一事实来源。**只通过 `scripts/ledger.py` 读写**；不整体改写、不删行。脚本路径先解析为绝对路径：
 
 ```sh
 python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命令> ...
 ```
 
-`<job-mate 技能目录>` 为本文件上两级目录。输出 JSON。退出码：0 成功，1 不允许或锁占用，2 参数、数据、版本或锁错误。遇 2 停止外发并报告。
+`<job-mate 技能目录>` 为本文件上两级目录。退出码：0 成功，1 拒绝或占用，2 参数/数据/版本/锁错误；遇2停止外发并报告。
 
 ## 命令
 
@@ -24,11 +24,12 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 | `tail --run <runId> --thread '<threadKey>' --read-at <ISO> [--base <tailId>] [--json '<输入>']` | 记录尾部指纹，不保存原文；输入也可走 stdin |
 | `guard --run <runId> --attempt <attemptId>` | 逐动作复查并续锁，通过后立即点击；nudge 另必传新读取的 --page-state JSON，见[发送准备](sending.md#主动跟进的最终门禁) |
 | `decision --id <ID> [--step <编号>]` | 查询有效版本、各版本步骤及真实 attempts |
-| `threads` | 会话阶段、职位信息、待处理尾部、决定及原有状态；可按 platform / company / recruiter 筛选，不是页面证据 |
+| `threads` | 会话、pendingTails、inventories 账号盘点状态与 inventoryPending 未打开队列，不是页面证据 |
+| `inventory start\|record\|progress\|finish --platform <平台> --run <runId>` | 账号级首次列表盘点，接口与字段见[会话盘点](inventory.md) |
 | `quota --platform <平台> [--run <runId>]` / `stats` / `export` | 配额、统计、[导出](export.md) |
 | `stoplist list` / `stoplist add --name <公司> [--alias <别名>]... --reason <原因> --source <来源>` / `stoplist remove --name <公司>` | 停止名单；remove 按 name 精确匹配 |
 
-派生见[说明](derived.md)，账号与按平台配置见[账号说明](accounts.md)。
+派生见[说明](derived.md)，账号见[账号说明](accounts.md)。
 
 ## 运行锁
 
@@ -36,7 +37,7 @@ python3 <job-mate 技能目录>/scripts/ledger.py [--workspace <工作区>] <命
 
 - 新建 setup 未完成或草稿模式读不出时，apply / followup 取锁（包括沿用 runId）返回 1；重新设置、部分重新设置草稿不阻断当前配置。
 - 新外发 pending 与 guard 必须是当前有效、未 releasing、未禁发的持锁者，全局暂停时拒绝；pending / guard 自动续期。正常等待或页面变化后重读再 guard；工具超时按[停止范围](execution.md#结果不明时的停止范围)收尾，不新建尝试绕过失锁。
-- screen 和 tail 也须有效的普通运行锁；禁发或暂停时仍可记本地观察，不因此获得外发授权。adopted 另要求本人授权，禁发 / 暂停时拒绝。
+- screen 和 tail 也须有效的普通运行锁；禁发或暂停时仍可记本地观察，不因此获得外发授权。本人点名 adopted 禁发/暂停时拒绝；盘点进度及 adopted 可禁发记账，全局暂停不盘点。
 - 终态与事实观察不要求运行锁；恢复锁下仍受写入门禁限制。
 - 释放 / 接管只核销该轮 pending，返回 reconciled；不改其他轮次或已有终态。按[释放与对账契约](#释放与对账契约)写 inbox，脚本不代写。
 - 释放先写 releasing / releaseAttempts，核销完才删锁。中断保留锁并禁止外发、续期、沿用；重试同一 release 或等过期接管。损坏记录先人工处理。
@@ -79,14 +80,14 @@ kind：
 
 ## 观察与决定
 
-observed 可取：tail、handled、replied、decision、info、resume_requested、resume_delivered、resume_viewed、interview_invited、interview_decided、silent、declined、reopened、rejected、job_closed、paused、unpaused、manual、released、adopted、risk、limit_hit。
+observed 可取：tail、handled、replied、decision、info、resume_requested、resume_delivered、resume_viewed、interview_invited、interview_decided、silent、declined、reopened、rejected、job_closed、paused、unpaused、manual、released、adopted、inventory、risk、limit_hit。
 
 - replied 必须 tailId；脚本核验新增 HR 位置并生成 replyProof，人工分支须 user、依据和 newHr 位置。重读、旧 base、迟到登记不能退款，详见[回复凭据](tails.md#确认新hr回复)。
 - info 必须 facts 与可派生的 jobKey；信息归属职位，不能套用另一职位结论。
 - decision 必须事项 ID、连续正整数 version（现有最大值加一）、steps 数组。每步 `{step,kind,text}` 或 `{step,kind:resume,resume}`，内容非空，二者恰一；步骤名在本版本及历史版本中均不重复，批准原文原样保存。
 - interview_invited 必须 decision 与完整 threadKey，后续 paused / ack 共用事项 ID；它不是本人决定。
 - paused 等待该事项，unpaused 仅解除同 ID；不带 ID 则解除全部。manual 只由本人交还 released 解除，交还不重置跟进计数。declined 可由 reopened 解除；rejected / risk / job_closed 不随重新评估解除。结束原因叠加在 closedBy，closed 优先显示 declined 以外的原因。
-- adopted 仅本人点名交出会话，skill: user，带不晚于事件时间的 readAt，在有效锁内写入；已有登记返回 duplicate，有未决、关闭、暂停时拒绝。
+- adopted 分本人点名（skill:user）与盘点（skill:followup、adoptionSource:inventory）；有效锁内带实际 readAt，已有登记 duplicate，未决/关闭/暂停拒绝。inventory 进度与盘点 adopted 只能由 [inventory 接口](inventory.md) 写入。
 - boundaryAt 取 sent、adopted.readAt、released 时间的最大值，不允许调用方指定或推到未来。outboundTexts 保留全部本地 sent 文字和 resume 类型 / 时间，包括分界那条，供页面区间前后 2 分钟核对。
 - released 可带 acknowledged：每项仅 shown、precision（day / minute）、kind（text / resume / contact / interview）、正整数 count。shown 按平台词表和 readAt（缺省 at）换算为绝对 `YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM`；孤立时分不猜日期，不记原文。相同绝对时间同类型从早到晚前 count 条可豁免，超出仍核对，明确晚于分界的新活动不豁免。
 
@@ -111,7 +112,7 @@ prepare / check 拒绝时为 `allowed:false,reasons:[{code,message}]`，退出1�
 - 会话：thread_closed、thread_manual、thread_paused、unresolved。
 - 决定：decision_not_registered、decision_superseded、decision_unresolved、decision_text_mismatch、decision_step_done、decision_needs_review。
 - 系统回执：ack_invalid_invitation、ack_duplicate、ack_contains_time。
-- 主动跟进：nudge_too_early、nudge_interval、nudge_silence_limit、nudge_thread_limit、nudge_day_limit、nudge_intent_mismatch、not_our_turn、thread_silent、page_state_mismatch、repeated_text。
+- 主动跟进：nudge_too_early、nudge_interval、nudge_silence_limit、nudge_thread_limit、nudge_day_limit、nudge_intent_mismatch、not_our_turn、thread_silent、page_state_mismatch、inventory_stale、inventory_history、repeated_text。
 
 ## 中断恢复
 

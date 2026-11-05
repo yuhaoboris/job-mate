@@ -24,44 +24,52 @@ MARKER = ledger.MARKER
 CONFIG_FILES = list(config_txn.CONFIG_FILES)
 PROGRESS_FILE = "setup-progress.json"
 
-# 标准流程的唯一定义；SKILL.md 的步骤表由测试核对顺序。
+# 步骤、屏目录的唯一定义；文档中的表格由测试核对。
+SCREENS = [
+    {"number": 1, "name": "开始"},
+    {"number": 2, "name": "简历"},
+    {"number": 3, "name": "想找的工作"},
+    {"number": 4, "name": "不考虑的"},
+    {"number": 5, "name": "BOSS 账号"},
+    {"number": 6, "name": "打招呼"},
+    {"number": 7, "name": "Agent 能替你做什么"},
+    {"number": 8, "name": "手机提醒"},
+]
 STEPS = [
-    {"id": "directory", "phase": "prepare", "name": "工作区目录", "required": True},
-    {"id": "materials", "phase": "prepare", "name": "现成材料", "required": False},
-    {"id": "account", "phase": "prepare", "name": "平台账号", "required": True},
-    {"id": "browser", "phase": "prepare", "name": "浏览器操作", "required": False,
+    {"id": "directory", "screen": 1, "phase": "prepare", "name": "工作区目录", "required": True},
+    {"id": "account", "screen": 5, "phase": "prepare", "name": "平台账号", "required": True},
+    {"id": "browser", "screen": 5, "phase": "prepare", "name": "浏览器操作", "required": False,
      "default": config_schema.default_profile()["browser"]},
-    {"id": "roles", "phase": "criteria", "name": "目标职位", "required": True,
+    {"id": "roles", "screen": 3, "phase": "criteria", "name": "目标职位", "required": True,
      "review": ["greeting"]},
-    {"id": "locations", "phase": "criteria", "name": "城市", "required": True},
-    {"id": "salary", "phase": "criteria", "name": "薪资", "required": False},
-    {"id": "requirements", "phase": "criteria", "name": "硬性要求", "required": False},
-    {"id": "exclusions", "phase": "criteria", "name": "排除条件", "required": False},
-    {"id": "companies", "phase": "criteria", "name": "排除的公司", "required": False},
-    {"id": "activity", "phase": "criteria", "name": "招聘者活跃度", "required": False,
+    {"id": "locations", "screen": 3, "phase": "criteria", "name": "城市", "required": True},
+    {"id": "salary", "screen": 3, "phase": "criteria", "name": "薪资", "required": False},
+    {"id": "requirements", "screen": 4, "phase": "criteria", "name": "硬性要求", "required": False},
+    {"id": "exclusions", "screen": 4, "phase": "criteria", "name": "排除条件", "required": False},
+    {"id": "companies", "screen": 4, "phase": "criteria", "name": "排除的公司", "required": False},
+    {"id": "activity", "screen": 4, "phase": "criteria", "name": "招聘者活跃度", "required": False,
      "default": config_schema.default_profile()["recruiterActivity"]},
-    {"id": "candidate", "phase": "facts", "name": "个人事实", "required": True,
-     "depends": ["materials"], "review": ["qa", "style", "greeting"]},
-    {"id": "resumes", "phase": "facts", "name": "简历版本", "required": True,
-     "depends": ["materials"]},
-    {"id": "qa", "phase": "facts", "name": "问答口径", "required": False},
-    {"id": "style", "phase": "communication", "name": "沟通风格", "required": False,
+    {"id": "candidate", "screen": 2, "phase": "facts", "name": "个人事实", "required": True,
+     "review": ["qa", "style", "greeting"]},
+    {"id": "resumes", "screen": 2, "phase": "facts", "name": "简历版本", "required": True},
+    {"id": "qa", "screen": 2, "phase": "facts", "name": "问答口径", "required": False},
+    {"id": "style", "screen": 6, "phase": "communication", "name": "沟通风格", "required": False,
      "default": config_schema.default_profile()["style"], "depends": ["greeting"], "review": ["greeting"]},
-    {"id": "inquiry", "phase": "communication", "name": "优先了解的信息", "required": False,
+    {"id": "inquiry", "screen": 6, "phase": "communication", "name": "优先了解的信息", "required": False,
      "default": config_schema.default_profile()["inquiry"]},
-    {"id": "greeting", "phase": "communication", "name": "招呼语", "required": True},
-    {"id": "applyAuth", "phase": "authorization", "name": "首次沟通授权", "required": False,
+    {"id": "greeting", "screen": 6, "phase": "communication", "name": "招呼语", "required": True},
+    {"id": "applyAuth", "screen": 7, "phase": "authorization", "name": "首次沟通授权", "required": False,
      "default": config_schema.default_profile()["authorization"]["apply"]},
-    {"id": "replyLevel", "phase": "authorization", "name": "代答级别", "required": False,
+    {"id": "replyLevel", "screen": 7, "phase": "authorization", "name": "代答级别", "required": False,
      "default": config_schema.default_profile()["authorization"]["followup"]["reply"]},
-    {"id": "nudge", "phase": "authorization", "name": "主动跟进", "required": False,
+    {"id": "nudge", "screen": 7, "phase": "authorization", "name": "主动跟进", "required": False,
      "default": {"authorization": {"followup": {"nudge": config_schema.default_profile()["authorization"]["followup"]["nudge"]}},
                  "nudge": config_schema.default_profile()["nudge"]}},
-    {"id": "pacing", "phase": "authorization", "name": "限额与时段", "required": False,
+    {"id": "pacing", "screen": 7, "phase": "authorization", "name": "限额与时段", "required": False,
      "default": {k: config_schema.default_profile()[k] for k in ("limits", "schedule")}},
-    {"id": "im", "phase": "notify", "name": "飞书通知", "required": False},
+    {"id": "im", "screen": 8, "phase": "notify", "name": "飞书通知", "required": False},
 ]
-TYPICAL_DEFAULT_STEPS = ("browser", "activity", "inquiry", "pacing")
+NEW_DEFAULT_STEPS = ("activity", "inquiry", "pacing")
 STEP_BY_ID = {s["id"]: s for s in STEPS}
 
 effective_profile = ledger.effective_profile
@@ -509,10 +517,31 @@ def read_progress(ws):
         raise WorkspaceError(f"setup 草稿损坏：{e}；请本人确认后用 progress clear 放弃草稿")
 
 
+def ordered_plan(mode, selected):
+    steps = sorted(STEPS, key=lambda s: s["screen"]) if mode == "new" else STEPS
+    return [s["id"] for s in steps if s["id"] in selected]
+
+
 def progress_summary(draft):
     current = draft["current"]
-    return {**draft, "position": draft["plan"].index(current) + 1 if current else len(draft["plan"]),
-            "total": len(draft["plan"]), "currentStep": STEP_BY_ID[current] if current else None}
+    step = STEP_BY_ID[current] if current else None
+    out = {**draft, "position": draft["plan"].index(current) + 1 if current else len(draft["plan"]),
+           "total": len(draft["plan"]), "currentStep": step}
+    label = "设置已答完，请确认汇总"
+    if draft["mode"] == "new":
+        screen = SCREENS[step["screen"] - 1] if step else None
+        current_screen = None
+        if screen:
+            ids = [s for s in draft["plan"] if STEP_BY_ID[s]["screen"] == screen["number"]]
+            current_screen = {**screen, "steps": [STEP_BY_ID[s] for s in ids],
+                              "pending": [s for s in ids if s not in draft["answers"]]}
+            label = f"第 {screen['number']}/{len(SCREENS)} 步 · {screen['name']}"
+        out.update(position=screen["number"] if screen else len(SCREENS),
+                   total=len(SCREENS), currentScreen=current_screen)
+    elif step:
+        label = f"第 {out['position']}/{out['total']} 步 · {step['name']}"
+    out["label"] = label
+    return out
 
 
 def next_unanswered(draft):
@@ -533,15 +562,13 @@ def start_progress(args, ws):
         except WorkspaceError as e:
             out["error"] = str(e)
         return emit(out, 2)
-    if args.mode == "new" and not args.variant:
-        raise WorkspaceError("new 需要 --variant")
     if args.mode in {"resetup", "partial"}:
         name = args.base_backup
         if not name:
             raise WorkspaceError(f"{args.mode} 需要 --base-backup")
         if name in {".", ".."} or Path(name).name != name or not (backups_dir(ws) / name).is_dir():
             raise WorkspaceError(f"找不到备份：{name}")
-    plan = [s["id"] for s in STEPS if args.mode == "new" or s["id"] != "directory"]
+    plan = ordered_plan(args.mode, {s["id"] for s in STEPS if args.mode == "new" or s["id"] != "directory"})
     added = {}
     if args.mode == "partial":
         if not args.select:
@@ -565,15 +592,14 @@ def start_progress(args, ws):
                     selected.add(dependency)
         plan = [s["id"] for s in STEPS if s["id"] in selected]
     at = fsutil.now().astimezone().isoformat(timespec="seconds")
-    draft = {"schemaVersion": 1, "mode": args.mode, "variant": args.variant,
+    draft = {"schemaVersion": 1, "mode": args.mode,
              "baseBackup": args.base_backup, "startedAt": at, "updatedAt": at,
              "plan": plan, "current": None, "added": added, "answers": {}}
     if args.mode == "new":
         draft["answers"]["directory"] = {"status": "kept", "value": str(ws), "source": "user", "at": at}
-        if args.variant == "typical":
-            for step in TYPICAL_DEFAULT_STEPS:
-                draft["answers"][step] = {"status": "default", "value": STEP_BY_ID[step]["default"],
-                                          "source": "default", "at": at}
+        for step in NEW_DEFAULT_STEPS:
+            draft["answers"][step] = {"status": "default", "value": STEP_BY_ID[step]["default"],
+                                      "source": "default", "at": at}
     draft["current"] = next_unanswered(draft)
     save_progress(ws, draft)
     return emit(progress_summary(draft))
@@ -640,7 +666,7 @@ def cmd_progress(args):
                 else:
                     continue
                 draft["added"][review] = args.step
-            draft["plan"] = [s["id"] for s in STEPS if s["id"] in draft["plan"]]
+            draft["plan"] = ordered_plan(draft["mode"], set(draft["plan"]))
         draft["current"] = next_unanswered(draft)
     save_progress(ws, draft)
     return emit(progress_summary(draft))
@@ -677,7 +703,6 @@ def build_parser():
     actions = pg.add_subparsers(dest="action", required=True)
     start = actions.add_parser("start", help="开始引导")
     start.add_argument("--mode", choices=["new", "resetup", "partial"], required=True)
-    start.add_argument("--variant", choices=["typical", "custom"])
     start.add_argument("--select", help="阶段或步骤 id，以逗号分隔")
     start.add_argument("--base-backup")
     actions.add_parser("show", help="查看进度")
@@ -719,8 +744,6 @@ def main(argv=None):
         path = args.path if args.cmd == "init" else args.workspace
         if creating and path:
             ws = init_path(path)  # 拒绝危险目录时尚未创建互斥文件。
-            if new_progress and not args.variant:
-                raise WorkspaceError("new 需要 --variant")
             with ledger.gated(ws, "write", allow_create=True):
                 if new_progress and not (ws / MARKER).exists():
                     init_workspace(ws)

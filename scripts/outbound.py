@@ -131,6 +131,8 @@ def nudge_policy(L, ev, events, profile, now, page, pending=None):
     if page["lastSpeaker"] != "us":
         return deny("not_our_turn", "最后发言方为 HR，先处理来信")
     at, upper, read = parsed
+    if L.inventory.stale(L, events, key, profile["nudge"], page_upper=upper):
+        return deny("inventory_stale", "盘点时长期无活动，只接手；确认接手后新 HR 回复才恢复主动跟进")
     attempts = L.attempts_of(events)
     last, blocked = L.nudge_turn(events, key)
     if blocked:
@@ -292,6 +294,10 @@ def evaluate(L, ws, ev, run, lock, events, profile, current=None, page_state=Non
         if any(d != decision or not (approved or ack) or not L.same_complete_thread_keys(key, requested_key)
                for d in thread["pausedBy"]):
             return deny("thread_paused", "存在不属于当前有效决定/邀约的暂停")
+    if kind in ("reply", "resume") and not approved:
+        scope = L.inventory.reply_scope(L, other_events, requested_key, profile["nudge"])
+        if scope is not None and not scope["ready"]:
+            return deny("inventory_history", "超龄盘点的接手前 HR 只作历史；须有已确认的接手后新 HR 才自动回复")
     if kind == "nudge":
         problem = nudge_policy(L, ev, other_events, profile, now,
                                page_state if checking else ev.get("pageState"), current)

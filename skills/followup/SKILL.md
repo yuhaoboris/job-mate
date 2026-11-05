@@ -1,13 +1,11 @@
 ---
 name: followup
-description: 巡检招聘平台HR会话，按授权回答有依据的问题、发送简历、主动跟进；承诺与未知事项先写inbox交本人决定。当用户说“看看HR回复”“处理消息”“回复HR”“跟进一下”，在IM答复已有事项，或定时巡检时使用。不筛选首次联系（用 apply），不建立偏好（用 setup），不自行提出或答应面试时间。
+description: 首次盘点已有会话并巡检HR消息，按授权代答、发简历和主动跟进；承诺与未知事项交本人决定。用于看看HR回复、处理消息、回复HR、跟进、重新盘点、IM答复或定时巡检。不做首次联系或求职设置，不自行提出或答应面试时间。
 ---
 
 # followup：处理消息、本人决定与主动跟进
 
-需要本人决定只暂停该会话；整轮停止按共享执行契约。
-
-路径相对本文件所在目录。**每轮必读**：
+**每轮必读**：
 - [工作区](../../shared/workspace.md)：配置与版本准入。
 - [执行契约](../../shared/execution.md)：能力、完整读取、输入、guard与停止收尾。
 - [安全边界](../../shared/safety.md)：不得代为承诺、遇限即停与隐私。
@@ -15,6 +13,8 @@ description: 巡检招聘平台HR会话，按授权回答有依据的问题、�
 - BOSS 页面事实：[通用](../../platforms/boss/common.md)、[消息页](../../platforms/boss/followup.md)；其他平台先读其随包页面说明。
 
 ledger / notify / im_lark.py 分别为 `python3 <本文件上两级目录>/scripts/ledger.py`、`.../scripts/notify.py`、`.../scripts/im_lark.py`；先解析绝对路径，Windows 用 `py -3`。命令/事件查[台账](../../shared/ledger.md)，外发/例外查[发送准备](../../shared/sending.md)，同步与事项查[通知回路](../../shared/notify.md)及[飞书适配器](../../shared/im/lark.md)，步骤状态查[派生说明](../../shared/derived.md)。
+
+与本人对话、提问或报告问题时，先遵守 [提问与对话](../../shared/ask.md)。
 
 ## 1. 准备与授权
 
@@ -64,25 +64,27 @@ reply 与 nudge 是**独立授权**：
 
 ## 3. 发现待处理消息
 
+**先盘点**：每账号首次按 [会话盘点](../../shared/inventory.md) 只读「全部」列表到底并接手，不设开关、不改setup。未完记进度续做，真到底才finish；禁发可盘点，全局暂停不浏览。本人说「重新盘点」才restart。
+
 同一会话去重，按顺序：
 1. `ledger threads` 的 pendingTails（即使无未读）；
 2. 平台未读会话；
-3. 全部列表中HR最后发言的会话，按 limits.inboundScanDays（默认14天）、inboundScanPerRun（默认30）逐项扫描。连续3个非置顶项超天数、列表底部或风险提示停止；预算不足优先最久未处理，报告未查范围。
+3. HR最后发言及 inventoryPending 未打开会话，最久未处理优先，共用 inboundScanPerRun（默认30）预算；后者不限天数。普通列表限 inboundScanDays（默认14天），连续3个非置顶项超龄、到底或风控就停，报告未查范围。
 4. canNudge:true 的待页面核验候选，或本轮明确点名、可能由nudge例外覆盖的目标；候选不是发送授权。
 
-仅在无pending、无未读、listMark与lastHandled相同，且lastHandled的完整readAt仍在 inboundRecheckHours（默认24小时）内，才可跳过。lastOpenedAt、handled写入时间或相同摘要不能延长周期；超期仍点开，不声称24小时内一定全发现。
+只有无pending/未读、listMark与lastHandled相同，且其完整readAt在 inboundRecheckHours（默认24小时）内才可跳过。lastOpenedAt、handled写入时间、同摘要不延长周期；超期仍打开，不保证24小时全发现。
 
-公司精确匹配且招聘者一致才是同一会话。完整读到最后锚点至末尾（含卡片），按[尾部协议](../../shared/tails.md) `ledger tail`：默认与handled比，处理后必须显式 `--base <本次实际处理tailId>` 重读。same/extended/new_anchor均按协议解释，不把缺时间、重复锚点、截断或mismatch当旧消息。
+公司精确匹配且招聘者一致才是同一会话。完整读锚点至末尾（含卡片），按[尾部协议](../../shared/tails.md) `ledger tail`，默认与handled比；处理后显式 `--base <本次实际处理tailId>` 重读，不把歧义、截断或mismatch当旧消息。
 
-确认的新HR先带同会话tailId记replied，由脚本生成replyProof，HR全文不入账；人工分支仅据本人明确位置/条数写user/newHr/evidence。换tailId、旧base、重读、晚登记不能重置已消费身份或退还后续nudge；后续完整桥的保守顺序约束不因首次origin在partial tail丢失。
+盘点超龄会话按inventoryReply分流：接手前HR未答作历史参考，不代答、不进回复分诊；仅处理接手后新HR，混合尾部仍跳过旧问题，时间不明先核对。未超龄的接手前未答照常分诊代答。新HR以同会话tailId记replied取replyProof；重读、换base或迟到登记不退款。
 
-处理完成后再读；本次复核settled:true才handled最新快照。发消息改变锚点时，提交从实际基准到末尾的完整bridge，新我方项逐个匹配已sent尝试；不能仅看新锚点后的空尾部。发前/发后新增HR都分诊，已sent不重复；新锚点前遗漏或bridge歧义保留核对，须本人带依据handled，换base得到same不能消除。中断先续pendingTails/未决，不从新锚点跳过旧片段。
+处理后复核settled:true才handled最新快照。锚点改变须按尾部协议提交完整bridge、匹配sent并处理全部新HR；遗漏或歧义留本人带依据核对，换base/same不消除。中断先续pendingTails/未决，不跳过旧片段。
 
 ## 4. 分诊（按顺序命中）
 
-新入站无我方消息且无本地记录，先读JD评估；已有会话换职位也重算。正向条件须证实，排除项明确命中才排除；招聘者活跃度不约束HR主动来信。`ledger screen-check --platform boss --company <公司>` 只消费 `stoplist`、`stoplist_suspect`、`company_rejected`、`company_risk`；already_contacted/reposted_suspect不用于拒绝入站回复。退出0不是发送许可，退出2停止。读过的新职位记screen，子项jdFacts/checks继承给后续信息流程。
+盘点接手首次打开补读JD并记screen，只补信息与停止名单/风险，不因条件不符declined。其他新入站无我方消息且无本地记录，先读JD评估；换职位重算。正向条件须证实，排除项明确命中才排除；招聘者活跃度不约束HR主动来信。`ledger screen-check --platform boss --company <公司>` 只消费 `stoplist`、`stoplist_suspect`、`company_rejected`、`company_risk`；already_contacted/reposted_suspect不用于拒绝入站回复。退出0不是发送许可，退出2停止。读过的新职位记screen，子项jdFacts/checks继承给后续信息流程。
 
-明确不符记declined，只有因declined关闭的会话，HR推新职位且符合时可reopened；用工性质不符如人员外包/劳务派遣同时加停止名单，单个职位薪资/职责不符不拉黑公司。待确认先paused、写inbox等本人。
+后续沟通确认不符才declined；因declined关闭后，HR推符合的新职位可reopened；用工性质不符如人员外包/劳务派遣同时加停止名单，单个职位薪资/职责不符不拉黑公司。待确认先paused、写inbox等本人。
 
 | 场景 | 动作 |
 |---|---|
@@ -135,7 +137,7 @@ Agent **不答应、也不提出任何面试时间**，不追问或提供自己�
 
 canNudge:true仅本地候选，nudgeNeedsPageState:true，不证明当前已读/送达或本轮授权。按[最终门禁](../../shared/sending.md#主动跟进的最终门禁)真实填写最后发言方、我方状态/绝对时间/精度/readAt；完整读取后才声明我方最后发言。日期不精确、陌生我方活动、新HR或歧义先核对。prepare带pageState；每次guard重新读，不回退旧值。
 
-等待、间隔、连续/累计/每日次数与时段以有效配置和最终门禁为准。首次pending占次数，失败/不明不退款；新HR凭据才重开连续，累计不清零，handled/released不重置。suggestSilent则登记silent，不再发。
+盘点超 nudge.existingMaxAgeDays（默认30天）只接手、不进候选；确认接手后新HR才恢复，历史HR、handled/released不解除保护。等待、间隔、连续/累计/每日次数与时段以有效配置和最终门禁为准。首次pending占次数，失败/不明不退款；新HR凭据才重开连续，累计不清零，handled/released不重置。suggestSilent则登记silent，不再发。
 
 | maxPerSilence | 1次 | 2次 | 3次 |
 |---|---|---|---|
@@ -143,20 +145,20 @@ canNudge:true仅本地候选，nudgeNeedsPageState:true，不证明当前已读/
 | 2 | confirm_open | ask_answer | — |
 | 3 | confirm_open | propose_interview | ask_answer |
 
-tags精确带nudge:<nudgeSeq>和intent:<nudgeIntent>。confirm_open确认职位仍开并表达匹配；propose_interview仅表达面试意愿；ask_answer礼貌请对方明确答复，可接受婉拒。每次从本职位JD与真实经历按style重写，不套模板；不用禁词进度/跟进/催，和本会话历史招呼/intro/nudge过于相似被拒就换说法，不删标签、不换kind绕过。
+tags精确带nudge:<nudgeSeq>、intent:<nudgeIntent>：confirm_open确认在招并表达匹配，propose_interview表达面试意愿，ask_answer请明确答复、接受婉拒。按JD/真实经历/style重写；禁词进度/跟进/催，若与历史招呼/intro/nudge过似则换说法，不删标签、不换kind。
 
 ## 9. 接管与交还
 
-页面已有我方消息而本地无adopted/sent，视为本人自己的会话，不回复、不跟进，只汇报。本人明确点名交给Agent后，记录实际读取readAt，在有效锁内以skill:user登记adopted，不批量代领。
+首次盘点记 adopted（skill:followup、adoptionSource:inventory），readAt 为该列表项实际读取时间，不覆盖已有状态。盘点后新出现的未接手我方会话只汇报，可重新盘点或点名交出；点名仍在有效锁内用 skill:user、readAt 记 adopted。
 
-接管分界用threads.boundaryAt：本地sent、adopted.readAt、released时间的最大值；登记不用写入时间，交还不能推到未来。逐一核对我方文字与发简历、同意交换联系方式、接受面试等卡片活动，先比对所有本地sent（包括构成分界的那条）：同类、正文相符，时间在页面区间前后2分钟内才算Agent所发。
+boundaryAt 取本地 sent、adopted.readAt、released 的最大值，登记不用写入时间，不推到未来。先比对所有本地 sent（包括构成分界的那条）：同类、正文相符、时间在页面区间前后2分钟内才算Agent所发。核对我方文字与发简历、同意交换联系方式、接受面试等卡片活动。
 
-- 分钟为 [10:00, 10:01)，只显示日期为当天全天；区间整个早于分界才算历史，整个晚于分界记manual。
-- 跨分界（同一分钟或同一天日期标签）或执行者/时间不清，本轮不发，paused后inbox暂停询问“本人处理 / 交给Agent继续”，不能断言没有接管。
-- manual只有本人明确released才解除，不重置跟进计数。交还时acknowledged按读取日换算绝对日期/分钟、precision、活动kind和确认count，不记原文；孤立时分不猜日期。
-- 同时间组、同类型从早到晚前count条是已确认历史，超出仍暂停；时间明确晚于分界不豁免。上午确认当天1条，下午新发「14:00」是接管；仍仅日期的第2条再次暂停，不能算历史。
+- 分钟 [10:00, 10:01)，只显示日期为当天全天；区间整个早于分界算历史，整个晚于分界记manual。
+- 跨分界（同一分钟或同一天日期标签）、执行者/时间不清，本轮不发，paused后inbox暂停询问“本人处理 / 交给Agent继续”。
+- 本人说“这个会话我自己来”记manual；只有本人明确released才解除，交还不重置跟进计数。
+- released.acknowledged 按绝对日期/分钟、precision、kind、count，记录本人确认的跨界活动条数，不记原文。孤立时分不猜日期；同组从早到晚前count条豁免，更多仍暂停，分界后明确新活动不豁免。
 
-字段与换算按[台账观察契约](../../shared/ledger.md#观察与决定)，页面时间词表按平台；不把released/handled当HR新回复。
+上午确认当天1条，下午新发「14:00」是接管；仍仅日期的第2条再次暂停，不能算历史。字段与换算按[观察契约](../../shared/ledger.md#观察与决定)，平台时间词表不变；released/handled不当新HR回复，盘点也不冒充sent。
 
 ## 10. 等待与收尾汇报
 
@@ -166,4 +168,4 @@ tags精确带nudge:<nudgeSeq>和intent:<nudgeIntent>。confirm_open确认职位�
 
 只有本轮实际处理过会话或执行过已决定事项（含本地动作）才排队summary。只补done、消费ready、无需动作不发summary。收尾sync，按[释放与对账契约](../../shared/ledger.md#释放与对账契约)执行 `ledger lock release --run <runId>`，核对released/reconciled和最新unresolved/inbox；释放失败保留锁、报告持锁者，不继续外发。没有IM也必须收尾释放，释放后仅本地对账/通知。
 
-汇报禁发与两种独立权限、实际巡检范围/未查范围、每会话要点与动作/状态、原决定ID与待本人事项、接管/风险、通知queued/sent/unknown及未读完/拒收/路由冲突。不把未读为0或摘要不变说成无新回复。环境受阻且无可靠送达时报告原因、恢复办法和如何重新发起。
+汇报盘点状态、接手数、跳过及原因、尚未打开数；禁发与两种独立权限、实际巡检范围/未查范围、每会话要点与动作/状态、原决定ID与待本人事项、接管/风险、通知queued/sent/unknown及未读完/拒收/路由冲突。不把未读为0或摘要不变说成无新回复。环境受阻说明原因与重新发起办法。

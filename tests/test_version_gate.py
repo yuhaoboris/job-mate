@@ -46,6 +46,10 @@ ENTRY_CASES = [
     ("ledger", "tail --run setup-run --thread boss|main|company|recruiter --read-at 2026-01-01T12:00:00+08:00", "write"),
     ("ledger", "quota --platform boss --run setup-run", "read"),
     ("ledger", "quota --platform boss --account main --run setup-run", "read"),
+    ("ledger", "inventory start --platform boss --run setup-run", "write"),
+    ("ledger", "inventory record --platform boss --run setup-run --json {}", "write"),
+    ("ledger", "inventory progress --platform boss --run setup-run --reason synthetic", "write"),
+    ("ledger", "inventory finish --platform boss --run setup-run --reason synthetic", "write"),
     ("ledger", "threads", "read"),
     ("ledger", "threads --platform boss --account main", "read"),
     ("ledger", "stats", "read"),
@@ -83,8 +87,7 @@ ENTRY_CASES = [
     ("workspace", "restore sample", "recover"),
     ("workspace", "restore sample --run setup-run", "recover"),
     ("workspace", "changed --since sample", "read"),
-    ("workspace", "progress start --mode new --variant typical", "write"),
-    ("workspace", "progress start --mode new --variant custom", "write"),
+    ("workspace", "progress start --mode new", "write"),
     ("workspace", "progress start --mode resetup --base-backup sample", "write"),
     ("workspace", "progress start --mode partial --select browser --base-backup sample", "write"),
     ("workspace", "progress show", "read"),
@@ -110,8 +113,7 @@ ENTRY_CASES = [
     ("notify", "test", "write"),
     ("notify", "status", "read"),
 ]
-CREATION_CASES = ["init {ws}", "progress start --mode new --variant typical",
-                  "progress start --mode new --variant custom"]
+CREATION_CASES = ["init {ws}", "progress start --mode new"]
 
 
 def argv(command, ws):

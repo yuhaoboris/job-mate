@@ -42,11 +42,11 @@ TEXT_BUDGETS = {p.relative_to(ROOT).as_posix(): 16000 for p in (ROOT / "shared")
 TEXT_BUDGETS.update({f"skills/{name}/SKILL.md": 20000 for name in build.SKILL_NAMES})
 TEXT_BUDGETS.update({"shared/browser/agent-desktop.md": 12000, "shared/im/lark.md": 8000})
 READING_BUDGETS = {
-    "setup": (55000, ("skills/setup/SKILL.md", "shared/workspace.md", "shared/execution.md")),
+    "setup": (55000, ("skills/setup/SKILL.md", "shared/workspace.md", "shared/execution.md", "shared/ask.md")),
     "apply": (55000, ("skills/apply/SKILL.md", "shared/workspace.md", "shared/execution.md", "shared/safety.md",
-                      "platforms/boss/common.md", "platforms/boss/apply.md")),
+                      "platforms/boss/common.md", "platforms/boss/apply.md", "shared/ask.md")),
     "followup": (70000, ("skills/followup/SKILL.md", "shared/workspace.md", "shared/execution.md", "shared/safety.md",
-                         "shared/tails.md", "platforms/boss/common.md", "platforms/boss/followup.md")),
+                         "shared/tails.md", "platforms/boss/common.md", "platforms/boss/followup.md", "shared/ask.md")),
 }
 
 
@@ -197,6 +197,39 @@ class BuildTest(unittest.TestCase):
                 pending = ledger("prepare", "--run", "built-send", "--json", json.dumps(intent, ensure_ascii=False))
                 self.assertTrue(pending["allowed"])
                 self.assertTrue(ledger("guard", "--run", "built-send", "--attempt", pending["attemptId"])["allowed"])
+
+    def test_all_built_inventory_commands_work_without_repository(self):
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        for directory in map(Path, result["built"]):
+            with self.subTest(package=directory.name):
+                ws = Path(self.tmp.name) / ("inventory-" + directory.name)
+                env = dict(os.environ, JOB_MATE_TESTING="1", JOB_MATE_NOW="2026-11-05T12:00:00+08:00",
+                           PYTHONDONTWRITEBYTECODE="1")
+                def cli(script, *args):
+                    out = subprocess.run([sys.executable, "-B", "-I", str(directory / "scripts" / script), *args],
+                                         cwd=self.tmp.name, capture_output=True, text=True, encoding="utf-8",
+                                         env=env, timeout=30)
+                    self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+                    self.assertFalse(out.stderr)
+                    return json.loads(out.stdout)
+                self.assertTrue((directory / "scripts/inventory.py").is_file())
+                self.assertTrue((directory / "shared/inventory.md").is_file())
+                cli("workspace.py", "init", str(ws), "--account", "boss:built:合成账号")
+                prefix = ("--workspace", str(ws))
+                cli("ledger.py", *prefix, "lock", "acquire", "--skill", "followup", "--run", "built-inventory", "--no-send")
+                def inventory(action, *args):
+                    return cli("ledger.py", *prefix, "inventory", action, "--platform", "boss", "--run", "built-inventory", *args)
+                inventory("start")
+                row = {"company": "独立构建合成公司", "recruiter": "示例HR", "readAt": env["JOB_MATE_NOW"],
+                       "lastActivityLabel": "2026-09-20 10:00", "listState": "active"}
+                inventory("record", "--json", json.dumps(row))
+                self.assertTrue(inventory("record", "--json", json.dumps(row))["duplicate"])
+                self.assertEqual(inventory("finish", "--reason", "合成列表到底")["inventory"]["status"], "completed")
+                thread = cli("ledger.py", *prefix, "threads")["threads"][0]
+                self.assertEqual(thread["adoptionSource"], "inventory")
+                self.assertEqual(thread["nudgeReason"], "inventory_stale")
+                self.assertTrue(cli("ledger.py", *prefix, "validate")["ok"])
 
     def test_all_built_configuration_transactions_run_independently(self):
         code, result = run_build("--out", str(self.out))

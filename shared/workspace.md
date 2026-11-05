@@ -20,7 +20,7 @@
 - 写入要求主版本相同，且工作区的「主.次」不高于脚本；拒绝时退出码 2，`code` 为 `suite_major_mismatch` 或 `suite_too_old`，先更新整套技能。普通取锁成功后升级较低的工作区版本，不降级标记。
 - 恢复只要求主版本相同：`lock acquire --skill setup --recovery`、`lock release`、`pause off`、`workspace commit --recover`、`workspace restore`。恢复锁记 `mode: recovery`，只允许恢复类写入；其他写入（包括 `guard`、续期、进度及通知写入）退出码 2，`code: recovery_lock_only`。只读仍可用。
 - `restore` 未传 `--run` 时自动获取恢复锁；传入时必须是有效 setup 锁。恢复保留恢复前的 `suiteVersion`，不采用备份中的旧版本。
-- 无标记时，`init` 或显式指定目录的 `progress start --mode new --variant typical|custom` 可建立骨架；已有标记时均按写入准入，不能借新建绕过保护。`backup`、全部进度修改、通知排队 / 认领 / 回执 / 入站是写入；`outbox` 不带 `--claim` 是只读。
+- 无标记时，`init` 或显式指定目录的 `progress start --mode new` 可建立骨架；已有标记时均按写入准入，不能借新建绕过保护。`backup`、全部进度修改、通知排队 / 认领 / 回执 / 入站是写入；`outbox` 不带 `--claim` 是只读。
 
 写入、恢复与创建都在 `ledger/.mutation.mutex` 内复查准入，并持锁到变更完成（等待 IM、停止名单等业务锁时也不放开）。创建只在该临界区内确认没有标记时豁免版本检查；仅存在互斥文件不算工作区。只读入口不取中央写锁，不因恢复锁被当作写入拒绝。
 
@@ -51,22 +51,22 @@ setup 确认后生成工作区外暂存目录，用 `workspace commit --staging 
 
 ## setup 进度
 
-`workspace progress` 的命令如下。步骤 id 与阶段菜单见 setup 技能，目录的唯一定义在 `scripts/workspace.py`。
+步骤与新建 8 屏的唯一定义在 `scripts/workspace.py`（STEPS.screen、SCREENS），菜单见 setup 技能。新建按屏、重设按步骤；只读本人本轮提供的材料，不搜索外部目录。提问遵守 [提问与对话](ask.md)。
 
 | 命令 | 作用 |
 |---|---|
-| `start --mode new --variant typical\|custom` | 新建完整计划，目录自动已答；典型的活跃度、限额时段记默认 |
+| `start --mode new` | 按屏建计划，目录已答；activity、inquiry、pacing 记默认，qa 自动起草待汇总确认；browser 仍询问 |
 | `start --mode resetup --base-backup <名>` | 除目录外全部步骤；备份须存在 |
-| `start --mode partial --select <阶段或步骤id,…> --base-backup <名>` | 按目录顺序选择，自动带入材料依赖；未知 id 报错 |
-| `show` | 模式、计划、当前步骤、第 n/N 步、回答及追加的复核步骤 |
+| `start --mode partial --select <阶段或步骤id,…> --base-backup <名>` | 按目录顺序选择，自动带入所选步骤依赖；未知 id 报错 |
+| `show` | 模式、计划、回答、复核来源；position/total 新建按屏、重设按步骤；currentScreen 含 number/name/steps/pending，label 为「第 n/8 步 · 屏名」 |
 | `record <id> --status changed\|kept\|default\|skipped [--value '<JSON>'] [--source user\|current\|resume\|default]` | 覆盖该步回答，推进到第一个未答步骤；必答不能跳过；联动复核按目录顺序插入，已有回答的复核步骤清除回答、重新待答，记录带入来源 |
 | `goto <id>` | 移动当前步骤，保留已有回答 |
 | `finish` | 复用体检但不计草稿存在一项；没有其他问题才删除草稿，否则保留并返回问题 |
 | `clear` | 放弃或从头开始，不做体检；新建同时删除 `job-mate.json`，返回 `markerRemoved: true`；有事件时保留标记，返回 `false` 与原因；重置不动标记 |
 
-输出一个 JSON 对象；退出码 0 成功、1 体检未通过、2 错误。草稿已有时 `start` 报错并返回摘要，不覆盖。本人可稍后继续或确认放弃。新建 `clear` 删除草稿与工作区标记，目录与其他文件保留；标记撤销后该目录不再是工作区，`ledger` / `workspace` 找不到它。若已有事件则保留标记并说明原因，不宣称工作区已停用。新建从头开始时，`clear` 后须重新 `init`、`progress start`。
+输出 JSON；退出码 0 成功、1 体检未通过、2 错误。草稿已有时 start 返回摘要、不覆盖。clear 规则见表：标记撤销后不再是工作区；有事件保留标记，不宣称已停用。从头开始须重新 init、progress start。
 
-`check` 对新建草稿报 `problems`（初始化未完成，第 n/N 步），对重新设置或部分重新设置草稿报 `warnings`（当前配置仍有效）；损坏草稿报问题并建议本人确认放弃。草稿不属于配置文件，`backup` 不包含它，`restore` 和 `changed` 不动它。完成应使用 `finish` 后再 `check`，不要用 `clear` 绕过体检。`workspace check` 只检查工作区数据，不检查或安装服务、不检查执行环境。环境能力由实际 runtime 按执行契约自检。
+check 对新建草稿报 problems，对重设草稿报 warnings（当前配置仍有效）；损坏时报问题。草稿不进 backup，restore/changed 不动草稿；完成须 finish 后 check，不能 clear 绕过体检。check 只检查工作区数据，环境由 runtime 按执行契约自检。
 
 
 ## job-mate.json
@@ -120,7 +120,7 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
     "inboundScanDays": 14, "inboundScanPerRun": 30, "inboundRecheckHours": 24, "platforms": {}
   },
   "nudge": {"afterReadHours": 24, "afterUnreadHours": 24, "intervalHours": 48,
-            "maxPerSilence": 3, "maxPerThread": 6, "perDay": 20, "platforms": {}},
+            "maxPerSilence": 3, "maxPerThread": 6, "perDay": 20, "existingMaxAgeDays": 30, "platforms": {}},
   "im": {"channel": "lark", "ownerId": "<本人确认ID>", "larkProfile": "default", "waitMinutes": 60},
   "schedule": {
     "timezone": "Asia/Shanghai",
@@ -141,6 +141,7 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
 - `style`：tone 为 polite/friendly/concise，length 为 short/medium，address 为 neutral/surname，emoji 为布尔，bannedWords 为字符串数组（成员非空）。上例为政策默认；`selfIntro` 无事实默认，setup 据 candidate.md 提炼、本人确认后写 1–3 条非空短语。缺少只告警，不生成空数组或事实。
 - `inquiry.priority` 是 salary/hours/location/leave/employment 的不重复子集；`maxPerMessage` 为整数 1 或 2，指子项数。缺省见上例。
 - `limits` 为非负整数（dedupScope 仅 company/job）；生效顺序为内置 → 平台 defaultLimits → 全局 → platforms 平台覆盖。`nudge` 同样支持平台覆盖；各数值为正整数，maxPerSilence 为 1–3，maxPerThread 为 maxPerSilence–9。两授权独立；判定见[发送准备](sending.md)，配置不等于许可。
+- `nudge.existingMaxAgeDays`：盘点时超过此天数的会话只接手、不主动跟进，默认30，正整数；[盘点与恢复规则](inventory.md)。
 - `schedule.activeHours` 约束 `apply` 和主动跟进；回复 HR 不受限。
 - `im` 见 [notify.md](notify.md)：channel 为 none（只写 inbox，缺省）或 lark。waitMinutes 是 runtime 等待本人答复的最长分钟数，整数 0–240（非布尔），缺省 60；0 不等待。
 - 飞书需要非空 ownerId 与 larkProfile；可选 larkCommand 为非空字符串数组。体检与 notify 共用校验，不按 ID 前缀猜身份。无需通知写 `{"channel":"none"}`，缺少 im 等同 none。

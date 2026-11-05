@@ -1,15 +1,19 @@
 """T9.2 setup 目录与依赖：临时合成配置，测试脚本而非宣称 Agent 行为验收。"""
+import contextlib
 import copy
+import io
 import json
+import os
 from pathlib import Path
 import re
 import unittest
+from unittest.mock import patch
 
 import test_workspace
 
 W, L = test_workspace.workspace, test_workspace.ledger
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED = ["directory", "materials", "account", "browser", "roles", "locations", "salary", "requirements",
+EXPECTED = ["directory", "account", "browser", "roles", "locations", "salary", "requirements",
             "exclusions", "companies", "activity", "candidate", "resumes", "qa", "style", "inquiry", "greeting",
             "applyAuth", "replyLevel", "nudge", "pacing", "im"]
 
@@ -24,7 +28,7 @@ class SetupStepsTest(unittest.TestCase):
     def tearDown(self):
         self.f.tearDown()
 
-    def test_catalog_has_exact_six_phases_and_22_steps(self):
+    def test_catalog_has_exact_six_phases_and_21_steps(self):
         self.assertEqual([s["id"] for s in W.STEPS], EXPECTED)
         phases = list(dict.fromkeys(s["phase"] for s in W.STEPS))
         self.assertEqual(phases, ["prepare", "criteria", "facts", "communication", "authorization", "notify"])
@@ -34,22 +38,18 @@ class SetupStepsTest(unittest.TestCase):
         self.assertEqual(W.STEP_BY_ID["roles"]["review"], ["greeting"])
         self.assertEqual(W.STEP_BY_ID["style"]["review"], ["greeting"])
 
-    def test_new_modes_defaults_are_policy_only_and_never_write_formal_profile(self):
+    def test_new_defaults_are_policy_only_and_never_write_formal_profile(self):
         before = (self.f.ws / "profile.json").read_bytes()
-        for variant in ("typical", "custom"):
-            rc, out = self.f.progress("start", "--mode", "new", "--variant", variant)
-            self.assertEqual(rc, 0, out)
-            self.assertEqual(out["plan"], EXPECTED)
-            self.assertEqual((out["position"], out["total"]), (2, 22))
-            defaulted = {k for k, v in out["answers"].items() if v["status"] == "default"}
-            self.assertEqual(defaulted, {"browser", "activity", "inquiry", "pacing"} if variant == "typical" else set())
-            self.assertNotIn("nudge", out["answers"])
-            self.assertNotIn("applyAuth", out["answers"])
-            self.assertNotIn("replyLevel", out["answers"])
-            self.assertNotIn("style", out["answers"])
-            self.assertEqual((self.f.ws / "profile.json").read_bytes(), before)
-            self.f.progress("clear")
-            self.f.init()
+        rc, out = self.f.progress("start", "--mode", "new")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(set(out["plan"]), set(EXPECTED))
+        self.assertEqual((out["position"], out["total"]), (2, 8))
+        defaulted = {k for k, v in out["answers"].items() if v["status"] == "default"}
+        self.assertEqual(defaulted, {"activity", "inquiry", "pacing"})
+        for step in ("nudge", "applyAuth", "replyLevel", "style", "browser"):
+            self.assertNotIn(step, out["answers"])
+        self.assertNotIn("variant", out)
+        self.assertEqual((self.f.ws / "profile.json").read_bytes(), before)
         defaults = L.effective_profile({})
         self.assertEqual(W.STEP_BY_ID["browser"]["default"], defaults["browser"])
         self.assertEqual(W.STEP_BY_ID["inquiry"]["default"], defaults["inquiry"])
@@ -59,6 +59,139 @@ class SetupStepsTest(unittest.TestCase):
         self.assertEqual(W.STEP_BY_ID["applyAuth"]["default"], {"send": False})
         self.assertEqual(W.STEP_BY_ID["nudge"]["default"],
                          {"authorization": {"followup": {"nudge": True}}, "nudge": defaults["nudge"]})
+
+    def test_screen_catalog_and_step_mapping_match_both_documents(self):
+        self.assertEqual([s["number"] for s in W.SCREENS], list(range(1, 9)))
+        automatic = {"qa", "activity", "inquiry", "pacing"}
+        for document in ("skills/setup/SKILL.md", "docs/design.md"):
+            source = (ROOT / document).read_text(encoding="utf-8")
+            rows = re.findall(r"^\| ([1-8]) \| ([^|]+) \| ([A-Za-z、]+) \|", source, re.MULTILINE)
+            self.assertEqual([(int(n), name.strip()) for n, name, _ in rows],
+                             [(s["number"], s["name"]) for s in W.SCREENS])
+            for number, _, ids in rows:
+                self.assertEqual(ids.strip().split("、"),
+                                 [s["id"] for s in sorted(W.STEPS, key=lambda x: x["screen"])
+                                  if s["screen"] == int(number) and s["id"] not in automatic])
+        skill = (ROOT / "skills/setup/SKILL.md").read_text(encoding="utf-8")
+        steps = re.findall(r"^\|[^|]*\| `([A-Za-z]+)` \|[^|]*\|[^|]*\|[^|]*\| ([1-8]) \|",
+                           skill, re.MULTILINE)
+        self.assertEqual([(key, int(n)) for key, n in steps], [(s["id"], s["screen"]) for s in W.STEPS])
+
+    def test_new_screens_advance_as_groups_and_reviews_keep_screen_order(self):
+        _, out = self.f.progress("start", "--mode", "new")
+        seen = []
+        while out["current"]:
+            step = out["current"]
+            screen = out["currentScreen"]["number"]
+            seen.append(screen)
+            self.assertEqual(out["position"], screen)
+            self.assertEqual(out["total"], 8)
+            value = {"channel": "none"} if step == "im" else {"synthetic": step}
+            rc, out = self.f.progress("record", step, "--status", "changed", "--value", json.dumps(value))
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.f.progress("show")[1], out)
+        self.assertEqual(list(dict.fromkeys(seen)), list(range(2, 9)))
+        self.assertIsNone(out["currentScreen"])
+        before = copy.deepcopy(out["answers"])
+        self.f.progress("goto", "candidate")
+        _, out = self.f.progress("record", "candidate", "--status", "changed", "--value", '"合成事实"')
+        self.assertEqual(out["label"], "第 2/8 步 · 简历")
+        self.assertEqual(out["current"], "qa")
+        self.assertEqual(out["plan"], sorted(out["plan"], key=lambda key: W.STEP_BY_ID[key]["screen"]))
+        for key in ("qa", "style", "greeting"):
+            self.assertNotIn(key, out["answers"])
+        for key in ("account", "roles", "browser", "applyAuth", "replyLevel", "nudge", "im"):
+            self.assertEqual(out["answers"][key], before[key])
+        for step, screen in (("qa", 6), ("style", 6), ("greeting", None)):
+            _, out = self.f.progress("record", step, "--status", "kept", "--value", '"复核"')
+            self.assertEqual(out["currentScreen"]["number"] if out["currentScreen"] else None, screen)
+
+    def test_new_does_not_read_or_scan_adjacent_job_data(self):
+        sibling = self.f.root / "unrelated"
+        sibling.mkdir()
+        decoy = sibling / "job-wingman.json"
+        decoy.write_text('{"private":"synthetic decoy, must not read"}', encoding="utf-8")
+        before = decoy.read_bytes()
+        original_open, original_scandir = io.open, os.scandir
+
+        def guarded_open(path, *args, **kwargs):
+            if not isinstance(path, int):
+                self.assertFalse(Path(path).resolve().is_relative_to(sibling))
+            return original_open(path, *args, **kwargs)
+
+        def guarded_scandir(path):
+            self.assertTrue(Path(path).resolve().is_relative_to(self.f.ws))
+            return original_scandir(path)
+
+        with patch("io.open", side_effect=guarded_open), patch("os.scandir", side_effect=guarded_scandir):
+            # 使用无标记的全新目录；不读取相邻资料，也不把它作为回答来源。
+            self.f.ws = self.f.root / "fresh"
+            rc, out = self.f.progress("start", "--mode", "new")
+            self.assertEqual(rc, 0, out)
+            for step in list(out["plan"]):
+                if step in out["answers"]:
+                    continue
+                value = {"channel": "none"} if step == "im" else "本人本轮合成回答"
+                rc, out = self.f.progress("record", step, "--status", "kept", "--value", json.dumps(value))
+                self.assertEqual(rc, 0, out)
+            self.assertIsNone(out["current"])
+            self.assertNotIn("unrelated", json.dumps(out))
+            self.assertFalse((self.f.ws / "candidate.md").exists())
+        self.assertEqual(decoy.read_bytes(), before)
+        self.assertEqual(list(sibling.iterdir()), [decoy])
+
+    def test_setup_interface_and_shared_conversation_contract(self):
+        skill = (ROOT / "skills/setup/SKILL.md").read_text(encoding="utf-8")
+        for forbidden in ("旧工作区", "已有配置", "导入", "迁移", "上一次求职", "materials", "--variant"):
+            self.assertNotIn(forbidden, skill)
+        self.assertIn("../../shared/ask.md", skill)
+        self.assertIn("本轮主动提供的文件", skill)
+        ask = (ROOT / "shared/ask.md").read_text(encoding="utf-8")
+        for term in ("AskUserQuestion", "AskQuestion", "request_user_input", "仅 Plan Mode",
+                     "ask_user_question", "先查找一次", "最多 4 题", "2–4",
+                     "不另加「其他」", "先读", "只说结果", "不出现字段名"):
+            self.assertIn(term, ask)
+        for name in ("apply", "followup"):
+            self.assertIn("../../shared/ask.md", (ROOT / f"skills/{name}/SKILL.md").read_text(encoding="utf-8"))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            W.build_parser().parse_args(["progress", "start", "--mode", "new", "--variant", "custom"])
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_dsh_question_contract_and_skip_defaults_match_policy(self):
+        ask = (ROOT / "shared/ask.md").read_text(encoding="utf-8")
+        for term in ("ask_user_question", "questions[]", "`id`", "`question`", "`header`",
+                     "options[{label, description}]", "`multi_select`", "不限于 Plan Mode",
+                     "不在列表里才退回编号纯文本", "卡片空选择 = 跳过本题",
+                     "不能当作对平台操作或 Agent 审批请求的批准",
+                     "主动打招呼关闭", "有把握的问题直接回答（L2）开启", "对方不回时跟进开启",
+                     "首次沟通 apply.send 只能由本人明确同意开启", "本人选择 / 默认",
+                     "汇总卡上「确认保存」", "必答项被跳过时说明原因后重问"):
+            self.assertIn(term, ask)
+        for placeholder in ("工具名待", "待在 DSH 实测确认", "DeepSeek Harness 的提问卡片工具",
+                            "未确认的授权保持待确认", "跳过不等于授权"):
+            self.assertNotIn(placeholder, ask)
+        for document in ("docs/design.md", "skills/setup/SKILL.md"):
+            text = (ROOT / document).read_text(encoding="utf-8")
+            for term in ("本人选择 / 默认", "汇总卡上「确认保存」",
+                         "首次沟通 apply.send 只能由本人明确同意开启"):
+                self.assertIn(term, text)
+            self.assertNotIn("未确认的授权保持待确认", text)
+
+    def test_screen_seven_default_records_preserve_policy_and_do_not_write_profile(self):
+        before = (self.f.ws / "profile.json").read_bytes()
+        _, out = self.f.progress("start", "--mode", "new")
+        expected = {"applyAuth": {"send": False}, "replyLevel": "L2",
+                    "nudge": {"authorization": {"followup": {"nudge": True}},
+                              "nudge": L.effective_profile({})["nudge"]}}
+        for step, value in expected.items():
+            self.assertEqual(W.STEP_BY_ID[step]["default"], value)
+            rc, out = self.f.progress("record", step, "--status", "default",
+                                      "--value", json.dumps(value), "--source", "default")
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(out["answers"][step]["value"], value)
+            self.assertEqual(out["answers"][step]["source"], "default")
+        self.assertFalse(out["answers"]["applyAuth"]["value"]["send"])
+        self.assertEqual((self.f.ws / "profile.json").read_bytes(), before)
 
     def test_partial_style_includes_only_greeting_and_survives_resume(self):
         before = {name: (self.f.ws / name).read_bytes() for name in W.CONFIG_FILES}

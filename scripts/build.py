@@ -396,18 +396,55 @@ def publish(built, targets):
     return [[str(target / name) for name in names] for target in targets], warnings
 
 
+# 只探测常见配置根，不递归搜索 HOME，也不凭空创建所有 Agent 目录。
+def discover_skill_dirs():
+    home = Path.home()
+    locations = (("Codex / DeepSeek Harness / 通用 Agent", home / ".agents"),
+                 ("Claude Code", home / ".claude"),
+                 ("Cursor", home / ".cursor"),
+                 ("DeepSeek Harness", home / ".dsh"),
+                 ("Pi", home / ".pi" / "agent"))
+    return [(name, root / "skills") for name, root in locations if root.is_dir()]
+
+
+def confirm_install_dir():
+    candidates = discover_skill_dirs()
+    if not candidates:
+        raise BuildError("没有找到常见 Agent 的技能目录；请让 Agent 确认自己的技能目录，再用 --install <目录> 安装")
+    print("找到以下技能目录，请确认你使用的 Agent：", file=sys.stderr)
+    for number, (name, path) in enumerate(candidates, 1):
+        print(f"{number}. {name}：{path}", file=sys.stderr)
+    try:
+        if len(candidates) == 1:
+            chosen = candidates[0]
+        else:
+            print("请输入目录编号（直接回车取消）：", file=sys.stderr)
+            choice = input().strip()
+            if not choice.isdigit() or not 1 <= int(choice) <= len(candidates):
+                raise BuildError("未选择有效目录，没有安装任何技能")
+            chosen = candidates[int(choice) - 1]
+        print(f"将整套安装到 {chosen[1]}，确认吗？[y/N]", file=sys.stderr)
+        if input().strip().lower() not in {"y", "yes", "是", "确认"}:
+            raise BuildError("未确认，没有安装任何技能")
+    except (EOFError, KeyboardInterrupt) as error:
+        raise BuildError("尚未确认安装目录；请让 Agent 向本人确认后用 --install <目录> 安装") from error
+    return chosen[1]
+
+
 def main(argv=None):
     fsutil.utf8_stdio()
     p = argparse.ArgumentParser(prog="build.py", description=__doc__.splitlines()[0])
     p.add_argument("--out", default=str(ROOT / "dist"), help="产物目录，默认 dist/")
-    p.add_argument("--install", metavar="DIR", help="构建后安装到该技能目录，例如 <项目>/.agents/skills")
+    p.add_argument("--install", nargs="?", const="", metavar="DIR",
+                   help="构建后整套安装；省略目录时自动探测并请本人确认")
     args = p.parse_args(argv)
     skills = SKILL_NAMES
     try:
         check_sources(skills)
         names = [PREFIX + s for s in skills]
         out = target_plan(args.out, names)
-        target = target_plan(args.install, names) if args.install else None
+        install = confirm_install_dir() if args.install == "" else args.install
+        target = target_plan(install, names) if install is not None else None
         if target is not None and overlaps(out, target):
             raise BuildError("构建目录与安装目录重叠")
         commit, dirty = git_info()

@@ -15,6 +15,8 @@ description: 在招聘平台搜索职位、读取详情、按求职工作区条�
 
 下文 ledger / notify / im_lark.py 分别指 `python3 <本文件上两级目录>/scripts/ledger.py`、`.../scripts/notify.py`、`.../scripts/im_lark.py`，解析绝对路径后使用；Windows 用 `py -3`。命令/事件首次使用读[台账](../../shared/ledger.md)，准备外发或权限例外读[发送准备](../../shared/sending.md)，需要本人处理读[通知协议](../../shared/notify.md)。
 
+与本人对话、提问或报告问题时，先遵守 [提问与对话](../../shared/ask.md)。
+
 ## 1. 定位工作区与本轮条件
 
 1. 按工作区规则定位，告知绝对路径；运行 `ledger validate`。读取 profile.json、rules.md、candidate.md、stoplist.yaml。

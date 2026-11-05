@@ -150,7 +150,7 @@ class SetupReviewTest(unittest.TestCase):
         self.assertEqual(self.config(), before)
 
     def test_default_reviews_only_declared_dependents_and_keeps_candidate_facts(self):
-        values = {"materials": {"files": []}, "roles": ["合成开发岗位"],
+        values = {"roles": ["合成开发岗位"],
                   "candidate": "合成个人事实保持原样", "qa": {"basis": "candidate.md"},
                   "style": {"length": "medium", "selfIntro": ["本人确认的合成事实"]},
                   "greeting": {"mode": "static", "text": "合" * 70},

@@ -97,8 +97,9 @@ job-mate/
 ```
 
 - 技能正文用相对路径引用 `../../shared/`、`../../platforms/`、`../../scripts/`。
-- **安装单位是整套技能。** 唯一的安装方式是 `python3 scripts/build.py --install <Agent 的技能目录>`：一次安装 `job-mate-setup`、`job-mate-apply`、`job-mate-followup` 三个目录，每个目录自带同一版本的 `shared/`、`platforms/`、`scripts/`，引用路径由构建改写。
-  - 安装器不提供只装单个技能的选项。
+- **安装单位是整套技能。** 唯一的安装入口是 `python3 scripts/build.py --install [<Agent 的技能目录>]`：一次安装 `job-mate-setup`、`job-mate-apply`、`job-mate-followup` 三个目录，每个目录自带同一版本的 `shared/`、`platforms/`、`scripts/`，引用路径由构建改写。
+  - 安装器不提供只装单个技能的选项。不带目录时只探测常见 Agent 配置根下的技能目录，列出候选并请本人选择、确认后才安装；找不到或未确认不写入。显式目录供 Agent 在对话确认目标后使用。DeepSeek Harness 探测 ~/.dsh/skills，也能读取 ~/.agents/skills；整套技能只装到当前 Agent 实际读取的一个目录，避免重复加载。
+  - 本人可让 Agent 按仓库 `INSTALL.md` 安装：临时目录获取源码、确认当前 Agent 与技能目录、构建安装、核对三个技能后告知开始口令。README 面向首次使用者，安装器细节见 [安装与维护](installation.md)。
   - 安装器检查三份副本版本一致，任一失败就整体回滚。
 - 版本：`scripts/` 内置套件版本号 `SUITE_VERSION`（语义化版本）。工作区标记 `job-mate.json` 的 `suiteVersion` 记录最近一次写入工作区的套件版本。所有数据脚本经同一个版本准入函数判断：
 
@@ -149,50 +150,74 @@ job-mate/
 
 | 模式 | 情况 |
 |---|---|
-| 新建 | 没有工作区；确认目录后选「典型」或「自定义」 |
-| 重新设置 | 除目录外，全部步骤从头过一遍，每步预填当前值 |
+| 新建 | 没有工作区；确认目录后直接按 8 屏引导 |
+| 重新设置 | 除目录外，全部步骤从头过一遍，每步预填本工作区当前值 |
 | 部分重新设置 | 本人选择阶段或步骤 |
 | 修改 | 只改个别字段，不走引导流程 |
 | 体检 | 只读检查 |
 | 继续 | 有未完成的草稿 |
 
 - 本人只说「重置」时，先问全部还是部分。**重置只重置配置**：不动事件记录、inbox 与 IM 记录，不清空停止名单，也不归档沟通记录。
-- 一次只问一步；可以回答保留、默认、跳过（仅非必答项）、上一步、稍后再说。选项用编号纯文本，不依赖某个 Agent 特有的提问工具。
+- 新建只用本人本轮主动提供的文件，不扫描、不读取、不提及工作区以外的目录；不自行查找简历。仅以 job-mate.json 识别工作区，不读取其他求职资料格式。简历屏负责读取本轮提供的简历。
+- 按能力提问：有提问卡片工具就用卡片；没有才退回编号纯文本，内容相同。工具按需加载时先查一次。工具对照与卡片约束见 [提问与对话](../shared/ask.md)：每屏一次调用、最多 4 题，每题 2–4 项，推荐项在前，不自加「其他」，使用卡片自由输入。
+- DeepSeek Harness 使用 `ask_user_question`，不限于 Plan Mode；本轮工具列表中存在即可使用，参数见提问契约。
+- 长草稿先展示再确认；卡片空选择 = 跳过本题，只是问题回答，不能当作对平台操作或 Agent 审批请求的批准。必答被跳过要说明后重问。纯文本每屏一条消息，开始时只说一次「上一步」「先到这」。
+- 新建第 7 屏跳过时按默认处理：主动打招呼关闭、有把握的问题直接回答（L2）开启、对方不回时跟进开启。跳过不能开启默认关闭的权限；首次沟通 apply.send 只能由本人明确同意开启。汇总单独列出这三项及来源（本人选择 / 默认），以本人在汇总卡上「确认保存」为准。
+- 回答仍逐项经 workspace progress record 落盘。可保留、默认、跳过非必答项、返回或暂停；界面不改变授权或数据契约。
 
 ### 5.2 步骤目录
 
-步骤目录的唯一定义在 `scripts/workspace.py`，技能里的表格由测试核对。
+步骤与屏目录的唯一定义在 scripts/workspace.py；技能、设计的表格由测试核对。新建计划按 screen 排序，progress 返回屏序号/总数、名称与 label（如「第 3/8 步 · 想找的工作」）；重新设置、部分重新设置仍按阶段与步骤顺序推进。
 
-| 阶段 | 步骤 | 写入 | 必答 | 典型模式 |
+| 屏 | 名称 | 提问步骤 | 内容 |
+|---|---|---|---|
+| 1 | 开始 | directory | 一句话说明做什么、大约多久、不在平台发消息；建议工作区路径 |
+| 2 | 简历 | candidate、resumes | 对话中请本人发简历；读后确认个人事实草稿与 BOSS 已上传附件名 |
+| 3 | 想找的工作 | roles、locations、salary | 从简历推职位、城市（多选）；薪资口径与区间 |
+| 4 | 不考虑的 | requirements、exclusions、companies | 硬性要求、排除岗位类型、排除公司，都可选没有 |
+| 5 | BOSS 账号 | account、browser | 显示名、键盘鼠标授权（默认不允许） |
+| 6 | 打招呼 | style、greeting | 三种语气示例、确认招呼语 |
+| 7 | Agent 能替你做什么 | applyAuth、replyLevel、nudge | 分开问主动打招呼（默认关）、有把握直接答（推荐开）、不回时跟进（推荐开） |
+| 8 | 手机提醒 | im | 以后再说（推荐）/ 现在配置 / 不需要 |
+
+新建自动默认 activity、inquiry、pacing，qa 从确认事实自动生成带依据的草稿，在简历屏记录，最后汇总确认；这些不增加提问屏。汇总列全部取值与三个独立授权，卡片问「确认保存 / 改某一屏」。要细调用修改或部分重新设置。
+
+下面是供重设选择的步骤顺序与每步所属新建屏：
+
+| 阶段 | 步骤 | 写入 | 必答 | 新建屏 |
 |---|---|---|---|---|
-| 准备 | `directory` 工作区目录 | — | 是 | 问 |
-| | `materials` 现成材料 | — | 否 | 问 |
-| | `account` 平台账号 | `job-mate.json` | 是 | 问 |
-| | `browser` 浏览器操作 | `profile.browser` | 否 | 默认 |
-| 求职条件 | `roles` 目标职位 | `targetRoles` | 是 | 问 |
-| | `locations` 城市 | `locations` | 是 | 问 |
-| | `salary` 薪资 | `salary` | 否 | 问 |
-| | `requirements` 硬性要求 | `hardRequirements` | 否 | 问 |
-| | `exclusions` 排除条件 | `exclusions` | 否 | 问 |
-| | `companies` 排除的公司 | `stoplist.yaml` | 否 | 问 |
-| | `activity` 招聘者活跃度 | `recruiterActivity` | 否 | 默认 7 天 |
-| 个人事实 | `candidate` 个人事实 | `candidate.md` | 是 | 问 |
-| | `resumes` 简历版本 | `resumes/index.yaml` | 是 | 问 |
-| | `qa` 问答口径 | `qa.yaml` | 否 | 问 |
-| 沟通 | `style` 沟通风格 | `style` | 否 | 问（可整体默认） |
-| | `inquiry` 优先了解的信息 | `inquiry` | 否 | 默认 |
-| | `greeting` 招呼语 | `greeting` | 是 | 问正文，方式默认 `dynamic` |
-| 授权与节奏 | `applyAuth` 首次沟通授权 | `authorization.apply` | 否 | 问 |
-| | `replyLevel` 代答级别 | `authorization.followup.reply` | 否 | 问 |
-| | `nudge` 主动跟进 | `authorization.followup.nudge`、`nudge` | 否 | 问开关，数值默认 |
-| | `pacing` 限额与时段 | `limits`、`schedule` | 否 | 默认 |
-| 通知 | `im` 飞书通知 | `im` | 否 | 问 |
+| 准备 | `directory` 工作区目录 | — | 是 | 1 |
+| | `account` 平台账号 | job-mate.json | 是 | 5 |
+| | `browser` 浏览器操作 | profile.browser | 否 | 5 |
+| 求职条件 | `roles` 目标职位 | targetRoles | 是 | 3 |
+| | `locations` 城市 | locations | 是 | 3 |
+| | `salary` 薪资 | salary | 否 | 3 |
+| | `requirements` 硬性要求 | hardRequirements | 否 | 4 |
+| | `exclusions` 排除条件 | exclusions | 否 | 4 |
+| | `companies` 排除的公司 | stoplist.yaml | 否 | 4 |
+| | `activity` 招聘者活跃度 | recruiterActivity | 否 | 4 |
+| 个人事实 | `candidate` 个人事实 | candidate.md | 是 | 2 |
+| | `resumes` 简历版本 | resumes/index.yaml | 是 | 2 |
+| | `qa` 问答口径 | qa.yaml | 否 | 2 |
+| 沟通 | `style` 沟通风格 | style | 否 | 6 |
+| | `inquiry` 优先了解的信息 | inquiry | 否 | 6 |
+| | `greeting` 招呼语 | greeting | 是 | 6 |
+| 授权与节奏 | `applyAuth` 首次沟通授权 | authorization.apply | 否 | 7 |
+| | `replyLevel` 代答级别 | authorization.followup.reply | 否 | 7 |
+| | `nudge` 主动跟进 | authorization.followup.nudge、nudge | 否 | 7 |
+| | `pacing` 限额与时段 | limits、schedule | 否 | 7 |
+| 通知 | `im` 飞书通知 | im | 否 | 8 |
 
-依赖复核：
+依赖复核不变：candidate → qa、style.selfIntro、greeting；roles、style → greeting。新建联动复核仍按屏排序，重设按步骤排序；只复核受影响内容，未选内容保持。
 
-- 改了 `candidate` 后，复核 `qa`、`style.selfIntro` 与 `greeting`。
-- 改了 `roles` 后，复核 `greeting`。
-- 改了 `style` 后，复核 `greeting`。
+### 5.2.1 对话规则
+
+setup 必须遵守，apply/followup 同样适用；执行细则统一放 [提问与对话](../shared/ask.md)。
+
+1. 只说结果不讲过程，读规则、自检、加锁、对账、备份均不播报，用本人的语言。
+2. 先读材料再提问；简历已回答的不重复问，能默认的直接默认，一句话说明以后可改。
+3. 对本人说话不出现字段名、步骤 id、L1/L2、锁、事务或备份名。
+4. 出问题给一句人话和一个照做就行的办法，不把技术方案摆给本人选。
 
 ### 5.3 写入与恢复
 
@@ -234,7 +259,7 @@ job-mate/
 "inquiry": {"priority": ["salary", "hours", "location", "leave"], "maxPerMessage": 2}
 ```
 
-信息项按大类排序，每个大类包含若干子项（第 11.3 节）。setup 只问大类顺序是否调整；`maxPerMessage` 指一条消息里最多问几个子项，取 1–2，缺省 2。
+信息项按大类排序，每个大类包含若干子项（第 11.3 节）。新建直接默认并在汇总展示；重设 inquiry 步骤时只问大类顺序是否调整；`maxPerMessage` 指一条消息里最多问几个子项，取 1–2，缺省 2。
 
 ## 6. 平台描述、职位与会话标识
 
@@ -321,7 +346,8 @@ job-mate/
 | `rejected` / `job_closed` | 对方拒绝 / 职位关闭 |
 | `silent` | 主动跟进次数用完，对方仍未回应 |
 | `paused` / `unpaused` | 等待本人决定 / 解除 |
-| `manual` / `released` / `adopted` | 本人接管 / 本人交还（可带 `acknowledged`，见 11.6）/ 本人点名交给 Agent |
+| `manual` / `released` / `adopted` | 本人接管 / 本人交还（可带 `acknowledged`，见 11.6）/ 本人点名或首次盘点接手 |
+| `inventory` | 平台账号级首次盘点进度：inventoryId、inventoryPhase、registeredCount、reachedEnd、reason；不创建空身份会话 |
 | `risk` / `limit_hit` | 风险信号 / 平台限额提示 |
 
 ### 7.3 统计口径（数据基础，分析功能以后再做）
@@ -458,6 +484,16 @@ job-mate/
 
 ### 11.1 发现待处理消息
 
+**每个平台账号首次 followup 必须先盘点并接手已有会话**，不在 setup 提问、不设开关。台账无已完成盘点时，从「全部」顶部滚到底，只读列表时间、招聘者、公司、职务、摘要及送达/已读前缀，不逐个打开、不受 inboundScanDays 限制。本人说「重新盘点」才再次执行，已登记不重复。
+
+盘点 adopted 标 skill:followup、adoptionSource:inventory，关联 inventoryId，readAt 是读到该列表项的实际时间。停止名单、明确拒绝/职位关闭、风险、草稿不接手；不按当前求职条件淘汰。已有 apply、adopted、manual、released 等会话不改状态，原 adopted 的 duplicate、未决/关闭/暂停拒绝约束保留。
+
+盘点时已超过 nudge.existingMaxAgeDays 的会话，接手前已在页面上的 HR 未答消息算历史，不代答、不进入回复分诊，可列入汇报供本人参考；只有接手后出现的新 HR 才正常处理。未超龄会话的接手前未答尾部照常分诊、代答。混合尾部按消息身份逐项过滤，不因后来有新 HR 就恢复旧问题；缺时间、跨分界则核对，不猜。
+
+脚本以 adopted.readAt、尾部 origin 与已校验 replyProof 派生 inventoryReply 的历史/新/不确定位置；超龄会话的自动 reply/resume（含系统 ack）在 prepare/guard 需要完整无歧义的新 HR 凭据，历史不因重复读取、handled、released 或迟到登记变新。本人明确批准事项仍按既有决定门禁执行。
+
+列表很长、风控、预算或锁时限不足则记录账号/平台/runId、已登记数、未到底与停止原因；跨轮重新滚动并跳过已登记项。只有真实到底才完成。禁发、只看看可盘点；全局暂停不浏览平台。接口与执行细节见 [会话盘点](../shared/inventory.md)。
+
 不能只靠平台的未读标记：HR 消息被本人在手机上看过、或上一轮中途中断，未读标记都会消失。每轮按以下顺序收集候选，同一会话只处理一次：
 
 1. **未处理完的尾部**：`ledger threads` 的 `pendingTails` 中的会话（读到过、还没处理完的 HR 未答尾部）。
@@ -466,6 +502,7 @@ job-mate/
    - 范围：最近 `limits.inboundScanDays`（缺省 14）天，每轮最多点开 `limits.inboundScanPerRun`（缺省 30）个。
    - 连续 3 个非置顶项超出天数、到达列表底部，或出现风控提示时停止。
    - 列表标记 `listMark`（列表时间标签、摘要的内容摘要、未读数）**只用来跳过，不作为消息身份**。没有待处理尾部，且同时满足三个条件才可以不点开：没有未读标记；列表标记与该会话最近一次 `handled` 记录的相同；该会话在最近 `limits.inboundRecheckHours`（缺省 24）小时内被完整打开并处理过。否则一律点开；摘要不变也不能无限期跳过。预算不足时优先核对最久未处理的会话，并汇报剩余数量，不能声称没有新消息或保证在 24 小时内全部发现。
+   - 同组补查盘点接手但未打开的 inventoryPending，按最久未处理优先，不限 14 天；与普通扫描共用 inboundScanPerRun 预算，报告未处理数量。首次打开补读职位并记 screen，仅补信息流程及停止名单/风险，不因条件不符 declined。
 4. **可跟进会话**（`nudge` 开启时）：`ledger threads` 中 `canNudge` 为 true 的会话。
 
 **会话尾部快照**：判断「有没有新消息、哪些已处理」，比较的是整段尾部，不给单条消息编序号。
@@ -481,7 +518,7 @@ job-mate/
   |---|---|---|
   | `same` | 锚点唯一、读取完整，基准与当前尾部按可确认身份逐项一致 | 没有可见的新消息 |
   | `extended` | 锚点可确认相同，基准尾部是当前尾部的严格前缀 | 只有多出来的部分是新消息 |
-  | `new_anchor` | 没有基准，或可确认锚点变了 | 整段尾部按未处理分诊；锚点不是 Agent 发的消息时，先按第 11.6 节判断是否本人接管 |
+  | `new_anchor` | 没有基准，或可确认锚点变了 | 先过滤超龄盘点的历史 HR，再将未处理部分分诊；锚点不是 Agent 发的消息时，先按第 11.6 节判断是否本人接管 |
   | `mismatch` | 内容、条数或顺序冲突；读取不全、重复锚点无法定位、缺时间或时间精度变化导致身份不确定 | **进入核对状态**，不能视为已处理。补读完整上下文；仍无法区分时暂停并请本人核对，不自动重复回复；已有暂停事项保持暂停 |
 
   无稳定平台 ID 时，内容指纹与明确的绝对日期、分钟都相同才可匹配；日期或分钟缺失、降精度不能据此返回 `same` / `extended`。同样指纹重复且存在多个对齐位置时也须核对。两个完全不可区分的页面状态无法由脚本证明消息身份，不能承诺识别所有撤回后重发；页面暴露歧义时保守核对，不把歧义当作旧消息。
@@ -505,7 +542,7 @@ job-mate/
 会话归属：
 
 - 公司精确匹配、招聘者也一致，才认作同一会话；疑似匹配不点开，汇报「身份不确定」。
-- 页面有我方消息、但本地没有任何记录的会话，视为本人自己的会话：不回复、不跟进，只在汇报中列出。本人说「把 X 交给 Agent」时记 `adopted`，此后按正常会话处理。
+- 首次盘点接手符合条件的已有会话；盘点完成后新出现而尚无接手记录的我方会话只汇报，本人可要求重新盘点或点名交出。本人说「把 X 交给 Agent」仍记 skill:user 的 `adopted`，此后按正常会话处理。
 - 没有我方消息的新会话是 HR 主动来信，先按 apply 的条件评估职位（不看招聘者活跃度）。
 
 ### 11.2 分诊（按顺序匹配，命中即停）
@@ -590,6 +627,8 @@ Agent **绝对不答应、也不提出任何面试时间**。凡涉及面试（�
 
 **候选与发送分开**：`threads.canNudge:true` 只表示按本地有效配置、历史及可判定限制发现的待页面核验候选，须同时输出 `nudgeNeedsPageState:true`；不能从本地 sent 猜当前页面已读/送达，也不代表获得本轮授权。可能被本轮例外放行的目标仍以该轮实际限制与授权检查为准，候选标记不能绕过门禁。`prepare` 与 `guard` 才作最终发送判断。
 
+盘点时最后活动早于 `nudge.existingMaxAgeDays`（缺省 30 天）的只接手、不进入跟进候选，prepare/guard 同样阻断；年龄以盘点 readAt 为准，支持 nudge 平台覆盖。确认接手后的新 HR 回复才恢复正常规则，首次打开读到的旧 HR 历史不算；未知时间须页面核验。跟进次数只算接手后的真实尝试。
+
 **触发条件**（本地候选筛查与最终页面核验共同覆盖）：
 
 - `authorization.followup.nudge` 为 true（或锁上登记了 `nudge` 本轮例外），且本轮未禁发、符合本轮限制。与 `reply` 级别无关（第 2.1 节）；
@@ -622,6 +661,7 @@ Agent **绝对不答应、也不提出任何面试时间**。凡涉及面试（�
 
 ### 11.6 本人接管与交还
 
+- 盘点 adopted 的 readAt 同样构成交接分界：实际读取之前的我方活动为历史，之后对应不上本地 sent 的仍判本人接管。本人可随时说「这个会话我自己来」记 manual，重新盘点不覆盖已有状态。
 - 接管分界 `boundaryAt` 取以下时间中最晚的一个：最近本地 `sent` 时间、最近 `released` 时间、`adopted` 的读取时间。
 - 页面上我方的文字或卡片操作（发简历、同意交换联系方式、接受面试）先与全部本地 `sent` 比对：同类、文字相符，且记录时间落在页面时间区间前后 2 分钟内，算 Agent 发的。
 - 对应不上的活动：区间整个早于分界算历史；整个晚于分界算本人接管，记 `manual`；跨分界（同一分钟，或只显示日期）时暂停，询问「是我，我来处理 / 交给 Agent 继续」。

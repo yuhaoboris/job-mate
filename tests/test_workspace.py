@@ -90,28 +90,28 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         return out
 
-    def test_progress_new_custom_and_typical_plans(self):
-        """判据 1：新建完整计划、自动回答目录与典型默认值。"""
+    def test_progress_new_screen_plan(self):
+        """新建按屏推进，目录与非提问默认值自动记录。"""
         self.init()
-        for variant in ("custom", "typical"):
-            self.init()
-            code, out = self.progress("start", "--mode", "new", "--variant", variant)
-            self.assertEqual(code, 0, out)
-            self.assertEqual(out["plan"], [s["id"] for s in workspace.STEPS])
-            self.assertEqual(out["current"], "materials")
-            self.assertEqual((out["position"], out["total"]), (2, 22))
-            self.assertEqual(out["answers"]["directory"]["value"], str(self.ws.resolve()))
-            self.assertEqual(set(out["answers"]), {"directory", "browser", "activity", "inquiry", "pacing"}
-                             if variant == "typical" else {"directory"})
-            if variant == "typical":
-                for step in ("browser", "activity", "inquiry", "pacing"):
-                    self.assertEqual(out["answers"][step]["status"], "default")
-                    self.assertEqual(out["answers"][step]["source"], "default")
-                    self.assertEqual(out["answers"][step]["value"], workspace.STEP_BY_ID[step]["default"])
-            self.progress("clear")
+        code, out = self.progress("start", "--mode", "new")
+        self.assertEqual(code, 0, out)
+        expected = ["directory", "candidate", "resumes", "qa", "roles", "locations", "salary",
+                    "requirements", "exclusions", "companies", "activity", "account", "browser",
+                    "style", "inquiry", "greeting", "applyAuth", "replyLevel", "nudge", "pacing", "im"]
+        self.assertEqual(out["plan"], expected)
+        self.assertEqual(out["current"], "candidate")
+        self.assertEqual((out["position"], out["total"]), (2, 8))
+        self.assertEqual(out["label"], "第 2/8 步 · 简历")
+        self.assertEqual(out["currentScreen"]["pending"], ["candidate", "resumes", "qa"])
+        self.assertEqual(out["answers"]["directory"]["value"], str(self.ws.resolve()))
+        self.assertEqual(set(out["answers"]), {"directory", "activity", "inquiry", "pacing"})
+        for step in workspace.NEW_DEFAULT_STEPS:
+            self.assertEqual(out["answers"][step]["status"], "default")
+            self.assertEqual(out["answers"][step]["source"], "default")
+            self.assertEqual(out["answers"][step]["value"], workspace.STEP_BY_ID[step]["default"])
 
     def test_progress_reset_and_partial_plans(self):
-        """判据 1：全量重置、阶段/步骤混选及材料依赖。"""
+        """判据 1：全量重置、阶段/步骤混选，不再添加材料步骤。"""
         self.init()
         self.fill()
         out = self.start_reset("resetup")
@@ -119,7 +119,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(out["answers"], {})
         self.progress("clear")
         out = self.start_reset(select="resumes,criteria,candidate,roles")
-        self.assertEqual(out["plan"], ["materials", "roles", "locations", "salary", "requirements",
+        self.assertEqual(out["plan"], ["roles", "locations", "salary", "requirements",
                                       "exclusions", "companies", "activity", "candidate", "resumes"])
         self.progress("clear")
         self.assertEqual(self.start_reset(select="im")["plan"], ["im"])
@@ -129,7 +129,7 @@ class WorkspaceTest(unittest.TestCase):
         self.init()
         _, backup = run("--workspace", str(self.ws), "backup")
         cases = [
-            ["--mode", "new"], ["--mode", "resetup"],
+            ["--mode", "resetup"],
             ["--mode", "partial", "--select", "salary"],
             ["--mode", "resetup", "--base-backup", "missing"],
             ["--mode", "resetup", "--base-backup", "../.."],
@@ -146,23 +146,23 @@ class WorkspaceTest(unittest.TestCase):
     def test_progress_start_existing_returns_summary_without_changes(self):
         """判据 2：已有草稿不覆盖，返回可继续的摘要。"""
         self.init()
-        self.progress("start", "--mode", "new", "--variant", "custom")
+        self.progress("start", "--mode", "new")
         path = self.ws / workspace.PROGRESS_FILE
         before = path.read_bytes()
-        code, out = self.progress("start", "--mode", "new", "--variant", "typical")
+        code, out = self.progress("start", "--mode", "new")
         self.assertEqual(code, 2)
-        self.assertEqual(out["progress"]["current"], "materials")
+        self.assertEqual(out["progress"]["current"], "candidate")
         self.assertEqual(path.read_bytes(), before)
 
     def test_progress_record_and_show(self):
         """判据 3：记录任意 JSON，推进并可从磁盘接续。"""
         self.init()
-        self.progress("start", "--mode", "new", "--variant", "custom")
-        code, out = self.progress("record", "materials", "--status", "changed", "--value",
+        self.progress("start", "--mode", "new")
+        code, out = self.progress("record", "candidate", "--status", "changed", "--value",
                                   '{"files": ["synthetic.pdf"]}', "--source", "resume")
         self.assertEqual(code, 0, out)
-        self.assertEqual(out["current"], "account")
-        answer = out["answers"]["materials"]
+        self.assertEqual(out["current"], "resumes")
+        answer = out["answers"]["candidate"]
         self.assertEqual(answer["value"], {"files": ["synthetic.pdf"]})
         self.assertEqual(answer["source"], "resume")
         self.assertIn("at", answer)
@@ -193,11 +193,11 @@ class WorkspaceTest(unittest.TestCase):
         self.init()
         self.start_reset(select="candidate")
         _, out = self.progress("record", "candidate", "--status", "kept")
-        self.assertEqual(out["plan"], ["materials", "candidate"])
+        self.assertEqual(out["plan"], ["candidate"])
         self.assertEqual(out["added"], {})
         for _ in range(2):
             _, out = self.progress("record", "candidate", "--status", "changed")
-            self.assertEqual(out["plan"], ["materials", "candidate", "qa", "style", "greeting"])
+            self.assertEqual(out["plan"], ["candidate", "qa", "style", "greeting"])
             self.assertEqual(out["added"], {"qa": "candidate", "style": "candidate", "greeting": "candidate"})
         self.progress("clear")
         self.start_reset(select="roles")
@@ -207,7 +207,7 @@ class WorkspaceTest(unittest.TestCase):
         self.progress("clear")
         self.start_reset("resetup")
         _, out = self.progress("record", "candidate", "--status", "changed")
-        self.assertEqual(len(out["plan"]), 21)
+        self.assertEqual(len(out["plan"]), 20)
         self.assertEqual(out["added"], {})
 
     def test_progress_review_inserted_in_catalog_order(self):
@@ -263,7 +263,7 @@ class WorkspaceTest(unittest.TestCase):
                 events = self.ws / "ledger/events.jsonl"
                 if events_text is not None:
                     events.write_text(events_text)
-                self.progress("start", "--mode", "new", "--variant", "custom")
+                self.progress("start", "--mode", "new")
                 before = {p.relative_to(self.ws): p.read_bytes() for p in self.ws.rglob("*")
                           if p.is_file() and p.name not in {workspace.MARKER, workspace.PROGRESS_FILE}}
                 code, out = self.progress("clear")
@@ -282,7 +282,7 @@ class WorkspaceTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 2, result.stdout)
                     self.assertIn("未找到", json.loads(result.stdout)["error"])
                 self.assertEqual(self.init()[0], 0)
-                self.assertEqual(self.progress("start", "--mode", "new", "--variant", "custom")[0], 0)
+                self.assertEqual(self.progress("start", "--mode", "new")[0], 0)
                 self.assertEqual(self.progress("clear")[0], 0)
 
     def test_progress_clear_new_keeps_marker_with_existing_events(self):
@@ -292,7 +292,7 @@ class WorkspaceTest(unittest.TestCase):
         for text in ('{"kind": "observe", "observed": "replied"}\n', "{broken\n"):
             events.write_text(text)
             marker_before = (self.ws / workspace.MARKER).read_bytes()
-            self.progress("start", "--mode", "new", "--variant", "custom")
+            self.progress("start", "--mode", "new")
             code, out = self.progress("clear")
             self.assertEqual(code, 0, out)
             self.assertTrue(out["cleared"])
@@ -338,7 +338,7 @@ class WorkspaceTest(unittest.TestCase):
             if initial is not None:
                 gi.write_text(initial)
             self.init()
-            self.progress("start", "--mode", "new", "--variant", "typical")
+            self.progress("start", "--mode", "new")
             self.progress("clear")
             if initial is None:
                 self.assertFalse(gi.exists())
@@ -349,10 +349,10 @@ class WorkspaceTest(unittest.TestCase):
         """判据 6：新建阻断、重置提示、损坏阻断且建议放弃。"""
         self.init()
         self.fill()
-        self.progress("start", "--mode", "new", "--variant", "custom")
+        self.progress("start", "--mode", "new")
         code, out = run("--workspace", str(self.ws), "check")
         self.assertEqual(code, 1)
-        self.assertIn("第 2/22 步", out["problems"][0]["problem"])
+        self.assertIn("第 2/8 步", out["problems"][0]["problem"])
         for mode in ("resetup", "partial"):
             self.progress("clear")
             self.init()
@@ -367,7 +367,7 @@ class WorkspaceTest(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("progress clear", out["problems"][0]["problem"])
             self.assertEqual(self.progress("show")[0], 2)
-            self.assertEqual(self.progress("start", "--mode", "new", "--variant", "custom")[0], 2)
+            self.assertEqual(self.progress("start", "--mode", "new")[0], 2)
             self.assertEqual(path.read_text(), broken)
         self.assertEqual(self.progress("clear")[0], 0)
         self.init()
@@ -377,12 +377,12 @@ class WorkspaceTest(unittest.TestCase):
         """判据 8：备份、恢复与 changed 均不涉及草稿。"""
         self.init()
         self.fill()
-        self.progress("start", "--mode", "new", "--variant", "custom")
+        self.progress("start", "--mode", "new")
         _, out = run("--workspace", str(self.ws), "backup")
         name = out["backup"]
         self.assertNotIn(workspace.PROGRESS_FILE, out["files"])
         self.assertFalse((self.ws / "backups" / name / workspace.PROGRESS_FILE).exists())
-        self.progress("record", "materials", "--status", "skipped")
+        self.progress("record", "salary", "--status", "skipped")
         before = (self.ws / workspace.PROGRESS_FILE).read_bytes()
         self.assertEqual(run("--workspace", str(self.ws), "changed", "--since", name)[0], 0)
         (self.ws / "rules.md").write_text("# 修改\n")
@@ -402,7 +402,7 @@ class WorkspaceTest(unittest.TestCase):
         """判据 11：复用体检；完整配置完成后 check 通过。"""
         self.init()
         self.fill()
-        self.progress("start", "--mode", "new", "--variant", "custom")
+        self.progress("start", "--mode", "new")
         self.assertEqual(run("--workspace", str(self.ws), "check")[0], 1)
         code, out = self.progress("finish")
         self.assertEqual(code, 0, out)
@@ -413,7 +413,7 @@ class WorkspaceTest(unittest.TestCase):
     def test_progress_finish_keeps_draft_on_problems(self):
         """判据 11：失败保留草稿，不把草稿存在计入问题。"""
         self.init()
-        self.progress("start", "--mode", "new", "--variant", "custom")
+        self.progress("start", "--mode", "new")
         path = self.ws / workspace.PROGRESS_FILE
         before = path.read_bytes()
         code, out = self.progress("finish")
@@ -849,14 +849,15 @@ class WorkspaceIsolationTest(unittest.TestCase):
             self.assertEqual(self.work("check")[0], 0)
 
     def test_new_browser_after_account_defaults_false_without_writing_profile(self):
-        """设计5.2：典型模式预答前台输入为 false；草稿不改正式配置。"""
+        """设计5.2：第5屏询问前台输入，默认false但不预答；草稿不改正式配置。"""
         ids = [s["id"] for s in workspace.STEPS]
         self.assertEqual(ids[ids.index("account") + 1], "browser")
         before = (self.ws / "profile.json").read_bytes()
-        _, out = self.work("progress", "start", "--mode", "new", "--variant", "typical")
+        _, out = self.work("progress", "start", "--mode", "new")
         self.assertIn("browser", out["plan"])
-        self.assertEqual(out["answers"]["browser"]["value"], {"headedInput": False})
-        self.assertEqual(out["answers"]["browser"]["status"], "default")
+        self.assertNotIn("browser", out["answers"])
+        self.assertEqual(workspace.STEP_BY_ID["browser"]["screen"], 5)
+        self.assertEqual(workspace.STEP_BY_ID["browser"]["default"], {"headedInput": False})
         self.assertEqual((self.ws / "profile.json").read_bytes(), before)
         self.assertNotIn("browser", self.profile)
 
@@ -892,7 +893,7 @@ class WorkspaceIsolationTest(unittest.TestCase):
         # 仅拷贝数据脚本，验证脱离 desktop 模块仍能加载、体检和拒绝旧选项。
         scripts = Path(self.tmp.name) / "isolated"
         scripts.mkdir()
-        for name in ("workspace.py", "ledger.py", "notify.py", "im_scan.py", "fsutil.py", "platforms.py", "outbound.py", "config_txn.py", "config_schema.py"):
+        for name in ("workspace.py", "ledger.py", "notify.py", "im_scan.py", "fsutil.py", "platforms.py", "outbound.py", "config_txn.py", "config_schema.py", "inventory.py"):
             shutil.copy2(source.parent / name, scripts / name)
         for tail, expected in ((["check"], 0), (["check", "--env"], 2)):
             result = subprocess.run([sys.executable, "-I", str(scripts / "workspace.py"),

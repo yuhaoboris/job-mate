@@ -257,7 +257,7 @@ class MutationCoordinationTest(unittest.TestCase):
                         self.assertIn(result_a[1].get("code"), {"suite_too_old", "recovery_lock_only"})
 
     def test_creation_rechecks_marker_or_finishes_before_other_creator(self):
-        for args in (["init", "{ws}"], ["progress", "start", "--mode", "new", "--variant", "typical"]):
+        for args in (["init", "{ws}"], ["progress", "start", "--mode", "new"]):
             for transition in ("version", "same"):
                 with self.subTest(args=args, transition=transition):
                     ws = self.make_ws(create=False)
@@ -291,7 +291,7 @@ class MutationCoordinationTest(unittest.TestCase):
                         self.assertEqual(workspace.read_progress(ws)["answers"], {})
 
     def test_creator_waiting_for_coordination_rechecks_new_marker(self):
-        for args in (["init", "{ws}"], ["progress", "start", "--mode", "new", "--variant", "typical"]):
+        for args in (["init", "{ws}"], ["progress", "start", "--mode", "new"]):
             for version in ("1.0.0", "1.1.0"):
                 with self.subTest(args=args, version=version):
                     ws = self.make_ws(create=False)

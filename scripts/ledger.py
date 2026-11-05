@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fsutil  # noqa: E402
 import outbound  # noqa: E402
+import inventory  # noqa: E402
 from platforms import load_platform  # noqa: E402
 
 SUITE_VERSION = "1.0.0"
@@ -44,7 +45,7 @@ STANDALONE_STATUSES = {"pending", "skipped", "already_contacted"}
 OBSERVATIONS = {
     "replied", "resume_delivered", "resume_viewed", "interview_invited",
     "rejected", "job_closed", "declined", "reopened",
-    "manual", "released", "adopted", "paused", "unpaused", "risk", "limit_hit",
+    "manual", "released", "adopted", "inventory", "paused", "unpaused", "risk", "limit_hit",
     "tail", "handled", "info", "decision", "resume_requested", "interview_decided", "silent",
 }
 SKILLS = {"setup", "apply", "followup", "user"}
@@ -71,7 +72,7 @@ DEFAULT_LIMITS = {
     "inboundScanDays": 14, "inboundScanPerRun": 30, "inboundRecheckHours": 24,
 }
 DEFAULT_NUDGE = {"afterReadHours": 24, "afterUnreadHours": 24, "intervalHours": 48,
-                 "maxPerSilence": 3, "maxPerThread": 6, "perDay": 20}
+                 "maxPerSilence": 3, "maxPerThread": 6, "perDay": 20, "existingMaxAgeDays": 30}
 DEFAULT_TZ = "Asia/Shanghai"
 DEFAULT_LOCK_TTL_MINUTES = 60
 
@@ -586,8 +587,8 @@ def validate_event(ev):
                          or any(not isinstance(tag, str) or not tag.strip() for tag in ev["tags"])):
         errs.append("tags 须为非空字符串组成的数组")
     if kind == "observe" and ev.get("observed") == "adopted":
-        if ev["skill"] != "user":
-            errs.append("adopted 只允许 skill: user，由本人点名交给 Agent")
+        if ev["skill"] != "user" and not inventory.is_adoption(ev):
+            errs.append("adopted 须由本人点名，或经 inventory 接口盘点接手")
         try:
             if parse_at(ev.get("readAt")) > parse_at(ev["at"]):
                 errs.append("readAt 不能晚于事件时间")
@@ -612,6 +613,7 @@ def validate_event(ev):
     elif "reconcileProof" in ev:
         errs.append("reconcileProof 仅用于脚本锁收尾")
     errs.extend(validate_v1(ev))
+    errs.extend(inventory.validate(sys.modules[__name__], ev))
     return errs
 
 
@@ -738,6 +740,7 @@ def validate_history_event(events, ev):
                     or pending["runId"] != proof["runId"] or ev["runId"] != pending["runId"]):
                 raise LedgerError("reconcileProof 未对应同轮同平台账号的原 pending")
         return
+    inventory.validate_history(sys.modules[__name__], events, ev)
     if ev["observed"] == "replied":
         if ev.get("replyProof") != replied_proof(events, ev):
             raise LedgerError("replied 缺少或伪造脚本回复凭据")
@@ -1360,7 +1363,7 @@ def _base_threads(events, platform=None):
     threads = {}
 
     for ev in events:
-        if platform and ev["platform"] != platform:
+        if inventory.is_progress(ev) or platform and ev["platform"] != platform:
             continue
         identity = thread_identity(ev, atts)
         rec = identity.get("recruiter")
@@ -1371,6 +1374,7 @@ def _base_threads(events, platform=None):
             "lastOutbound": None, "lastObserved": None, "lastReplyAt": None,
             "manual": False, "pausedBy": [], "closed": None, "closedBy": [], "unresolved": [], "outboundTexts": [],
             "readAt": None, "boundaryAt": None, "acknowledged": [],
+            "adoptionSource": None, "inventoryId": None, "listActivity": None,
         })
         t["title"] = ev.get("title") or t["title"]
         t["jobId"] = ev.get("jobId") or t["jobId"]
@@ -1388,6 +1392,9 @@ def _base_threads(events, platform=None):
             elif obs == "adopted":
                 t["readAt"] = ev["readAt"]
                 t["manual"] = False
+                t["adoptionSource"] = "inventory" if inventory.is_adoption(ev) else "user"
+                t["inventoryId"] = ev.get("inventoryId")
+                t["listActivity"] = ev.get("listActivity")
             elif obs == "paused":
                 d = ev.get("decision") or "未注明"
                 if d not in t["pausedBy"]:
@@ -1523,6 +1530,7 @@ def build_threads(events, platform=None, profile=None, account=None):
         state = tail_state(tails.get(scope, []), scope)
         latest, handled = state["latest"], state["handled"]
         thread["lastOpenedAt"] = latest["readAt"] if latest else None
+        thread["inventoryPendingOpen"] = thread["adoptionSource"] == "inventory" and latest is None
         if state["pending"]:
             thread["pendingTail"] = {field: latest[field] for field in
                 ("tailId", "baseTailId", "result", "newCount", "readAt", "reason", "settled", "reviewRequired", "complete", "anchorUnique")}
@@ -1532,6 +1540,8 @@ def build_threads(events, platform=None, profile=None, account=None):
             thread["lastHandled"] = {"tailId": handled["tailId"], "at": record["at"], "readAt": handled["readAt"],
                                      "listMark": record.get("listMark"), "complete": handled["complete"]}
         thread["decisions"] = [decisions[d] for d in sorted(related[key]) if d in decisions]
+        thread["inventoryReply"] = inventory.reply_scope(sys.modules[__name__], events, key,
+                                                         effective_nudge({} if profile is None else profile, thread["platform"]))
         thread.update(nudge_state(events, key, {} if profile is None else profile))
         thread["canNudge"], thread["nudgeReason"] = nudge_candidate(thread, events, {} if profile is None else profile)
         thread["nudgeNeedsPageState"] = thread["canNudge"]
@@ -1542,7 +1552,7 @@ def nudge_owner_boundary(events, key):
     """本人交接可证明之前的活动属历史，不伪造一条我方 sent 或新 HR。"""
     choices = [(e, parse_at(e["readAt"] if e["observed"] == "adopted" else e["at"]))
                for e in events if e["kind"] == "observe" and e["observed"] in ("adopted", "released")
-               and e["skill"] == "user" and same_complete_thread_keys(thread_key(e), key)]
+               and (e["skill"] == "user" or inventory.is_adoption(e)) and same_complete_thread_keys(thread_key(e), key)]
     choices = [(e, at) for e, at in choices if at <= fsutil.now(at.tzinfo)]
     return max(reversed(choices), key=lambda item: item[1], default=None)
 
@@ -1604,6 +1614,8 @@ def nudge_candidate(t, events, profile):
             return False, code
     if not effective["authorization"]["followup"]["nudge"]:
         return False, "not_authorized"
+    if inventory.stale(sys.modules[__name__], events, thread_key(t), effective["nudge"]):
+        return False, "inventory_stale"
     last, blocked = nudge_turn(events, thread_key(t))
     if blocked:
         return False, blocked
@@ -2070,7 +2082,7 @@ def adoption_result(events, ev):
                      and thread_key(e) == key), None)
     if existing:
         return {"ok": True, "duplicate": True, "event": public_entry(existing)}, 0
-    t = build_threads(events, ev["platform"]).get(key)
+    t = _base_threads(events, ev["platform"]).get(key)
     if t and (t["unresolved"] or t["closed"] or t["pausedBy"]):
         raise LedgerError("会话有未确认外发、已关闭或仍暂停，不能登记")
     return None
@@ -2088,6 +2100,8 @@ def cmd_append(args, ws):
         raise LedgerError("kind、skill、status、observed 须为字符串")
     if ev.get("kind") in ACTION_KINDS and ev.get("status") == "pending":
         raise LedgerError("动作 pending 只能用 ledger prepare 原子准备")
+    if inventory.is_progress(ev) or inventory.is_adoption(ev):
+        raise LedgerError("盘点进度与盘点接手只能用 ledger inventory 写入")
     if "reconcileProof" in ev or ev.get("uncertaintyClass") == "reconcile":
         raise LedgerError("锁收尾来源仅由脚本生成，不能伪造")
     if ev.get("kind") in ACTION_KINDS and ev.get("status") == "uncertain":
@@ -2499,7 +2513,8 @@ def cmd_tail(args, ws):
             raise LedgerError(f"{key} 须为布尔值")
     if not isinstance(body.get("messages"), list) or ("bridge" in body and not isinstance(body["bridge"], list)):
         raise LedgerError("messages / bridge 须为数组")
-    tz = tz_of(load_profile(ws))
+    profile = load_profile(ws)
+    tz = tz_of(profile)
     read_at = parse_at(args.read_at)
     if read_at > fsutil.now(tz):
         raise LedgerError("readAt 不能晚于当前时间")
@@ -2550,8 +2565,13 @@ def cmd_tail(args, ws):
         if errors:
             raise LedgerError("尾部事件无效：" + "；".join(errors))
         validate_history_event(events, ev)
+        result = {key: ev[key] for key in ("tailId", "baseTailId", "result", "newCount", "reason", "settled")}
+        scope = inventory.reply_scope(sys.modules[__name__], [*events, ev], thread_key(ev),
+                                      effective_nudge(profile, ev["platform"]))
+        if scope is not None:
+            result["inventoryReply"] = scope
         append_line(ws, ev)
-        return emit({key: ev[key] for key in ("tailId", "baseTailId", "result", "newCount", "reason", "settled")})
+        return emit(result)
 
 
 # ---------- 命令：quota ----------
@@ -2604,6 +2624,10 @@ def nudge_workspace_stop(ws, row, events):
     return {"risk": "company_risk", "rejected": "company_rejected"}.get(code, code)
 
 
+def cmd_inventory(args, ws):
+    return inventory.command(sys.modules[__name__], args, ws)
+
+
 def cmd_threads(args, ws):
     profile = load_profile(ws)
     tz = tz_of(profile)
@@ -2620,7 +2644,13 @@ def cmd_threads(args, ws):
         items = [t for t in items if match_company(args.company, [t["company"]])[0]]
     if args.recruiter:
         items = [t for t in items if norm_text(t["recruiter"]) == norm_text(args.recruiter)]
-    return emit({"threads": items, "pendingTails": [t for t in items if t["pendingTail"] is not None]})
+    scopes = {(e["platform"], e["account"]) for e in events}
+    scopes.update((p, a["accountKey"]) for p, a in read_json(ws / MARKER, {})["accounts"].items())
+    inventories = [inventory.progress(events, p, a) for p, a in sorted(scopes)
+                   if (args.platform is None or p == args.platform) and (account is None or a == account)]
+    unopened = sorted((t for t in items if t["inventoryPendingOpen"]), key=lambda t: t["readAt"])
+    return emit({"threads": items, "pendingTails": [t for t in items if t["pendingTail"] is not None],
+                 "inventories": inventories, "inventoryPending": unopened})
 
 
 # ---------- 命令：stats ----------
@@ -2664,12 +2694,14 @@ EXPORT_COLUMNS = {
         "decisionVersion", "version", "steps", "tags", "jdFacts", "checks", "facts", "asks", "result", "reasons",
         "salaryText", "profileRev", "styleRev", "hrAt", "readAt", "tailId", "baseTailId", "baseExplicit", "anchor",
         "fingerprints", "complete", "anchorUnique", "settled", "reviewRequired", "bridge", "bridgeComplete",
-        "bridgeEvidence", "listMark", "acknowledged", "replyProof", "newHr", "extra"),
+        "bridgeEvidence", "listMark", "acknowledged", "replyProof", "newHr", "adoptionSource", "inventoryId",
+        "listActivity", "inventoryPhase", "registeredCount", "reachedEnd", "extra"),
     "threads": ("platform", "account", "threadKey", "company", "recruiter", "title", "jobId", "currentJobKey", "stage",
         "lastAt", "lastOutbound", "lastObserved", "lastReplyAt", "info", "interviewIntentStages", "pendingTail",
         "lastHandled", "lastOpenedAt", "unresolved", "manual", "pausedBy", "closed", "closedBy",
         "nudgesTotal", "nudgesSinceReply", "nudgeSeq", "nudgeIntent", "silent", "suggestSilent", "readAt", "boundaryAt", "acknowledged", "outboundTexts",
-        "decisions", "canNudge", "nudgeReason", "nudgeNeedsPageState", "extra"),
+        "decisions", "canNudge", "nudgeReason", "nudgeNeedsPageState", "adoptionSource", "inventoryId",
+        "listActivity", "inventoryPendingOpen", "inventoryReply", "extra"),
     "jobs": ("platform", "account", "jobKey", "company", "title", "jobId", "lastAt", "screenEventId", "screenAt",
         "result", "reasons", "jdFacts", "checks", "salaryText", "hasContactAttempt", "contacted", "unresolved", "extra"),
 }
@@ -3315,6 +3347,15 @@ def build_parser():
     q.add_argument("--account")
     q.add_argument("--run")
 
+    inv = sub.add_parser("inventory", help="followup 首次只读列表盘点、接手与续做")
+    inv.add_argument("action", choices=["start", "record", "progress", "finish"])
+    inv.add_argument("--platform", required=True)
+    inv.add_argument("--account")
+    inv.add_argument("--run", required=True)
+    inv.add_argument("--restart", action="store_true", help="本人要求重新盘点时用于 start")
+    inv.add_argument("--reason", help="进度停止原因或滚到底的依据")
+    inv.add_argument("--json", help="record 的列表项 JSON；也可走 stdin")
+
     t = sub.add_parser("threads", help="按会话汇总最新状态")
     t.add_argument("--platform")
     t.add_argument("--account")
@@ -3355,7 +3396,7 @@ def build_parser():
 COMMANDS = {
     "validate": cmd_validate, "check": cmd_check, "screen-check": cmd_screen_check, "decision": cmd_decision, "guard": cmd_guard,
     "append": cmd_append, "prepare": cmd_prepare, "tail": cmd_tail, "export": cmd_export,
-    "quota": cmd_quota, "threads": cmd_threads, "stats": cmd_stats, "lock": cmd_lock,
+    "quota": cmd_quota, "threads": cmd_threads, "inventory": cmd_inventory, "stats": cmd_stats, "lock": cmd_lock,
     "pause": cmd_pause, "stoplist": cmd_stoplist,
 }
 
@@ -3368,7 +3409,7 @@ def entry_mode(args):
         return {"status": "read", "on": "write", "off": "recover"}[args.action]
     if args.cmd == "stoplist":
         return "read" if args.action == "list" else "write"
-    return "write" if args.cmd in {"append", "prepare", "guard", "tail"} else "read"
+    return "write" if args.cmd in {"append", "prepare", "guard", "tail", "inventory"} else "read"
 
 
 def main(argv=None):

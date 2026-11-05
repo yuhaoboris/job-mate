@@ -4,7 +4,7 @@
 
 ## 会话
 
-`threads` 返回 `threads` 与 `pendingTails`；platform / company / recruiter 筛选同时作用于两者。恢复时仍须查询不带筛选的完整结果。每个会话保留原有接管、暂停、关闭及未决尝试字段，并新增：
+`threads` 另返回 [inventories 与 inventoryPending](inventory.md#派生与记录)，分别为账号盘点状态和按最久未处理排序的未打开会话；adoptionSource 区分 inventory/user。账号级进度不派生空会话。`threads` 返回 `threads` 与 `pendingTails`；platform / company / recruiter 筛选同时作用于两者。恢复时仍须查询不带筛选的完整结果。每个会话保留原有接管、暂停、关闭及未决尝试字段，并新增：
 
 | 字段 | 含义 |
 |---|---|
@@ -15,6 +15,7 @@
 | pendingTail | 最新读取尚无对应 handled 时的快照摘要；否则 null |
 | lastHandled | 最近 handled 的 tailId、at、listMark，以及已处理完整快照的 readAt、complete |
 | lastOpenedAt | 最新 tail 的 readAt，仅供展示，不用于延长跳过核对的周期 |
+| inventoryReply | 超龄盘点会话的 tailId、historicalIndices/newIndices/uncertainIndices（指 fingerprints 位置）及 ready；历史不分诊、不代答，未知先核对，ready 需要新 HR 的有效 replyProof；未超龄为 null |
 | interviewIntentStages | 已确认 sent 且带 intent:interview 标签时的阶段集合 |
 | decisions | 该会话相关事项的完整版本与步骤状态，含其他目标的同事项阻断 |
 
@@ -25,7 +26,7 @@
 输出 canNudge、nudgeReason、nudgeNeedsPageState、nudgeSeq、nudgeIntent、nudgesSinceReply、nudgesTotal、silent、suggestSilent。旧 canFollowup 及旧冷却/次数字段不再作为接口。
 
 - canNudge:true 同时有 nudgeNeedsPageState:true，nudgeReason 为 candidate_needs_page_state；只是本地候选，不证明页面已读/送达、工具实际读取、没有新消息或取得本轮授权。页面和本轮限制/例外仍须 prepare、带新 pageState 的 guard。关闭 nudge 但有本轮例外的目标可直接预检，候选 false 不是例外授权判断。
-- 本地过滤暂停/接管/关闭/未决、已知HR尾部及核对、等待下界、时段、连续/累计/当日次数；threads 与 export 还检查工作区暂停、停止名单。候选不伪造当前页面时间/状态；本人已 adopted/released 而无 Agent sent 时仍可待页面核验，只认可本人交接分界前历史，不把交接冒充 sent 或重置。
+- 本地过滤暂停/接管/关闭/未决、已知HR尾部及核对、等待下界、时段、连续/累计/当日次数；threads 与 export 还检查工作区暂停、停止名单。候选不伪造当前页面时间/状态；本人已 adopted/released 而无 Agent sent 时仍可待页面核验，只认可本人/盘点交接分界前历史，不把交接冒充 sent 或重置。盘点时超 nudge.existingMaxAgeDays（默认30天）的会话 nudgeReason:inventory_stale、canNudge:false；只有确认接手后新HR回复才解除，不拿历史HR、handled/released代替。
 - nudgesTotal 与 nudgesSinceReply 按唯一首次 pending，不按 sent 事件条数；失败、不明不退。连续分界按[新HR回复凭据](tails.md#确认新hr回复)的首次观察位置，hrAt 仅统计；迟到登记不退还分界后已发生的尝试，manual/released 不清零。
 - nudgeSeq 为下一连续序号，意图由 maxPerSilence 映射，超连续上限时 nudgeIntent:null，最后一次总 ask_answer，详见[最终门禁](sending.md#主动跟进的最终门禁)。silent 是登记的沉默；连续或累计用完 suggestSilent:true，仅提示登记 silent，不自动写入、不自动清计数或再发。
 

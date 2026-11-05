@@ -39,7 +39,7 @@ class AccountTest(unittest.TestCase):
     def test_nudge_defaults_overrides_and_invalid_bounds(self):
         defaults = ledger.effective_nudge({}, "boss")
         self.assertEqual(defaults, {"afterReadHours": 24, "afterUnreadHours": 24, "intervalHours": 48,
-                                    "maxPerSilence": 3, "maxPerThread": 6, "perDay": 20})
+                                    "maxPerSilence": 3, "maxPerThread": 6, "perDay": 20, "existingMaxAgeDays": 30})
         profile = {"nudge": {"intervalHours": 60, "platforms": {"boss": {"perDay": 2}}}}
         self.assertEqual(ledger.effective_nudge(profile, "boss")["perDay"], 2)
         self.assertEqual(ledger.effective_nudge(profile, "testplat")["perDay"], 20)
