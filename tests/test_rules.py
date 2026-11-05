@@ -154,8 +154,11 @@ class ExecutionRulesTest(unittest.TestCase):
         self.assertLessEqual(len(content.splitlines()), 25)
         self.assertIn("../execution.md", content)
         self.assertIn("(agent-desktop.md)", content)
-        self.assertLess(content.index("agent-desktop"), content.index("Agent 自带"))
-        self.assert_terms(content, ("macOS", "Chrome", "辅助功能", "不走 CDP", "不换工具", "锁屏"))
+        self.assertIn("../execution.md#1-加锁前能力自检", content)
+        selection = self.execution.split("## 1. 加锁前能力自检", 1)[1].split("## 2.", 1)[0]
+        self.assertLess(selection.index("agent-desktop"), selection.index("Agent 自带"))
+        self.assert_terms(selection, ("macOS", "Chrome", "辅助功能", "非 CDP"))
+        self.assert_terms(content, ("不换工具", "锁屏"))
         self.assertNotIn("pi.md", content)
         self.assert_terms(content, ("加锁前", "不操作平台、不回退", "禁发锁", "完整读取", "全部 attempt"))
 
@@ -282,11 +285,14 @@ class ExecutionRulesTest(unittest.TestCase):
     def test_followup_im_chain_and_fail_closed_states_are_explicit(self):
         skill = (ROOT / "skills/followup/SKILL.md").read_text(encoding="utf-8")
         sync = skill.split("### 2.0 同步 IM", 1)[1].split("### 2.1", 1)[0]
-        self.assert_terms(sync, ("im_lark.py sync", "连续分页", "当前路由", "readable", "原 idempotencyKey",
-                                "larkProfile", "handoff 无 receipt", "unknown 不重发", "IM 未读完",
-                                "没有 IM 能力", "不另找通道", "incomingRejected", "ledger_unreadable",
-                                "clarify 已 sent 才标 clarifying", "queued、blocked、failed、unknown"))
-        self.assert_terms(skill, ("第 2.0 节完整同步链", "核心脚本不等待"))
+        self.assertIn("../../shared/notify.md#同步-im", sync)
+        self.assert_terms(sync, ("im_lark.py sync", "不以本地 poll 代替远端读取", "unknown不重发",
+                                 "handoff无回执不重投", "没有IM能力", "不另找通道", "incomingRejected",
+                                 "ledger_unreadable", "sync确认sent后才标clarifying"))
+        protocol = (ROOT / "shared/notify.md").read_text(encoding="utf-8")
+        self.assert_terms(protocol, ("原 idempotencyKey", "larkProfile", "readable=false", "IM 未读完",
+                                     "queued、blocked、failed、unknown", "当前 poll 路由"))
+        self.assert_terms(skill, ("按第2节完整同步链", "核心脚本不等待"))
 
     def test_setup_uses_lark_configuration_and_explicit_im_test(self):
         skill = (ROOT / "skills/setup/SKILL.md").read_text(encoding="utf-8")
@@ -303,7 +309,7 @@ class ExecutionRulesTest(unittest.TestCase):
                 self.assertIn("shared/im/lark.md" if relative.startswith("skills/") else "im/lark.md", content)
                 self.assertNotRegex(content, r"notify (?:outbox --claim|receipt|incoming)\b")
         followup = (ROOT / "skills/followup/SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("每 10 分钟运行 `im_lark.py sync`", followup)
+        self.assertIn("每10分钟运行 `im_lark.py sync`", followup)
 
     def test_platform_facts_do_not_reintroduce_tool_instructions(self):
         for path in (ROOT / "platforms/boss").glob("*.md"):

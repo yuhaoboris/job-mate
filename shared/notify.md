@@ -110,7 +110,7 @@ handoff 无回执不自动重投。超过 10 分钟只在只读 `notify outbox -
 1. `notify replies --state received` 与 `--state ready`，按时间处理。
 2. 含义不清先排队 clarify，运行 `im_lark.py sync`，收到 sent 后才 `reply-state --state clarifying`；queued、blocked、failed、unknown 均保留原状态，报告未确认追问送达。
 3. 明确结论写 inbox / ledger 后，`notify reply-state --message <消息ID> --state ready --decision <ID>`。
-4. 执行 followup 第 2.2 / 2.3 节。全局暂停或本轮禁发保留 ready，不执行、不消费。
+4. 执行 followup 的决定或只收尾 ready 分支。全局暂停或本轮禁发保留 ready，不执行、不消费。
 5. 完成后排队该结果版本 done，再 consumed。已 done 只补通知与消费，不重发 HR、不发 summary；无需动作只记录结论并消费，**不发 `done`、不发 `summary`**。
 
 暂时环境受阻且无阻断终态时保留 ready。已有 uncertain、failed_no_send、needs_review 或接管时不再外发，说明原因后 consumed（note 写原因），不承诺自动续发。按 [执行契约](execution.md#7-环境受阻通知与恢复) 先收尾本轮尝试、区分环境提醒和结果核对。

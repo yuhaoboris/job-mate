@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fsutil  # noqa: E402
 import platforms  # noqa: E402
+from ledger import SUITE_VERSION  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PREFIX = "job-mate-"
@@ -327,10 +328,16 @@ def publish(built, targets):
     同权限用户伪造完整合法清单或并发恶意置换目录不在威胁范围。
     """
     names = [p.name for p in built]
-    if any(name not in [PREFIX + s for s in SKILL_NAMES] for name in names):
-        raise BuildError("安装来源包含未知技能")
+    if sorted(names) != sorted(PREFIX + s for s in SKILL_NAMES):
+        raise BuildError("必须构建并发布完整的三个技能，不允许子集或重复包")
+    provenance = []
     for source in built:
         managed(source, source.name)
+        manifest = json.loads((source / "BUILD.json").read_text(encoding="utf-8"))
+        provenance.append((manifest.get("suiteVersion"), manifest.get("commit")))
+    if (any(not isinstance(version, str) or commit is not None and not isinstance(commit, str)
+            for version, commit in provenance) or len(set(provenance)) != 1):
+        raise BuildError("整套技能的版本或提交号不一致，拒绝发布")
     targets = [target_plan(target, names) for target in targets]
     for i, target in enumerate(targets):
         if any(overlaps(target, other) for other in targets[:i]) or any(overlaps(target, p.resolve()) for p in built):
@@ -394,13 +401,9 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="build.py", description=__doc__.splitlines()[0])
     p.add_argument("--out", default=str(ROOT / "dist"), help="产物目录，默认 dist/")
     p.add_argument("--install", metavar="DIR", help="构建后安装到该技能目录，例如 <项目>/.agents/skills")
-    p.add_argument("--skill", action="append", help="只构建指定技能（可重复）")
     args = p.parse_args(argv)
-    skills = list(dict.fromkeys(args.skill or SKILL_NAMES))
+    skills = SKILL_NAMES
     try:
-        for skill in skills:
-            if skill not in SKILL_NAMES:
-                raise BuildError(f"未知技能名：{skill!r}；只允许 {', '.join(SKILL_NAMES)}")
         check_sources(skills)
         names = [PREFIX + s for s in skills]
         out = target_plan(args.out, names)
@@ -408,7 +411,7 @@ def main(argv=None):
         if target is not None and overlaps(out, target):
             raise BuildError("构建目录与安装目录重叠")
         commit, dirty = git_info()
-        info = {"source": "job-mate", "commit": commit, "dirty": dirty,
+        info = {"source": "job-mate", "suiteVersion": SUITE_VERSION, "commit": commit, "dirty": dirty,
                 "builtAt": fsutil.now().astimezone().isoformat(timespec="seconds")}
         # 所有参数、来源、已有目标先完整检查；所有技能构建成功才发布。
         with tempfile.TemporaryDirectory(prefix="job-mate-build-") as tmp:

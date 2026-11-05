@@ -1,5 +1,7 @@
 """释放调用链的静态契约与合成台账数据可见性；不代表 Agent 行为验收。"""
 
+import ast
+import re
 import contextlib
 import io
 import json
@@ -22,28 +24,32 @@ class ReleaseStaticContractTest(unittest.TestCase):
         return (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
 
     def test_every_release_call_processes_reconciled_and_failure_via_shared_contract(self):
-        for name, expected in (("apply", 2), ("followup", 2), ("setup", 1)):
+        for name, expected in (("apply", 1), ("followup", 1), ("setup", 1)):
             with self.subTest(skill=name):
                 calls = [line for line in self.skill(name).splitlines() if "`ledger lock release" in line]
                 self.assertEqual(len(calls), expected)
                 for line in calls:
                     self.assertIn(CONTRACT, line)
-                    self.assertIn("`reconciled`", line)
+                    self.assertIn("reconciled", line)
                     self.assertIn("释放失败", line)
 
     def test_all_skill_entries_reconcile_unresolved_even_when_acquire_is_empty(self):
         sections = {
-            "apply": self.skill("apply").split("## 2. 确定模式", 1)[1].split("## 3.", 1)[0],
-            "followup": self.skill("followup").split("### 2.1 对账", 1)[1].split("### 2.2", 1)[0],
+            "apply": self.skill("apply").split("## 2. 模式", 1)[1].split("## 3.", 1)[0],
+            "followup": self.skill("followup").split("## 1. 准备", 1)[1].split("## 2.", 1)[0],
             "setup": self.skill("setup").split("### 3.3 确认与写入", 1)[1].split("## 4.", 1)[0],
         }
         for name, section in sections.items():
             with self.subTest(skill=name):
-                for phrase in (CONTRACT, "即使 acquire 的 `reconciled` 为空", "完整 `ledger threads`",
-                               "`unresolved`", "inbox"):
+                for phrase in (CONTRACT, "reconciled", "unresolved", "inbox"):
                     self.assertIn(phrase, section)
+                if name == "setup":
+                    self.assertIn("即使 acquire 的 `reconciled` 为空", section)
+                else:
+                    self.assertRegex(section, r"空.*reconciled|reconciled.*空")
+                    self.assertIn("完整", section)
         prepare = self.skill("followup").split("## 1. 准备", 1)[1].split("## 2.", 1)[0]
-        self.assertIn("持锁后先执行第 2.1 节入口对账", prepare)
+        self.assertIn("持锁后先按", prepare)
 
     def test_shared_contract_covers_identity_dedup_notification_and_fail_closed(self):
         contract = (ROOT / "shared/ledger.md").read_text(encoding="utf-8").split(
@@ -64,19 +70,17 @@ class ReleaseStaticContractTest(unittest.TestCase):
             self.assertIn(phrase, rule)
 
     def test_all_uncertain_inbox_write_sites_reference_one_rule(self):
-        sites = {
-            "apply": ("等待后仍无法确认", "结果不明时不重发", "**结果不明（`uncertain`）的招呼**"),
-            "followup": ("不能确认记 `uncertain`", "| 无法判断是否发出", "**结果不明（`uncertain`）的外发**"),
-        }
-        for name, markers in sites.items():
-            for marker in markers:
-                with self.subTest(skill=name, site=marker):
-                    lines = [line for line in self.skill(name).splitlines() if marker in line]
-                    self.assertEqual(len(lines), 1)
-                    self.assertIn("../../shared/notify.md#结果不明事项", lines[0])
-        decided = self.skill("followup").split("### 2.2 执行已决定的事项", 1)[1].split("### 2.3", 1)[0]
-        self.assertIn("../../shared/notify.md#结果不明事项", decided)
-        self.assertIn("attemptId", decided)
+        # 重写后所有外发共用一个结果/停止分支，不再复制三个文字入口。
+        for name in ("apply", "followup"):
+            with self.subTest(skill=name):
+                content = self.skill(name)
+                self.assertIn("../../shared/notify.md#结果不明事项", content)
+                self.assertIn("attemptId", content)
+                self.assertIn("uncertain", content)
+                self.assertIn("原决定", content)
+        decided = self.skill("followup").split("### 2.2 执行决定", 1)[1].split("### 2.3", 1)[0]
+        self.assertIn("原尝试", decided)
+        self.assertIn("不建新尝试", decided)
 
     def test_setup_test_instruction_and_restore_output_contract(self):
         setup = self.skill("setup")
@@ -85,6 +89,58 @@ class ReleaseStaticContractTest(unittest.TestCase):
         for phrase in ("`restoreSucceeded` / `restoreError`", "`release` / `releaseError`",
                        "退出码 2", "`restored`", "`release.attempted`", "不擅自删除锁"):
             self.assertIn(phrase, setup)
+
+
+class SuiteCatalogConsistencyTest(unittest.TestCase):
+    """从真实源码/设计表提取，不以固定文案数量代替业务执行。"""
+
+    def test_send_denial_reason_catalog_matches_source(self):
+        def labels(node):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and re.fullmatch(r"[a-z_]+", node.value):
+                return {node.value}
+            if isinstance(node, ast.IfExp):
+                return labels(node.body) | labels(node.orelse)
+            return set()
+        codes = set()
+        for filename in ("ledger.py", "outbound.py"):
+            tree = ast.parse((ROOT / "scripts" / filename).read_text(encoding="utf-8"))
+            assigned = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            assigned.setdefault(target.id, set()).update(labels(node.value))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and node.args and (
+                        isinstance(node.func, ast.Name) and node.func.id == "deny"
+                        or isinstance(node.func, ast.Attribute) and node.func.attr == "deny"):
+                    argument = node.args[0]
+                    codes.update(assigned.get(argument.id, set()) if isinstance(argument, ast.Name) else labels(argument))
+                if isinstance(node, ast.FunctionDef) and node.name == "stoplist_reasons":
+                    for value in ast.walk(node):
+                        if isinstance(value, ast.Dict):
+                            for key, item in zip(value.keys, value.values):
+                                if isinstance(key, ast.Constant) and key.value == "type":
+                                    codes.update(labels(item))
+        document = (ROOT / "shared/ledger.md").read_text(encoding="utf-8").split("## 发送门禁原因码", 1)[1].split("## 中断恢复", 1)[0]
+        rows = " ".join(line.split("：", 1)[1] for line in document.splitlines() if line.startswith("- "))
+        documented = set(re.findall(r"\b[a-z]+(?:_[a-z]+)*\b", rows))
+        self.assertEqual(documented, codes)
+
+    def test_setup_step_ids_match_design_table_in_order(self):
+        import workspace
+        design = (ROOT / "docs/design.md").read_text(encoding="utf-8").split("### 5.2 步骤目录", 1)[1].split("### 5.3", 1)[0]
+        ids = re.findall(r"^\|[^\n]*?`([A-Za-z]\w*)`", design, re.MULTILINE)
+        self.assertEqual([step["id"] for step in workspace.STEPS], ids)
+
+    def test_event_kinds_and_observations_match_design_tables(self):
+        design = (ROOT / "docs/design.md").read_text(encoding="utf-8").split("### 7.2 事件类型", 1)[1].split("### 7.3", 1)[0]
+        kinds, observations = design.split("观察结果：", 1)
+        def names(table):
+            return {name for line in table.splitlines() if line.startswith("|") and line.split("|")[1].strip() != "`observed`"
+                    for name in re.findall(r"`([a-z_]+)`", line.split("|")[1])}
+        self.assertEqual(names(kinds), ledger.ACTION_KINDS | {"screen", "observe"})
+        self.assertEqual(names(observations), ledger.OBSERVATIONS)
 
 
 class ReleaseRecoveryDataTest(unittest.TestCase):

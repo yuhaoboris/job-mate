@@ -1,163 +1,88 @@
 ---
 name: apply
-description: 在招聘平台（首批 BOSS 直聘）通过浏览器搜索职位、读详情、按工作区条件筛选去重，授权时发起首次沟通并记录。当用户说“帮我投”“打招呼”“按条件投 5 个”“找职位”“筛选职位”“先看看有什么岗位”，或定时任务要求执行一轮投递时使用；只找职位时不发送。不负责回复 HR、发简历、跟进（用 followup），也不负责建立偏好（用 setup）。
+description: 在招聘平台搜索职位、读取详情、按求职工作区条件筛选，明确授权后发起首次沟通。当用户说“帮我投”“打招呼”“按条件投几个”“找职位”“只筛选”，或定时任务要求执行一轮时使用。不回复HR、不发简历、不处理面试（用 followup），不建立偏好（用 setup）。
 ---
 
-# apply：筛选职位并发起首次沟通
+# apply：筛选与首次沟通
 
-完成「定位工作区 → 确定模式 → 搜索 → 核对详情 → 去重 → 首次沟通 → 记录 → 汇报」。授权明确、条件齐全时直接执行，不逐个职位请求批准。
+目标是争取更多面试机会，完成边界是首次沟通，不是简历投递。条件与授权明确时直接做，不逐职位请示；数量不够不放宽条件。HR 当场回复也交给 followup。
 
-**完成边界是首次沟通。** 即使 HR 当场回复，也不继续聊天、不发简历、不交换联系方式；这些交给 `followup`。汇报用「已发起沟通」，不说「简历已投递」。
+本文件路径相对本文件所在目录。**每轮必读**：
+- [工作区](../../shared/workspace.md)：定位、配置与版本准入。
+- [执行契约](../../shared/execution.md)：能力、完整读取、逐动作 guard、停止范围与全部尝试收尾。
+- [安全边界](../../shared/safety.md)：权限、承诺、隐私与遇限即停。
+- BOSS 页面事实：[通用](../../platforms/boss/common.md)、[首次沟通](../../platforms/boss/apply.md)。其他平台先读其随包描述和页面说明，不套用 BOSS 控件。
 
-本文件引用的路径相对于本文件所在目录。开始前阅读：
+下文 ledger / notify / im_lark.py 分别指 `python3 <本文件上两级目录>/scripts/ledger.py`、`.../scripts/notify.py`、`.../scripts/im_lark.py`，解析绝对路径后使用；Windows 用 `py -3`。命令/事件首次使用读[台账](../../shared/ledger.md)，准备外发或权限例外读[发送准备](../../shared/sending.md)，需要本人处理读[通知协议](../../shared/notify.md)。
 
-- [../../shared/workspace.md](../../shared/workspace.md)：工作区、`profile.json`、停止名单
-- [../../shared/ledger.md](../../shared/ledger.md)：事件记录与 `ledger.py`
-- [../../shared/safety.md](../../shared/safety.md)：安全边界
-- [../../platforms/boss/common.md](../../platforms/boss/common.md)、[../../platforms/boss/apply.md](../../platforms/boss/apply.md)：BOSS 直聘通用要点与首次沟通页面细节
-- [../../shared/execution.md](../../shared/execution.md)：所有 runtime 的能力自检、完整读取、输入保护、逐动作 guard 与停止收尾；准备浏览器时另读 [浏览器入口](../../shared/browser/README.md)
+## 1. 定位工作区与本轮条件
 
-下文的 `ledger`、`notify`、`im_lark.py` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py`、`.../scripts/notify.py`、`.../scripts/im_lark.py`，先解析绝对路径；Windows 用 `py -3`。
+1. 按工作区规则定位，告知绝对路径；运行 `ledger validate`。读取 profile.json、rules.md、candidate.md、stoplist.yaml。
+2. 缺目标职位、地点等决定性条件才追问；完整访谈交 setup。没有工作区或数据校验失败只能基于已有可读资料筛选，不发送；不能读写工作区/运行脚本时不写记录。
+3. 本轮临时条件不写回 profile。希望长期改变规则时记录建议，请本人通过 setup 同步；不擅自直接修改真实求职工作区，也不在工作区做任何 Git 处理。
 
-**事项先写 inbox，再排队通知**（见 [../../shared/notify.md](../../shared/notify.md)）：「待决定」用 `notify send --kind decision --decision <ID>`，「待处理」用 `notify send --kind todo --decision <ID>`。send 只排队（queued）；入口对账后、每处理完一个会话、收尾时运行 `im_lark.py sync`，见 [飞书适配器](../../shared/im/lark.md)。handoff 未收口不重投，unknown 不自动重发；未读完不称没有新答复。没有 IM 能力不另找通道，保留 inbox 与队列并报告。`apply` 不等待答复，本人的答复由 `followup` 或 runtime 调度处理。
+## 2. 模式、限制与能力
 
-## 1. 定位工作区，读取条件
+按完整语义决定，不按单个“投”字猜授权。明确只看看/不发时只筛选；明确帮投/打招呼时按授权发起沟通；定时或未说明时，apply.send:true 才进入发起沟通，否则只筛选。
 
-1. 按 workspace.md 定位工作区，告知绝对路径。找不到时只能只筛选，条件取自本轮指令；需要发送时请本人先运行 `setup`。
-2. 运行 `ledger validate`。返回错误时可以只筛选，不能发送。
-3. 读取 `profile.json`、`rules.md`、`candidate.md`。
+取锁前明确本轮动作、目标与数量。本人收窄的要求登记 `--restrict`，优先于长期授权、grant 和本人决定；缺权限且本人明确追加时，另登记范围/数量明确的 `--grant`，不把 grant 当 restriction，也不修改 profile。例：本轮只发两次，restriction 为 kinds:[greet,intro]、scope:all、max:2；apply.send:false 还需 apply_send grant。自动招呼后的 intro 也是一次外发，不能靠不同来源补量；小时数例外不能放开其他门禁。结构与冻结绑定按发送准备。
 
-条件缺失时：只追问会影响本轮决定的项，例如没有目标职位或城市。完整的偏好访谈交给 `setup`，这里不展开。
+**加锁前能力自检**按执行契约：读写、核心脚本、profile.browser 偏好、可见浏览器与发送结果证据。不支持偏好或配置非法时不操作平台、不回退。缺外发证据只取禁发锁；能力不足仍可完成本地对账时用禁发模式，不能读写则不写记录。
 
-本轮指令覆盖已保存条件。本人说「以后」「改成」的写回 `profile.json`；「这次」只用于本轮；没说明的按本轮处理，并在汇报中注明。
-
-## 2. 确定模式
-
-按本轮指令的完整语义判断，否定和限制优先于关键词：
-
-| 本轮指令 | 模式 |
-|---|---|
-| 「找职位」「筛选一下」「先给我看看」「不要发消息」 | 只筛选 |
-| 「帮我投」「打招呼」「按条件投 5 个」「筛完直接投」 | 发起沟通 |
-| 定时任务触发，未另作说明 | `authorization.apply.send` 为 `true` 时发起沟通，否则只筛选 |
-| 「找工作」等未说明是否发送 | `authorization.apply.send` 为 `true` 时发起沟通，否则只筛选并在汇报中说明 |
-| 「停止」「先别投了」 | 停止后续发送，记录已发生的动作并汇报 |
-
-取锁前先问清动作、目标和数量，明确收窄要求登记 `--restrict`；长期权限不足且本人明确追加发送权限时另登记 `--grant`。限制不是授权，grant 也不扩大限制，不写回 profile。绑定、去重豁免及准备协议见[发送准备](../../shared/sending.md)。
-
-**获取运行锁之前**，所有 runtime 先按 [加锁前能力自检](../../shared/execution.md#1-加锁前能力自检) 校验 `profile.browser` 与读写工作区、运行核心脚本、可见浏览器操作及结果证据能力。不支持选定偏好或配置非法时不操作平台、不回退；缺少外发证据用 `--no-send` 锁。不能读写工作区或运行核心脚本时不写记录、不外发，只基于已有可读资料筛选并汇报。不能操作平台而仍需本地对账时仅用禁发锁，按 [环境受阻与恢复](../../shared/execution.md#7-环境受阻通知与恢复) 收尾。
-
-**两种模式都要获取运行锁**，避免与 `followup` 同时操作浏览器：只筛选时 `ledger lock acquire --skill apply --no-send`，发起沟通时 `ledger lock acquire --skill apply`。记下返回的 `runId`。被占用时说明占用者并结束本轮。输出的 `paused` 不为空表示已全局暂停：本轮不浏览平台，仅本地对账与汇报。运行锁不是执行器强单实例，runtime 须另行排除旧实例。持锁后、准备浏览器前，执行 [ledger.md 的释放与对账契约](../../shared/ledger.md#释放与对账契约) 的入口对账：即使 acquire 的 `reconciled` 为空，也用完整 `ledger threads` 的 `unresolved` 与 inbox 对账。没有工作区时无法加锁，只筛选并在汇报中说明。
-
-**进入发起沟通模式前，以下条件都满足：**
-
-- 有工作区，`ledger validate` 通过，已持有非禁发的运行锁。
-- `ledger quota --platform boss --run <runId>` 返回 `canGreet: true`。当日额度用完则本轮只筛选，汇报「今日招呼已达上限」。
-- 当前时间在 `schedule.activeHours` 内；不在时段内只筛选。本人明确越过时段时须登记范围明确的 hours grant。
-- 招呼语方式已确定（`greeting.mode`，缺省为 `dynamic`）。
+- 只筛选：`ledger lock acquire --skill apply --no-send`。
+- 发起沟通：`ledger lock acquire --skill apply`，附本轮 restrict / grant，记返回 runId。
+- 被占用即结束，不自行释放别人的锁；runtime 另保证旧实例及后代停止，运行锁不是执行器单实例。
+- 获取锁后先做[释放与对账契约](../../shared/ledger.md#释放与对账契约)：检查 reconciled，以及完整 threads 的所有 unresolved / inbox，不能因 reconciled 为空而跳过。paused 非空只做本地对账，不浏览平台。
+- 超过30分钟处理检查点续锁；失败按执行契约收尾，不用同一 runId 重取锁降级。
 
 ## 3. 准备浏览器
 
-按 browser/README.md 选择控制方式，确认当前网站、账号与 `job-mate.json` 中的 `displayName` 一致、页面可读。需要登录时请本人自己扫码或验证。
+按[浏览器入口](../../shared/browser/README.md)选工具，整轮保持选定偏好和方式。只操作本人日常已登录的可见浏览器，核对网站、窗口、账号 displayName；登录、扫码、解锁、验证码由本人完成。不使用 CDP / Playwright、隐藏接口、无头访问，不模拟人工、不规避检测。
 
-没有可用的浏览器操作能力时，说明缺少什么，不把「可以自动化」当成已执行。
+`ledger quota --platform boss --run <runId>` 只用于计划节奏：额度满则只筛选，waitSeconds 为固定最小间隔，不加随机延时；不是最终发送许可。首次沟通在 schedule.activeHours 内，越时段须本人明确的 hours grant。
 
-## 4. 搜索、核对、排序
+## 4. 搜索、读详情、记录筛选
 
-1. 按 `targetRoles` × `locations` 的优先级组成有限的搜索组合，通过页面搜索框和筛选控件操作，不硬编码城市码或接口。
-2. 列表靠滚动加载更多；滚到列表末尾或预算用完即止。
-3. 读详情计入 `limits.detailsPerRun`（默认 50 个不同职位），用完即停止搜索。
-4. 每个候选记录：职位链接（可读到时）、职位名、公司、地点、薪资原文、关键要求、招聘者（可见时）、**招聘者活跃标签**，以及逐项匹配依据。`dynamic` 方式下同时记下可用于招呼语的 1–2 个 JD 关键点。
-5. 按详情中的实际职责判断，职位名称只作参考：同一名称（如 FDE、AI 应用工程师）职责差异很大，不因名称排除，也不因名称保留，对照 `targetRoles` 和排除条件看职责。薪资按 `salary` 的币种、周期、口径和 `matchRule` 比较；多薪、奖金、日薪不能直接当月薪；「面议」或缺少换算依据时标为未知。
-6. 条件分两类判断：
-   - **正向条件须从 JD 证实**：职责符合 `targetRoles`、实际工作地点在 `locations` 内、薪资满足 `salary`、`hardRequirements`。任何一项无法确认（如「面议」、未标薪、地址不明）列为「待确认」，不自动联系。
-   - **排除条件明确命中才排除**：`exclusions` 中的职位类型、用工形式、工作制度、关键词，以及停止名单。JD 未写明的（如没写单双休、没说是否外包）可以打招呼，在 `reason` 中记「待沟通核实：<哪几项>」；不能因为没看到「外包」就断言「非外包」。
-7. **招聘者活跃度是硬条件**：按平台描述把活跃标签换算成天数，超过 `recruiterActivity.maxAgeDays`（缺省 7）的剔除，原因写「招聘者<标签>」；看不到活跃标签的列为「待确认」。读详情前若列表已显示活跃标签，可先据此跳过，不占读详情预算。
-8. 用 `ledger screen-check --platform boss --company <公司> --title <职位> --run <runId>` 标注公司风险和已联系信号（只筛选模式也标）；可读到链接或页面 ID 时另带 --job-url / --job-id。无工作区则仅列未知，不猜历史；无锁时省略 run。该命令不要求文字或发送授权，退出0含信号也不是发送许可；退出2报告筛查失败，不据此认定安全。实际发送仍走第5节完整 check / prepare / guard。
-9. 合格候选先按招聘者活跃度排序（越近越前），同一活跃档内再按 `targetRoles`、`locations` 的顺序和 `rules.md` 中的偏好排序，不用无法解释的匹配分数。不为凑数量放宽条件。
+1. 按 targetRoles × locations 优先级做有限搜索组合；页面搜索和滚动，不硬编码内部接口。详情预算按 limits.detailsPerRun，默认50个不同职位。
+2. 记录职位名、公司、地点、薪资原文、链接/可见ID、招聘者及活跃标签、职责要求。不可见的 jobUrl/jobId 为 null，不从其他接口补取。按实际职责而非职位名称判断。
+3. **正向条件须证实**：职责、实际地点、薪资、hardRequirements 任何一项未知，列 pending，不自动联系；薪资按币种/周期/口径比较，多薪、奖金、日薪不直接等同月薪，“面议”不猜。
+4. **排除项明确命中才排除**。没写外包/单双休不等于已证实非外包/双休；未命中的核实点记 checks，不因未知排除项拒绝本来合格的职位。停止名单优先。
+5. 招聘者活跃度是首次联系硬条件：按平台词表换算，超过 recruiterActivity.maxAgeDays（默认7）排除，不可见则 pending。列表能预先排除时不占详情预算。
+6. `ledger screen-check --platform boss --company <公司> --title <职位>` 查看公司风险和联系去重；可见时补 --job-url/--job-id，有本轮锁才补 --run。无锁、禁发也可查，退出0的 screeningOnly:true 不代表发送许可，退出2停止发送。
+7. **每个读过详情的职位都写一条 screen**，包括只筛选与待确认：`ledger append --json '<screen事件>'`，含页面身份、runId、skill:apply、result:qualified/pending/excluded、reasons、salaryText、jdFacts、checks。jdFacts 为已证实子项到原文要点的对象，checks 为待核实子项数组；如双休记 hours.schedule，不自动补 hours.time。信息键见台账，不拿大类代替子项，不记录HR全文。
+8. 合格职位先按活跃度、再按职位/地点偏好和 rules 排序，不编匹配分数。已联系和疑似重新发布如实标记；逐个放行必须是独立 dedup_once，不能借此取得发送权限。
 
-只筛选模式到此汇报（第 7 节）。
+只筛选到此，按第7节收尾汇报，没有任何动作 pending。
 
-## 5. 逐个发起首次沟通
+## 5. 写招呼、准备与发送
 
-一个职位完成闭环（终态已落盘）后才处理下一个。
+一次职位闭环后才处理下一个。发送前重读职位仍开放、身份与硬条件仍吻合，按钮已联系则记录 already_contacted，不点击。
 
-### 5.1 发送前检查
+### 招呼语
 
-1. 运行超过 30 分钟时先 `ledger lock renew --run <runId>`；失败说明已失去运行锁，立即停止。`ledger quota --platform boss --run <runId>`：`canGreet` 为 `false` 时结束本轮；`waitSeconds` 大于 0 时先等待这么久。这是固定的最小间隔，不另加随机延时。
-2. `ledger check --run <runId> --json '<完整意图>'`（含 kind、页面身份、拟发 text、reason、targetRole）：不允许时按[发送准备](../../shared/sending.md)及[停止范围](../../shared/execution.md#结果不明时的停止范围)处理；仅目标级拒绝可记 skipped 后处理下一目标，不把整轮阻断当成跳过。
-3. 重新确认详情仍符合硬条件、职位开放，目标公司和招聘者正确。
-4. 按平台首次沟通页面要点判断沟通按钮：显示已联系时追加 `already_contacted`，不点击。
+使用 style 的 tone、address、length、bannedWords、emoji；short 至多60字、medium至多100字。dynamic 由本职位JD的1–2个要点加 candidate/selfIntro 中可证实的经历表达匹配和兴趣；不用固定模板、不捏造数字、不问薪资或连续询问信息。无明确对应点时以 greeting.text 为依据改写，static 按 greeting.text 原文。不用“精通”，公司称“贵公司”。
 
-### 5.2 写招呼语
+### 一个尝试的闭环
 
-点击前先写好本职位的招呼语，点击后只需输入和核对。
+1. 写好最终招呼。完整意图含 kind:greet、页面身份、text、reason、targetRole、tags:greeting:<mode>，并带已收集的 jdFacts/checks。`ledger check --run <runId> --json '<完整意图>'` 可预检，但不占次数也不授权点击。
+2. `ledger prepare --run <runId> --json '<同一完整意图>'` 成功才有 pending；保存返回的 attemptId。禁止 append 写动作 pending，不指定 eventId、摘要或授权来源。
+3. **每个可能外发动作**前重新核对当前页面并 `ledger guard --run <runId> --attempt <attemptId>`；allowed:true 后立即执行，不把点击入口、输入和发送合并。入口可能自动发招呼，所以点击入口前也 guard。
+4. 进入空会话后先核对会话和完整 chat-input。未知内容不清空、不覆盖；按执行契约处理已建尝试。正常空框才输入，单独完整读回，与最终文字逐字一致，再重新 guard 后发送。
+5. 平台若自动发了默认招呼，当前尝试记录实际文字及业务成功证据为 sent，提醒本人关闭自动招呼。static 到此；dynamic 需要补发时，以同轮同完整会话已 sent 的 greet 为依据，另 prepare 一个 intro（greeting:dynamic），检查空草稿、输入、完整读回、重新 guard、发送、记终态；不重复已自动发出的内容。intro 不另占招呼额度，但占本轮外发限制。
+6. 所有结果都回填同一 attemptId：明确当前目标业务成功才 sent，text 为实际文字；明确未发才 failed_no_send，本轮不重试；无法确认则 uncertain。工具成功、进入聊天、按钮变化不等于送达。未知不重发，不能换 attempt 或工具补发。
 
-- `greeting.mode` 为 `dynamic`（默认）：针对该职位写，不超过 80 字。
-  - 结构：JD 中的 1–2 个关键点（职责、技术、行业）+ `candidate.md` 中对应的真实经历或数字 + 一个提问或下一步。
-  - 只写 `candidate.md` 有依据的事实；不报薪资，不用「精通」等无法验证的说法；称呼对方公司用「贵公司」。
-  - 找不到明确对应点时，以 `greeting.text` 为基础改写。
-  - 例（虚构事实，仅示意格式，不可直接当作本人经历）：「您好，看到岗位涉及订单流程，我有 3 年订单管理系统开发经验。想了解下团队现在的技术栈？」
-- `greeting.mode` 为 `static`：使用 `greeting.text` 原文。
+## 6. 停止与通知
 
-### 5.3 发送与确认
+停止范围**只按**[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)：区分工具/环境未知与业务未知，结构化 uncertaintyClass 如实写；第一、第二次业务不明的处理不在这里另定。未知状态先可靠收尾，不能用后来空会话证明此前动作未执行。
 
-所有 runtime 都按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护)、[尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 执行。完整读取才下否定结论，核对会话前不读写输入框，未知草稿不清；no-send / L1 只起草时不碰外发输入框。第 4 步放弃发送例外只在入口有明确正常成功结果、环境可用且连续观察到身份一致的目标空会话时适用；调用过后续可能外发动作的，还要求它们全部有结构化 `not_executed` 证据。身份丢失、失败响应、超时后即使读到空会话也不适用。可能外发前逐动作 guard，不将输入与发送合并；写后读回须与最终文字完全一致。
+验证码、安全验证、访问限制、登录失效、账号不符、额度提示按安全规则遇限即停；除额度提示外全局暂停。只写最小证据，不绕过检测、不自动恢复浏览。
 
-1. 事件格式为 v1，`eventId`、`threadKey`、`jobKey` 由脚本生成，不复制旧事件 ID；匹配方向写 `targetRole`。`ledger prepare --run <runId> --json '<意图>'`，kind 为 greet，text 为拟发文字，tags 记 greeting:<mode>；不传 status 或脚本字段，记下返回的 attemptId。写入失败（包括已失去运行锁、本轮禁发）立即停止整轮，不点击。
-2. `ledger guard --run <runId> --attempt <attemptId>` 返回 `allowed: true` 后**立即**点击首次沟通入口，中间不做别的事；等待并观察结果，不连点。按平台首次沟通页面要点判断出现的是哪种情况：
+需要本人处理时先写 inbox，再 `notify send --kind todo --decision <ID>`；uncertain 按[结果不明事项](../../shared/notify.md#结果不明事项)，按平台、账号、attemptId 查找原决定 ID，不为已有事项重复建ID。通知只排队；入口对账后、处理检查点和收尾运行 `im_lark.py sync`，投递规则见[飞书适配器](../../shared/im/lark.md)。没有IM能力保留本地队列，不另找通道；apply不等待答复。
 
-| 点击后 | 处理 |
-|---|---|
-| 进入会话，输入框可用，会话中没有我方消息（平台自动打招呼已关闭） | 核对会话标题中的公司、招聘者与目标一致；输入招呼语，单独核对完整文字；再 `guard` 一次，通过后立即点发送；按第 3 步确认 |
-| 平台自动发出了账号默认招呼语（自动打招呼仍开启） | 按第 3 步把这条记为 `sent`（`text` 记实际自动发出的文字），在汇报中提醒「平台自动打招呼仍开启」。`static` 到此结束；`dynamic` 按第 5.4 步补发 |
-| 无法判断是否已发出 | 第 5 步 |
+## 7. 收尾与汇报
 
-3. 只有出现当前目标的明确发送成功提示，或会话中出现本次新发出的消息且没有失败、发送中标志，才追加 `sent`，`evidence` 写明看到了什么，`text` 记实际发出的文字。
-4. 仅在上面的正常流程放弃例外成立时，追加 `failed_no_send`，`evidence` 写明目标身份、完整空会话证据、阶段及原因，继续下一个职位；对象不符或身份丢失不是此例外，保守按 `uncertain` 收尾。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
-5. 等待后仍无法确认：追加 `uncertain`，按[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)处理，再按[结果不明事项](../../shared/notify.md#结果不明事项)写入 `inbox/decisions.md`（含 attemptId、去重及旧事项待对账），请本人核对。
-6. 明确证明没有发出（如页面显示发送失败）：追加 `failed_no_send`，本轮不重试。
+任何结束分支先处理**本轮所有**未终结尝试：已有终态不覆盖，业务成功证据优先；读取失败也不能漏 pending。按执行契约及[释放与对账契约](../../shared/ledger.md#释放与对账契约)执行 `ledger lock release --run <runId>`，核对 released、reconciled、最新 unresolved / inbox；释放失败保留锁并如实报告，不再外发。
 
-`guard` 返回失败，说明本轮已失去运行锁，或这次尝试已被接管的一轮改记为 `uncertain`：按[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)处理，不点击，也不为同一职位新建尝试。普通等待后重读页面再 guard；工具超时按统一停止范围收尾，不自动续发。
+汇报本轮模式、临时条件、详情/合格/待确认/活跃度排除/已联系/成功/不明数量、实际停止原因和未完成目标。职位表含公司、职责、地点、薪资原文、链接与理由；pending/uncertain/历史记录不计本轮成功。用“已发起沟通”，不称已投递简历。
 
-每个写入 `pending` 的职位都占用一次额度，失败或结果不明也不补量。
-
-### 5.4 补发动态招呼语（仅在平台仍自动打招呼时）
-
-只在第 5.3 步记为 `sent` 且那条是平台自动发出的默认招呼语时补发。
-
-1. 第 5.2 步写好的招呼语不要重复默认招呼语已说过的内容，必要时调整。
-2. 先按 [输入与草稿保护](../../shared/execution.md#4-输入与草稿保护) 核对会话、接管与空输入框（未知内容不清空、不建新尝试），以同一份完整 intro 意图重做 check，再用 `ledger prepare --run <runId> --json '<意图>'`（脚本生成新 attemptId，tags 记 greeting:dynamic），在同一会话中输入、读回核对，`guard` 通过后立即发送。
-3. 按第 5.3 步第 3 步确认，追加 `sent`、`uncertain` 或 `failed_no_send`。结果不明时不重发，记 `uncertain`，按[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)及[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox，与第 5.3 步一致。
-
-补发不另占招呼额度。
-
-## 6. 异常与停止
-
-| 情况 | 处理 |
-|---|---|
-| 验证码、安全验证、访问限制、沟通额度提示 | 立即停止整轮，额度提示另记 `observe/limit_hit`（`reason` 注明当日已招呼数）；验证码、安全验证、访问限制另执行 `ledger pause on --by apply --reason <原因>`；写入 inbox「待处理」并 `notify send --kind todo` |
-| 登录失效、账号不符 | 停止；写入 inbox「待处理」，`ledger pause on --by apply --reason <原因>`，`notify send --kind todo`，请本人登录或确认账号后回「恢复」 |
-| 页面空白、异常跳转 | 按 browser/README.md 处理，不刷新重试 |
-| 职位已关闭、按钮不可用 | 记 `skipped` 及依据，继续下一个 |
-| 无法辨认收件人或发送状态 | 停止发送并汇报，不猜按钮位置 |
-| `ledger` 返回退出码 2 | 立即停止发送；如果此前可能已发送，报告该目标待人工核对 |
-| 本人喊停、额度或预算用完、候选耗尽 | 保存进度并汇报，不自动开始下一批 |
-
-任何 runtime 无论如何结束，都先按 [尝试阶段与停止前收尾](../../shared/execution.md#6-尝试阶段与停止前收尾) 给本轮所有未终结尝试收尾：已有终态不覆盖、明确成功证据优先记 sent；读取出错也不能遗漏 pending。停止范围统一按[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)，不再新建尝试，不靠同一 runId 重取锁降级（原锁 noSend 不会改变）。然后执行 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 核对 `released`、`reconciled` 与释放失败，按平台、账号、attemptId 对照最新 unresolved 和 inbox、保留原决定 ID，释放后不再外发。
-
-**结果不明（`uncertain`）的招呼**统一按[结果不明事项](../../shared/notify.md#结果不明事项)写入 inbox，记录 attemptId、沿用事项并处理旧事项关联，核对选项为「已发出 / 未发出」。本人确认后，由 Agent 代为追加同一 `attemptId` 的 `sent` 或 `failed_no_send`，`skill` 记 `user`，`reason` 引用本人原话。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
-
-**运行锁被上一轮占着**（上一轮崩溃没有释放）时，默认等它过期。本人确认上一轮已经停止，可以让 Agent 执行 `ledger lock release --run <上一轮 runId>`，同样按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 处理 `reconciled` 与释放失败；Agent 不得自行判断后释放别人的锁。
-
-## 7. 汇报
-
-**结束前必查**：运行环境受阻且 `im.channel` 为 `none`（或 IM 送达未确认）时，按 [环境受阻与恢复](../../shared/execution.md#7-环境受阻通知与恢复)，最终答复必须包含 **原因、环境恢复办法、恢复后如何重新发起** 三项；由本人重新发起本技能。恢复后发前重做去重检查；结果待核对的事项另行说明，不能代替恢复指引或据恢复重发 uncertain。 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
-
-- 本轮模式和实际使用的条件；哪些是本轮临时覆盖、哪些写回了 `profile.json`。
-- 读详情数、合格数、已发起沟通数、已联系跳过数、其他跳过数、待核对数；今日已用 / 剩余招呼额度。
-- 候选或已沟通职位表：公司、职位、地点、薪资原文、招聘者活跃标签、匹配理由、状态、链接。
-- 因招聘者不活跃而跳过的数量。
-- 未达目标数量的原因、停止原因、写入 inbox 的事项。
-
-`pending`、`uncertain` 和历史记录不计入本轮成功数。示例结尾：「已发起沟通 6 个，1 个结果待核对（已写入 inbox），本轮已暂停；未发送简历。今日剩余招呼额度 23。」 停止范围见[结果不明时的停止范围](../../shared/execution.md#结果不明时的停止范围)。
+环境受阻而无可靠IM送达时，最终报告原因、恢复办法、恢复后如何重新发起；恢复后重做去重与状态检查，不据恢复重发 uncertain。是否发送由本轮实际限制、授权和脚本门禁共同决定。

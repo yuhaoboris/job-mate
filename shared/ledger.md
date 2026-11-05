@@ -97,7 +97,7 @@ observed 可取：tail、handled、replied、decision、info、resume_requested�
 
 只筛选及入站职位评估用 screen-check，输出 screeningOnly:true、原始 platform/account、company、派生 jobId 和 reasons:[{code,message}]；正常含信号退出0，输入/工作区错误退出2。原因码仅 stoplist、stoplist_suspect、company_rejected、company_risk、already_contacted、reposted_suspect；入站只消费前四种。--run 仅影响同轮明确未发的去重，不写事件、不续锁、不占额度。结果没有 allowed 或授权来源，不能替代完整发送 check / prepare / guard。
 
-首次联系检查停止名单、同平台账号历史联系与 rejected / risk。company 范围按公司，job 范围按 ID，缺 ID 比公司 + 职位；同公司同职位而 ID 不同报疑似重新发布。通过 check 后仍以当前页面为准：已联系记 already_contacted，不发送。本人逐个放行仅经绑定单职位的 dedup_once；它不是发送授权，不能越过其他门禁。
+首次联系的公司/职位去重、疑似重新发布及单职位 dedup_once 见[发送准备](sending.md)；页面已联系仍拒绝，豁免不授权外发。
 
 uncertain 的停止范围与来源字段见[统一执行规则](execution.md#结果不明时的停止范围)：业务标 business，工具/环境标 tool，未说明保守按 tool；自动锁收尾的 reconcile / reconcileProof 只能由脚本生成并校验原 pending，不靠 reason 文本区分。
 
@@ -111,6 +111,7 @@ prepare / check 拒绝时为 `allowed:false,reasons:[{code,message}]`，退出1�
 - 会话：thread_closed、thread_manual、thread_paused、unresolved。
 - 决定：decision_not_registered、decision_superseded、decision_unresolved、decision_text_mismatch、decision_step_done、decision_needs_review。
 - 系统回执：ack_invalid_invitation、ack_duplicate、ack_contains_time。
+- 主动跟进：nudge_too_early、nudge_interval、nudge_silence_limit、nudge_thread_limit、nudge_day_limit、nudge_intent_mismatch、not_our_turn、thread_silent、page_state_mismatch、repeated_text。
 
 ## 中断恢复
 

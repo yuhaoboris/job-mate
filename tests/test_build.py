@@ -38,9 +38,16 @@ def run_build(*argv):
 
 
 # 已完整改写的文档进入体量预算；其余在对应任务重写时加入。
-TEXT_BUDGETS = {"shared/browser/agent-desktop.md": 12000, "shared/im/lark.md": 8000, "shared/config-transaction.md": 16000, "shared/notify.md": 16000, "shared/ledger.md": 16000, "shared/derived.md": 16000, "shared/accounts.md": 16000, "shared/export.md": 16000, "shared/tails.md": 16000, "shared/sending.md": 16000, "shared/execution.md": 16000,
-                "shared/workspace.md": 16000, "skills/setup/SKILL.md": 20000}
-READING_BUDGETS = {"setup": (55000, ("skills/setup/SKILL.md", "shared/workspace.md", "shared/execution.md"))}
+TEXT_BUDGETS = {p.relative_to(ROOT).as_posix(): 16000 for p in (ROOT / "shared").rglob("*.md")}
+TEXT_BUDGETS.update({f"skills/{name}/SKILL.md": 20000 for name in build.SKILL_NAMES})
+TEXT_BUDGETS.update({"shared/browser/agent-desktop.md": 12000, "shared/im/lark.md": 8000})
+READING_BUDGETS = {
+    "setup": (55000, ("skills/setup/SKILL.md", "shared/workspace.md", "shared/execution.md")),
+    "apply": (55000, ("skills/apply/SKILL.md", "shared/workspace.md", "shared/execution.md", "shared/safety.md",
+                      "platforms/boss/common.md", "platforms/boss/apply.md")),
+    "followup": (70000, ("skills/followup/SKILL.md", "shared/workspace.md", "shared/execution.md", "shared/safety.md",
+                         "shared/tails.md", "platforms/boss/common.md", "platforms/boss/followup.md")),
+}
 
 
 class BuildTest(unittest.TestCase):
@@ -238,13 +245,12 @@ class BuildTest(unittest.TestCase):
         skill = (d / "SKILL.md").read_text(encoding="utf-8")
         notify_md = (d / "shared" / "notify.md").read_text(encoding="utf-8")
         # 结论「无需动作」的 ready 收尾：不发 done、不发 summary
-        self.assertIn("**这种情况不发 `done`**", skill)
-        self.assertIn("也**不发 `summary`**", skill)
-        # 补发已 done 的结果通知：只补 done，不进入 summary
-        self.assertIn("**不发 `summary`**（第 9 节）", skill)
-        # 第 9 节 summary 的前提不再是「发过 IM 消息」，而是「实际处理过会话或执行过决定」
-        self.assertIn("**只做第 2.3 节收尾的轮次不发 `summary`**", skill)
-        self.assertIn("本轮**实际处理过会话或执行过已决定事项**（含本地动作）时", skill)
+        quiet = skill.split("### 2.3 只收尾 ready", 1)[1].split("## 3.", 1)[0]
+        self.assertIn("不发done、不发summary", quiet)
+        self.assertIn("不重发HR、不重做步骤", quiet)
+        closing = skill.split("## 10. 等待与收尾汇报", 1)[1]
+        self.assertIn("只有本轮实际处理过会话或执行过已决定事项", closing)
+        self.assertIn("只补done、消费ready、无需动作不发summary", closing)
         # shared/notify.md 与技能说的一致
         self.assertIn("**不发 `done`、不发 `summary`**", notify_md)
         self.assertIn("已 done 只补通知与消费，不重发 HR、不发 summary", notify_md)
@@ -299,8 +305,9 @@ class BuildSafetyTest(unittest.TestCase):
         canary.write_text("keep")
         for invalid in ("apply/../../victim", "unknown", "../apply", "/apply", "apply/", ""):
             with self.subTest(invalid=invalid):
-                code, result = run_build("--out", str(self.out), "--skill", "apply", "--skill", invalid)
-                self.assertEqual(code, 2, result)
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                    build.main(["--out", str(self.out), "--skill", invalid])
+                self.assertEqual(error.exception.code, 2)
                 self.assertEqual(canary.read_text(), "keep")
                 self.assertFalse(self.out.exists())
 
@@ -353,8 +360,9 @@ class BuildSafetyTest(unittest.TestCase):
         self.assertEqual(code, 0, result)
         before = {p.relative_to(self.out): p.read_bytes() for p in self.out.rglob("*") if p.is_file()}
         with patch.object(build, "git_info") as git:
-            code, result = run_build("--out", str(self.out), "--skill", "apply", "--skill", "missing")
-        self.assertEqual(code, 2, result)
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                build.main(["--out", str(self.out), "--skill", "apply"])
+        self.assertEqual(error.exception.code, 2)
         git.assert_not_called()
         self.assertEqual({p.relative_to(self.out): p.read_bytes() for p in self.out.rglob("*") if p.is_file()}, before)
 
@@ -773,13 +781,42 @@ class BuildSafetyTest(unittest.TestCase):
         out = self.source / "dist"
         target = self.source / ".agents/skills"
         for _ in range(2):
-            code, result = run_build("--out", str(out), "--install", str(target),
-                                     "--skill", "apply", "--skill", "apply")
+            code, result = run_build("--out", str(out), "--install", str(target))
             self.assertEqual(code, 0, result)
-            self.assertEqual(len(result["built"]), 1)
-            self.assertEqual(len(result["installed"]), 1)
+            self.assertEqual(len(result["built"]), 3)
+            self.assertEqual(len(result["installed"]), 3)
             self.assertEqual((out / "job-mate-apply/SKILL.md").read_bytes(),
                              (target / "job-mate-apply/SKILL.md").read_bytes())
+
+    def test_mixed_package_version_or_commit_is_rejected_before_publication(self):
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        sources = [Path(p) for p in result["built"]]
+        manifest = sources[0] / "BUILD.json"
+        original = manifest.read_bytes()
+        target = self.base / "mixed-install"
+        for field, value in (("suiteVersion", "9.0.0"), ("commit", "b" * 40)):
+            info = json.loads(original)
+            info[field] = value
+            manifest.write_text(json.dumps(info), encoding="utf-8")
+            with self.assertRaises(build.BuildError):
+                build.publish(sources, [target])
+            self.assertFalse(target.exists())
+            manifest.write_bytes(original)
+
+    def test_missing_package_reinstall_restores_whole_identical_suite(self):
+        target = self.base / "installed"
+        code, result = run_build("--out", str(self.out), "--install", str(target))
+        self.assertEqual(code, 0, result)
+        shutil.rmtree(target / "job-mate-followup")
+        code, result = run_build("--out", str(self.out), "--install", str(target))
+        self.assertEqual(code, 0, result)
+        manifests = [json.loads((Path(p) / "BUILD.json").read_text(encoding="utf-8")) for p in result["installed"]]
+        self.assertEqual(len(manifests), 3)
+        self.assertEqual({(m["suiteVersion"], m["commit"]) for m in manifests}, {(build.SUITE_VERSION, result["commit"])})
+        self.assertEqual({Path(p).name for p in result["installed"]}, {build.PREFIX + s for s in build.SKILL_NAMES})
+        for path in result["installed"]:
+            build.managed(Path(path), Path(path).name)
 
     def test_public_manifest_has_stable_source_and_git_provenance(self):
         with patch.object(build, "git_info", return_value=("a" * 40, True)):
@@ -790,6 +827,7 @@ class BuildSafetyTest(unittest.TestCase):
             info = json.loads(raw)
             self.assertEqual(info["source"], "job-mate")
             self.assertEqual(info["commit"], "a" * 40)
+            self.assertEqual(info["suiteVersion"], build.SUITE_VERSION)
             self.assertIs(info["dirty"], True)
             self.assertNotIn(str(self.source), raw)
             self.assertNotIn(str(self.base), raw)
@@ -805,11 +843,11 @@ class TakeoverRulesBuildTest(unittest.TestCase):
             "分钟 [10:00,10:01) 跨过 10:00:30": ("[10:00, 10:01)", "跨分界", "暂停询问"),
             "日期全天跨分界": ("只显示日期为当天全天", "同一天日期标签"),
             "跨午夜：前日全天早于次日分界": ("区间整个早于分界", "历史"),
-            "读后、登记前本人发出": ("`readAt`", "登记不用写入时间", "整个晚于分界"),
-            "构成分界的 sent 当天日期仍可匹配": ("包括构成分界的那条", "前后 2 分钟"),
-            "本人发简历或同意卡片": ("同意交换联系方式", "接受面试", "简历卡片"),
+            "读后、登记前本人发出": ("adopted.readAt", "登记不用写入时间", "整个晚于分界"),
+            "构成分界的 sent 当天日期仍可匹配": ("包括构成分界的那条", "前后2分钟"),
+            "本人发简历或同意卡片": ("同意交换联系方式", "接受面试", "我方文字与发简历"),
             "上午交还，下午分钟新活动接管": ("下午新发「14:00」是接管",),
-            "上午交还，下午同日期第2条仍模糊": ("第 2 条、再次暂停", "不能算历史"),
+            "上午交还，下午同日期第2条仍模糊": ("第2条再次暂停", "不能算历史"),
         }
         for scenario, terms in cases.items():
             with self.subTest(scenario=scenario):
