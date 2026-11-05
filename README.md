@@ -45,7 +45,16 @@ python3 scripts/build.py --install <你的Agent技能目录>
 py -3 scripts/build.py --install <你的Agent技能目录>
 ```
 
-技能目录按你的Agent文档选择，这里不预填未经核实的产品路径。命令会同时构建并安装三个自包含目录；每份都有所需规则、脚本和平台描述。重新运行可整套更新，误删其中一个后也可恢复整套。只构建、不安装时用 `--out <临时产物目录>`。
+常见本机技能目录（按对应官方说明选择，目录名不代表已具备浏览器操作能力）：
+
+| Agent | 个人技能目录 | 官方说明 |
+|---|---|---|
+| Codex | `~/.agents/skills` | [技能目录](https://developers.openai.com/codex/skills/) |
+| Claude Code | `~/.claude/skills` | [个人技能](https://code.claude.com/docs/en/skills) |
+
+例如安装到 Codex 个人目录：`python3 scripts/build.py --install ~/.agents/skills`。其他Agent按其文档选择；云端会话不一定读取本机目录。
+
+命令会同时构建并安装三个自包含目录；每份都有所需规则、脚本和平台描述。重新运行可整套更新，误删其中一个后也可恢复整套。只构建、不安装时用 `--out <临时产物目录>`。
 
 安装/更新前暂停使用整套技能。安装器只替换未修改的受管目录，不覆盖手工修改、额外文件或其他技能；遇拒绝先按提示将旧包整体迁出技能扫描目录，不只删清单。可回滚批次失败，但不保证运行中的Agent看不到中间版本，也不提供断电自动恢复；有错误或warnings请保留现场与备份。
 

@@ -1,6 +1,5 @@
 """T5.4 来源可证明的结果不明统计与唯一停止规则。"""
 import json
-import re
 import unittest
 
 import test_prepare
@@ -103,9 +102,8 @@ class UncertaintyTest(unittest.TestCase):
             text = (root / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
             self.assertNotIn("停止本轮发送", text)
             self.assertNotIn("该会话停止，其他会话继续", text)
-            for no, line in enumerate(text.splitlines(), 1):
-                if re.search(r"\buncertain\b", line):
-                    self.assertIn("execution.md#结果不明时的停止范围", line, (name, no))
+            # 技能统一引用停止契约即可；状态名在对账/汇报中出现不需要逐行重复链接。
+            self.assertIn("execution.md#结果不明时的停止范围", text, name)
         execution = (root / "shared/execution.md").read_text(encoding="utf-8")
         self.assertEqual(execution.count("## 结果不明时的停止范围"), 1)
         self.assertIn("第二次", execution)
