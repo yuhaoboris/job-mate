@@ -835,8 +835,7 @@ class BuildSafetyTest(unittest.TestCase):
 
 class TakeoverRulesBuildTest(unittest.TestCase):
     def test_takeover_rule_contract_covers_synthetic_time_scenarios(self):
-        # 方案 13.2(10)：这里只锁住技能规则，页面区间判读无脚本实现，
-        # 不以静态检查冒充真实 Agent 行为抽查（仍属 13.3 待验）。
+        # 这里只检查文档安全规则，不以静态检查冒充真实 Agent 行为。
         skill = (ROOT / "skills/followup/SKILL.md").read_text()
         boss = (ROOT / "platforms/boss/followup.md").read_text(encoding="utf-8")
         cases = {
@@ -853,7 +852,7 @@ class TakeoverRulesBuildTest(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 for term in terms:
                     self.assertIn(term, skill)
-        for term in ("置顶", "往上滚动", "23:59:59", "时间或执行者看不清"):
+        for term in ("置顶", "往上滚动", "保留日期精度", "不补造具体时刻", "时间或执行者看不清"):
             self.assertIn(term, boss)
 
 
