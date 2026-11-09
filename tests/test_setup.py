@@ -174,6 +174,9 @@ class SetupStepsTest(unittest.TestCase):
         for placeholder in ("工具名待", "待在 DSH 实测确认", "DeepSeek Harness 的提问卡片工具",
                             "未确认的授权保持待确认", "跳过不等于授权"):
             self.assertNotIn(placeholder, ask)
+            for document in ("skills/setup/SKILL.md", "docs/design.md"):
+                with self.subTest(placeholder=placeholder, document=document):
+                    self.assertNotIn(placeholder, (ROOT / document).read_text(encoding="utf-8"))
         for document in ("docs/design.md", "skills/setup/SKILL.md"):
             text = (ROOT / document).read_text(encoding="utf-8")
             for term in ("本人选择 / 默认", "汇总卡上「确认保存」",

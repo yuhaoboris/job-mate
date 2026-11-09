@@ -117,9 +117,7 @@ def validate_command(parser, tokens):
         nested = False
         while position < len(tokens):
             token, protected = tokens[position]
-            # 中文说明不是英文命令参数；选项值由下面的 nargs 单独消费。
-            if not protected and re.search(r"[^\x00-\x7f]", token):
-                break
+            # 选项（含 = 后的 Unicode 值）先识别，不能当成自然文截断。
             if token.startswith("-"):
                 flag, equal, inline = token.partition("=")
                 action = options.get(flag)
@@ -148,6 +146,9 @@ def validate_command(parser, tokens):
                 else:
                     return "unparsed"
                 continue
+            # 仅非选项的未保护中文可作为自然文边界；选项值已按 nargs 消费。
+            if not protected and re.search(r"[^\x00-\x7f]", token):
+                break
             if pos_index >= len(positional):
                 return "invalid"
             action = positional[pos_index]
@@ -229,6 +230,17 @@ class SkillStructureTest(unittest.TestCase):
         for source in ('ledger --workspace "unterminated', "ledger --workspace <broken threads"):
             with self.subTest(unparsed=source):
                 self.assertTrue(scan_commands(source)[2])
+
+    def test_f5_non_ascii_unknown_options_are_invalid(self):
+        # 都是未知选项，而非自然文边界；应归 invalid，不是 unparsed。
+        for source in ("ledger threads --bogus=中文", "ledger threads --bogus=abc中文",
+                       "`ledger threads --bogus=中文`", "ledger threads --opt 中文",
+                       'ledger threads --bogus="中文"'):
+            with self.subTest(source=source):
+                valid, invalid, unparsed = scan_commands(source)
+                self.assertTrue(invalid, (valid, invalid, unparsed))
+                self.assertEqual((valid, unparsed), ([], []))
+        self.assertEqual(scan_commands("notify send --text=中文 --kind todo")[1:], ([], []))
 
     def test_followup_fields_match_real_threads(self):
         import history_fixture

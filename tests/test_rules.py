@@ -328,6 +328,8 @@ class ExecutionRulesTest(unittest.TestCase):
                 self.assertLess(skill.index("能力自检"), skill.index("ledger lock acquire --skill " + name))
                 self.assert_terms(skill, ("不操作平台、不回退", "不写记录", "释放与对账契约", "reconciled", "释放失败"))
                 self.assertNotRegex(skill, r"使用 agent-desktop 时|agent-desktop 的任何停止")
+        self.assertNotRegex((ROOT / "shared/decision-exec.md").read_text(encoding="utf-8"),
+                            r"使用 agent-desktop 时|agent-desktop 的任何停止")
         for name in ("apply", "followup"):
             skill = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
             self.assert_terms(skill, ("本轮所有", "pending", "已有终态不覆盖", "attemptId", "原决定 ID",
@@ -366,6 +368,10 @@ class ExecutionRulesTest(unittest.TestCase):
                 self.assertIn("im_lark.py sync", im_content)
                 self.assertIn("shared/im/lark.md" if relative.startswith("skills/") else "im/lark.md", content)
                 self.assertNotRegex(content, r"notify (?:outbox --claim|receipt|incoming)\b")
+        for relative in ("shared/im/lark-setup.md", "shared/decision-exec.md"):
+            with self.subTest(path=relative):
+                self.assertNotRegex((ROOT / relative).read_text(encoding="utf-8"),
+                                    r"notify (?:outbox --claim|receipt|incoming)\b")
         followup = (ROOT / "skills/followup/SKILL.md").read_text(encoding="utf-8")
         self.assertIn("../../shared/notify.md#等待本人回复", followup)
         apply = (ROOT / "skills/apply/SKILL.md").read_text(encoding="utf-8")

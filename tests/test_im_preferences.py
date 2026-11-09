@@ -569,6 +569,82 @@ class ImPreferencesTest(unittest.TestCase):
                 finally:
                     case.doCleanups()
 
+    def test_f9_prepare_checks_each_barrier_after_im_commit(self):
+        reasons = {"apply_disabled": "not_authorized", "no_send": "no_send", "restriction": "run_kind_restricted",
+                   "stoplist": "stoplist", "pause": "paused"}
+        for barrier, expected in reasons.items():
+            with self.subTest(barrier=barrier):
+                case = ImPreferencesTest(); case.setUp()
+                try:
+                    flags = (["--no-send"] if barrier == "no_send" else ["--restrict", json.dumps(
+                        {"kinds": ["reply"], "scope": {"all": True}, "max": 1, "quote": "synthetic restriction"})]
+                        if barrier == "restriction" else [])
+                    if flags:
+                        case.assertEqual(case.f.ledger_run("lock", "release", "--run", "followup")[0], 0)
+                        case.assertEqual(case.f.ledger_run("lock", "acquire", "--skill", "followup", "--run", "followup", *flags)[0], 0)
+                    if barrier == "apply_disabled":
+                        case.profile["authorization"]["apply"]["send"] = False
+                        (case.f.ws / "profile.json").write_bytes(N.profile_bytes(case.profile))
+                    elif barrier == "stoplist":
+                        case.assertEqual(case.f.ledger_run("stoplist", "add", "--name", "合成停止公司", "--reason", "synthetic", "--source", "user")[0], 0)
+                    elif barrier == "pause":
+                        case.assertEqual(case.f.ledger_run("pause", "on", "--by", "user", "--reason", "synthetic")[0], 0)
+                    case.prepare(); case.setup_phase(); case.assertEqual(case.commit()[0], 0)
+                    case.assertEqual(case.f.ledger_run("lock", "release", "--run", "setup")[0], 0)
+                    case.assertEqual(case.f.ledger_run("lock", "acquire", "--skill", "apply", "--run", "probe", *flags)[0], 0)
+                    intent = {"platform": "boss", "kind": "greet", "company": "合成停止公司", "recruiter": "合成HR",
+                              "title": "后端开发", "targetRole": "后端开发", "text": "Hello, interested in this role.", "reason": "synthetic probe"}
+                    code, result = case.f.ledger_run("prepare", "--run", "probe", "--json", json.dumps(intent))
+                    case.assertEqual(code, 1, result)
+                    case.assertFalse(result["allowed"])
+                    case.assertEqual(result["reasons"][0]["code"], expected)
+                    case.assertEqual(L.attempts_of(L.read_events(case.f.ws)[0]), {})
+                finally:
+                    case.doCleanups()
+
+    def test_f9_guard_rechecks_live_barriers_after_im_commit(self):
+        reasons = {"apply_disabled": "not_authorized", "no_send": "lock_invalid", "restriction": "lock_invalid",
+                   "stoplist": "stoplist", "pause": "paused"}
+        for barrier, expected in reasons.items():
+            with self.subTest(barrier=barrier):
+                case = ImPreferencesTest(); case.setUp()
+                try:
+                    case.prepare(); case.setup_phase(); case.assertEqual(case.commit()[0], 0)
+                    case.assertEqual(case.f.ledger_run("lock", "release", "--run", "setup")[0], 0)
+                    case.assertEqual(case.f.ledger_run("lock", "acquire", "--skill", "apply", "--run", "probe")[0], 0)
+                    intent = {"platform": "boss", "kind": "greet", "company": "合成停止公司", "recruiter": "合成HR",
+                              "title": "后端开发", "targetRole": "后端开发", "text": "Hello, interested in this role.", "reason": "synthetic probe"}
+                    code, result = case.f.ledger_run("prepare", "--run", "probe", "--json", json.dumps(intent))
+                    case.assertEqual(code, 0, result)
+                    attempt = result["attemptId"]
+                    code, result = case.f.ledger_run("guard", "--run", "probe", "--attempt", attempt)
+                    case.assertEqual(code, 0, result); case.assertTrue(result["allowed"])
+                    if barrier == "apply_disabled":
+                        profile = L.load_profile(case.f.ws); profile["authorization"]["apply"]["send"] = False
+                        (case.f.ws / "profile.json").write_bytes(N.profile_bytes(profile))
+                    elif barrier in ("no_send", "restriction"):
+                        # 故障刺激：既有 pending 后篡改冻结策略；不伪造 pending 或冒称 CLI 允许改策略。
+                        with L.lock_mutex(case.f.ws):
+                            lock = L.read_lock(case.f.ws)
+                            if barrier == "no_send":
+                                lock["noSend"] = True
+                            else:
+                                lock["restriction"] = {"kinds": ["reply"], "scope": {"all": True}, "max": 1,
+                                                       "quote": "synthetic changed policy"}
+                            L.write_lock(case.f.ws, lock)
+                    elif barrier == "stoplist":
+                        case.assertEqual(case.f.ledger_run("stoplist", "add", "--name", "合成停止公司", "--reason", "synthetic", "--source", "user")[0], 0)
+                    else:
+                        case.assertEqual(case.f.ledger_run("pause", "on", "--by", "user", "--reason", "synthetic")[0], 0)
+                    events = L.read_events(case.f.ws)[0]
+                    code, result = case.f.ledger_run("guard", "--run", "probe", "--attempt", attempt)
+                    case.assertEqual(code, 1, result); case.assertFalse(result["allowed"])
+                    case.assertEqual(result["reasons"][0]["code"], expected)
+                    case.assertEqual(L.read_events(case.f.ws)[0], events)
+                    case.assertEqual(len(L.attempts_of(events)), 1)
+                finally:
+                    case.doCleanups()
+
     def test_c02_field_whitelist_and_frozen_target(self):
         fields = {"targetRoles": ["后端开发"], "locations": ["上海"], "hardRequirements": ["行业：合成行业"],
                   "recruiterActivity.maxAgeDays": 7, "salary.currency": "CNY", "salary.period": "month",
