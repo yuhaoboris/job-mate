@@ -22,10 +22,70 @@ TOOL_CALL = re.compile(
 )
 LINK = re.compile(r"\]\(([^\s)]+)\)")
 
+# 审核名录只让新增/删除文档先过审，不参与任何负向守卫的选材。
+# 守卫始终从 core_documents() 扫描；未知的新文件也会立即被扫描。
+REVIEWED_CORE_DOCUMENTS = frozenset("""
+skills/apply/SKILL.md
+skills/followup/SKILL.md
+skills/setup/SKILL.md
+platforms/boss/apply.md
+platforms/boss/common.md
+platforms/boss/followup.md
+shared/accounts.md
+shared/ask.md
+shared/browser/README.md
+shared/browser/agent-desktop.md
+shared/config-transaction.md
+shared/decision-exec.md
+shared/dependencies.md
+shared/derived.md
+shared/execution.md
+shared/export.md
+shared/im-replies.md
+shared/im/lark-setup.md
+shared/im/lark.md
+shared/inventory.md
+shared/ledger.md
+shared/notify.md
+shared/safety.md
+shared/sending.md
+shared/tails.md
+shared/workspace.md
+""".split())
+CORE_REVIEW_EXEMPTIONS = {}
+DOCUMENT_GUARD_EXEMPTIONS = {
+    "manual_transport": {},
+    "tool_branch": {
+        "shared/browser/agent-desktop.md": "获准定义桌面工具分支的唯一操作参考。",
+        "shared/im/lark.md": "获准定义飞书工具调用与限制的适配器参考。",
+        "shared/dependencies.md": "获准定义工具安装与版本约束的依赖参考。",
+    },
+}
+# 唯一接口的归属保持固定；不将报告中建议扩大到 P 的检查混入本轮。
+PINNED_DOCUMENT_GUARDS = {
+    "setup_question_terms": {
+        "documents": ("shared/ask.md", "skills/setup/SKILL.md", "docs/design.md"),
+        "reason": "已验证的提问卡/授权默认接口；本轮不扩大为全部公开文档禁词。",
+    },
+    "browser_entry": {
+        "documents": ("shared/browser/README.md",),
+        "reason": "薄入口及旧 pi.md 链接约束只属于该唯一接口。",
+    },
+    "lark_test_protocol": {
+        "documents": ("shared/im/lark-setup.md",),
+        "reason": "引用测试消息与禁止任意文字测试回复，只约束正式测试操作协议。",
+    },
+}
+
 
 def core_documents():
     return sorted(path for directory in ("skills", "shared", "platforms")
                   for path in (ROOT / directory).rglob("*.md"))
+
+
+def guarded_documents(rule):
+    exemptions = DOCUMENT_GUARD_EXEMPTIONS[rule]
+    return [path for path in core_documents() if path.relative_to(ROOT).as_posix() not in exemptions]
 
 
 SELF_SPAWN_TEMPLATE = '''
@@ -139,6 +199,24 @@ class ExecutionRulesTest(unittest.TestCase):
         for term in terms:
             with self.subTest(term=term):
                 self.assertIn(term, content)
+
+    def test_f11_core_document_inventory_is_exhaustive(self):
+        actual = {p.relative_to(ROOT).as_posix() for p in core_documents()}
+        self.assertEqual(actual, set(REVIEWED_CORE_DOCUMENTS) | set(CORE_REVIEW_EXEMPTIONS))
+        self.assertFalse(REVIEWED_CORE_DOCUMENTS & set(CORE_REVIEW_EXEMPTIONS))
+        for name, exemptions in {"core_review": CORE_REVIEW_EXEMPTIONS, **DOCUMENT_GUARD_EXEMPTIONS}.items():
+            self.assertLessEqual(set(exemptions), actual, name)
+            for relative, reason in exemptions.items():
+                with self.subTest(rule=name, path=relative):
+                    self.assertIsInstance(reason, str)
+                    self.assertTrue(reason.strip())
+        self.assertEqual(set(DOCUMENT_GUARD_EXEMPTIONS["tool_branch"]),
+                         {p.relative_to(ROOT).as_posix() for p in TOOL_DOCUMENTS})
+        for name, contract in PINNED_DOCUMENT_GUARDS.items():
+            self.assertTrue(contract["reason"].strip(), name)
+            self.assertTrue(contract["documents"], name)
+            for relative in contract["documents"]:
+                self.assertTrue((ROOT / relative).is_file(), (name, relative))
 
     def test_contract_covers_all_execution_branches(self):
         sections = {
@@ -328,8 +406,10 @@ class ExecutionRulesTest(unittest.TestCase):
                 self.assertLess(skill.index("能力自检"), skill.index("ledger lock acquire --skill " + name))
                 self.assert_terms(skill, ("不操作平台、不回退", "不写记录", "释放与对账契约", "reconciled", "释放失败"))
                 self.assertNotRegex(skill, r"使用 agent-desktop 时|agent-desktop 的任何停止")
-        self.assertNotRegex((ROOT / "shared/decision-exec.md").read_text(encoding="utf-8"),
-                            r"使用 agent-desktop 时|agent-desktop 的任何停止")
+        for path in guarded_documents("tool_branch"):
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertNotRegex(path.read_text(encoding="utf-8"),
+                                    r"使用 agent-desktop 时|agent-desktop 的任何停止")
         for name in ("apply", "followup"):
             skill = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
             self.assert_terms(skill, ("本轮所有", "pending", "已有终态不覆盖", "attemptId", "原决定 ID",
@@ -368,9 +448,9 @@ class ExecutionRulesTest(unittest.TestCase):
                 self.assertIn("im_lark.py sync", im_content)
                 self.assertIn("shared/im/lark.md" if relative.startswith("skills/") else "im/lark.md", content)
                 self.assertNotRegex(content, r"notify (?:outbox --claim|receipt|incoming)\b")
-        for relative in ("shared/im/lark-setup.md", "shared/decision-exec.md"):
-            with self.subTest(path=relative):
-                self.assertNotRegex((ROOT / relative).read_text(encoding="utf-8"),
+        for path in guarded_documents("manual_transport"):
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertNotRegex(path.read_text(encoding="utf-8"),
                                     r"notify (?:outbox --claim|receipt|incoming)\b")
         followup = (ROOT / "skills/followup/SKILL.md").read_text(encoding="utf-8")
         self.assertIn("../../shared/notify.md#等待本人回复", followup)

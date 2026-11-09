@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import test_workspace
+from test_rules import PINNED_DOCUMENT_GUARDS
 
 W, L = test_workspace.workspace, test_workspace.ledger
 ROOT = Path(__file__).resolve().parents[1]
@@ -174,7 +175,9 @@ class SetupStepsTest(unittest.TestCase):
         for placeholder in ("工具名待", "待在 DSH 实测确认", "DeepSeek Harness 的提问卡片工具",
                             "未确认的授权保持待确认", "跳过不等于授权"):
             self.assertNotIn(placeholder, ask)
-            for document in ("skills/setup/SKILL.md", "docs/design.md"):
+            for document in PINNED_DOCUMENT_GUARDS["setup_question_terms"]["documents"]:
+                if document == "shared/ask.md":
+                    continue  # 上方逐项检查原 ask 变量，正向归属也保持不变。
                 with self.subTest(placeholder=placeholder, document=document):
                     self.assertNotIn(placeholder, (ROOT / document).read_text(encoding="utf-8"))
         for document in ("docs/design.md", "skills/setup/SKILL.md"):

@@ -16,10 +16,15 @@ class MovedGuardMutationTest(unittest.TestCase):
         target = (ROOT / relative).resolve()
         source = original(target, encoding="utf-8")
         # 注入前提在守卫 runner 外检查，不能把缺锚点误计为守卫检出。
-        self.assertEqual(source.count(anchor), 1)
-        mutated = source.replace(anchor, anchor + "\n" + payload + "\n", 1)
+        if anchor is None:
+            mutated = source + "\n" + payload + "\n"
+        else:
+            self.assertEqual(source.count(anchor), 1)
+            mutated = source.replace(anchor, anchor + "\n" + payload + "\n", 1)
+        self.last_read_targets = set()
 
         def read(path, *args, **kwargs):
+            self.last_read_targets.add(path.resolve())
             if path.resolve() == target:
                 return mutated
             return original(path, *args, **kwargs)
@@ -41,6 +46,30 @@ class MovedGuardMutationTest(unittest.TestCase):
             with self.subTest(path=relative):
                 self.assert_detected(relative, anchor, "notify incoming", test_rules.ExecutionRulesTest,
                                      "test_skill_im_checkpoints_use_adapter_not_manual_transport")
+
+    def test_f11_manual_transport_guard_covers_the_entire_core_scope(self):
+        # 独立从磁盘范围计算期望目标，不复用被测守卫的文件集合或审核清单。
+        targets = sorted(p for p in ROOT.rglob("*.md") if p.relative_to(ROOT).parts[0] in {"shared", "skills", "platforms"})
+        self.assertTrue(targets)
+        for path in targets:
+            relative = path.relative_to(ROOT).as_posix()
+            with self.subTest(path=relative):
+                self.assert_detected(relative, None, "notify incoming", test_rules.ExecutionRulesTest,
+                                     "test_skill_im_checkpoints_use_adapter_not_manual_transport")
+                self.assertIn(path.resolve(), self.last_read_targets)
+
+    def test_f11_tool_branch_guard_covers_core_except_exact_tool_references(self):
+        # T 是报告/既有接口固定的三份许可定义；主体仍独立从磁盘派生。
+        references = {"shared/browser/agent-desktop.md", "shared/im/lark.md", "shared/dependencies.md"}
+        targets = sorted(p for p in ROOT.rglob("*.md") if p.relative_to(ROOT).parts[0] in {"shared", "skills", "platforms"}
+                         and p.relative_to(ROOT).as_posix() not in references)
+        self.assertTrue(targets)
+        for path in targets:
+            relative = path.relative_to(ROOT).as_posix()
+            with self.subTest(path=relative):
+                self.assert_detected(relative, None, "使用 agent-desktop 时", test_rules.ExecutionRulesTest,
+                                     "test_all_skill_entries_check_capability_before_lock")
+                self.assertIn(path.resolve(), self.last_read_targets)
 
     def test_f7_each_obsolete_term_is_detected_in_each_policy_document(self):
         for relative, anchor in (("shared/ask.md", "## 对话规则"),
