@@ -63,13 +63,13 @@ reply 与 nudge 是**独立授权**：
 3. HR最后发言及 inventoryPending 未打开会话，最久未处理优先，共用 inboundScanPerRun（默认30）预算；后者不限天数。普通列表限 inboundScanDays（默认14天），连续3个非置顶项超龄、到底或风控就停，报告未查范围。
 4. canNudge:true 的待页面核验候选，或本轮明确点名、可能由nudge例外覆盖的目标；候选不是发送授权。
 
-能否跳过，拿当前列表标记（listMark）对照 threads 的 `lastHandled`，条件只按[尾部与扫描](../../shared/derived.md#尾部与扫描)判断；不满足就打开，不保证 24 小时内全部发现。
+能否跳过，拿当前[列表标记（listMark）](../../shared/tails.md#输出与收口)对照 threads 的 `lastHandled`，条件只按[尾部与扫描](../../shared/derived.md#尾部与扫描)判断；不满足就打开，不保证 24 小时内全部发现。
 
 公司精确匹配且招聘者一致才是同一会话。完整读锚点至末尾（含卡片），按[尾部协议](../../shared/tails.md) `ledger tail`，默认与handled比；处理后显式 `--base <本次实际处理tailId>` 重读，不把歧义、截断或mismatch当旧消息。
 
 盘点超龄会话按inventoryReply分流：接手前HR未答作历史参考，不代答、不进回复分诊；仅处理接手后新HR，混合尾部仍跳过旧问题，时间不明先核对。未超龄的接手前未答照常分诊代答。新HR以同会话tailId记replied取replyProof（[新HR回复凭据](../../shared/tails.md#确认新hr回复)）；重读、换base或迟到登记不退款。
 
-处理后复核settled:true才handled最新快照。锚点改变须按[新HR回复凭据](../../shared/tails.md#确认新hr回复)提交完整bridge、匹配sent并处理全部新HR；遗漏或歧义留本人带依据核对，换base/same不消除。中断先续pendingTails/未决，不跳过旧片段。
+处理后复核settled:true才handled最新快照。锚点改变须按[桥接与收口](../../shared/tails.md#输出与收口)提交完整bridge、匹配sent并处理全部新HR；遗漏或歧义留本人带依据核对，换base/same不消除。中断先续pendingTails/未决，不跳过旧片段。
 
 ## 4. 分诊（按顺序命中）
 

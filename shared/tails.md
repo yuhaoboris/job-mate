@@ -11,6 +11,7 @@
 - anchor 为我方最后一条或已读到会话开头时的 `"start"`；messages 为之后全部 HR 消息，按页面顺序。complete / anchorUnique 缺省 false；本地已有 sent 却声明 start 转核对。
 - type 为 text / card，卡片 text 含卡片类型和按钮文字；稳定平台 ID 已开启时可带 id，否则按发言方、类型、NFKC 去首尾空白并折叠空白后的内容摘要、绝对日期和分钟构成指纹。无日期上下文 HH:MM 不猜今天，时间缺失不是通配符。
 - 日期按平台 timeLabels：今天 / 昨天 / 前天，星期取读取日前最近一次，月日取不晚于读取日的最近年份；明确年月日原样换算。只存 SHA-256 前 16 位及时间。
+## 输出与收口
 - 输出 tailId、baseTailId、result、newCount、reason、settled；每次读取唯一 tailId。默认比较最近 handled；处理后显式 --base 指向本次处理快照。待处理期间，旧 base 仅在与最新尾部等同时可复用，否则留下核对状态；不能跳过已观察内容。extended 处理后以其 tailId 复核。
 - same / extended 要求可确认身份逐项相同 / 严格前缀；new_anchor 为无基准或锚点变化，整段分诊；mismatch 包括条数减少、内容/顺序冲突、不完整与时间/锚点歧义。无法确认数量时 newCount:null。
 - 自己发送改变锚点时提交从基准锚点到末尾的完整 bridge（逐项 speaker）与 bridgeComplete:true。基准锚点唯一，HR 恰为已处理序列；新增我方活动的 attemptId 须对应同目标、本轮 sent、相同内容类型，发送时间在两次读取间且落在页面分钟区间前后 2 分钟。resume 卡片须匹配 sent 的简历版本文字，否则核对；编号本身不是证据。
