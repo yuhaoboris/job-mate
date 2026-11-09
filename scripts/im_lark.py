@@ -676,7 +676,7 @@ COMMANDS = {"doctor": cmd_doctor, "sync": cmd_sync, "watch": cmd_watch}
 
 
 def entry_mode(args):
-    return "read" if args.cmd == "doctor" or (args.cmd == "watch" and args.status) else "write"
+    return "read" if args.cmd == "doctor" else "write"
 
 
 def main(argv=None):

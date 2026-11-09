@@ -31,7 +31,6 @@ ENTRY_CASES = [
     ("im_lark", "sync --fetch-only", "write"),
     # make_ws 为 channel:none、无待回复项，普通 watch 预检后立即退出，不进入循环。
     ("im_lark", "watch", "write"),
-    ("im_lark", "watch --status", "read"),
     ("ledger", "validate", "read"),
     ("ledger", "screen-check --platform boss --company 示例", "read"),
     ("ledger", "screen-check --platform boss --company 示例 --account main --title 开发 --job-id page-id --run screen-run", "read"),
@@ -191,6 +190,8 @@ class VersionGateTest(unittest.TestCase):
 
     def test_entry_table_automatically_covers_all_argparse_command_paths(self):
         self.assertEqual(RELEASES_CENTRAL_LOCK, {("im_lark.py", "sync"), ("im_lark.py", "watch")})
+        for command in ("sync", "watch", "watch --status"):
+            self.assertEqual(im_lark.entry_mode(im_lark.build_parser().parse_args(command.split())), "write")
         started = time.monotonic()
         code, result = invoke(im_lark, self.make_ws("1.0.0"), "watch")
         self.assertEqual((code, result["reason"]), (0, "inactive"))
