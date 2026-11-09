@@ -133,6 +133,21 @@ class ImPreferencesTest(unittest.TestCase):
         self.assertEqual(json.loads((self.f.ws / "profile.json").read_bytes())["locations"], ["合成另一城市"])
 
     def test_c06_transaction_and_audit_crash_windows(self):
+        case = ImPreferencesTest(); case.setUp()
+        try:
+            before = (case.f.ws / "profile.json").read_bytes()
+            requested = {"revision": 1, "parts": [case.preference({"locations": ["上海"]})]}
+            child = subprocess.run([sys.executable, "-B", "-I", str(ROOT / "scripts/notify.py"), "--workspace", str(case.f.ws),
+                "reply-state", "--message", case.mid, "--run", "followup", "--plan", json.dumps(requested)],
+                capture_output=True, encoding="utf-8", timeout=10, env=dict(os.environ, JOB_MATE_TEST_CRASH_AT="im_after_plan"))
+            case.assertEqual(child.returncode, 70)
+            case.assertEqual((case.f.ws / "profile.json").read_bytes(), before)
+            case.assertFalse((case.f.ws / ".job-mate-txn.json").exists())
+            case.prepare({"locations": ["上海"]}, revision=2); case.setup_phase()
+            case.assertEqual(case.commit()[0], 0)
+            case.assertEqual(len([r for r in N.read_records(case.f.ws) if r["type"] == "in"]), 1)
+        finally:
+            case.doCleanups()
         for point in ("after_journal", "after_file_1", "im_after_applied_audit", "im_after_journal_delete"):
             with self.subTest(point=point):
                 case = ImPreferencesTest(); case.setUp()
@@ -296,6 +311,28 @@ class ImPreferencesTest(unittest.TestCase):
         self.assertEqual(self.own_reply()["preferenceChanges"][0]["status"], "needs_review")
 
     def test_c14_audit_survives_consumption_and_reporting(self):
+        case = ImPreferencesTest(); case.setUp()
+        try:
+            before = (case.f.ws / "profile.json").read_bytes()
+            case.prepare(); case.setup_phase()
+            original = N.append_record
+            def failed_audit(ws, record, tz):
+                if record["type"] == "preference_change":
+                    raise OSError("synthetic audit failure")
+                return original(ws, record, tz)
+            import contextlib, io
+            output = io.StringIO()
+            with patch.object(N, "append_record", side_effect=failed_audit), contextlib.redirect_stdout(output):
+                code = W.main(["--workspace", str(case.f.ws), "commit", "--staging", str(case.stage), "--run", "setup",
+                               "--im-reply", case.mid, "--im-part", "preferences"])
+            case.assertEqual(code, 2, output.getvalue())
+            case.assertTrue((case.f.ws / ".job-mate-txn.json").exists())
+            case.assertEqual((case.f.ws / "profile.json").read_bytes(), before)
+            case.assertFalse(any(r.get("status") == "applied" for r in N.read_records(case.f.ws)))
+            case.assertEqual(case.recover()[0], 0)
+            case.assertEqual(case.own_reply()["preferenceChanges"][0]["status"], "rolled_back")
+        finally:
+            case.doCleanups()
         self.prepare(); self.setup_phase(); self.assertEqual(self.commit()[0], 0)
         before = self.own_reply()["preferenceChanges"]
         self.assertEqual(self.own_reply()["state"], "consumed")

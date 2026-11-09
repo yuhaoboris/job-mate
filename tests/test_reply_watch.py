@@ -396,6 +396,25 @@ class WatchProcessTest(unittest.TestCase):
         for token in ("../escape", "0" * 32):
             self.control("--child-token", token, "--child-deadline", str(time.monotonic() + 2), expected=2)
         self.assertEqual(list((self.f.ws / "ledger").glob(".im-watch-start-*")), [])
+        for flags in (("--interval", "0"), ("--interval", "61"), ("--max-ticks", "0")):
+            self.control(*flags, expected=2)
+        production = dict(self.env); production.pop("JOB_MATE_TESTING", None)
+        self.control("--max-ticks", "1", env=production, expected=2)
+        # W26：后台不可用/窗口过期不丢消息，下一轮实际 sync 仍能读取迟到答复。
+        self.f.sync("--send-only")
+        sent = self.f.rows()["out"]["decision:" + self.decision]["messageId"]
+        late = N.now_ms() + 7200000
+        self.env["JOB_MATE_NOW"] = datetime.fromtimestamp(late / 1000,
+            datetime.fromisoformat(os.environ["JOB_MATE_NOW"]).tzinfo).isoformat()
+        os.environ["JOB_MATE_NOW"] = self.env["JOB_MATE_NOW"]
+        inactive = self.control("--detach")[-1]
+        self.assertEqual((inactive["started"], inactive["reason"]), (False, "inactive"))
+        item = self.f.message(created=late - 500); item["parent_id"] = sent
+        self.f.add_messages(item)
+        result = self.f.sync("--fetch-only")
+        self.assertEqual(len(result["incoming"]["new"]), 1)
+        self.assertEqual(next(iter(self.f.rows()["in"].values()))["state"], "received")
+        self.assertEqual(N.open_items(self.f.ws), [self.decision])
 
     def test_w20_wall_clock_expiry_does_not_sleep_an_extra_tick(self):
         I = self.module.im_lark
@@ -411,6 +430,46 @@ class WatchProcessTest(unittest.TestCase):
         self.assertEqual((code, result["reason"]), (11, "expired"))
         self.assertEqual(sleeps, [60])
         self.assertEqual(N.open_items(self.f.ws), [self.decision])
+        # 退出竞态：第一次无锁快照过期后插入真实新通知，最终临界区必须复查并继续。
+        case = WatchProcessTest(); case.setUp()
+        try:
+            other = "D-20400102-02"
+            (case.f.ws / "inbox/decisions.md").write_text(f"## {case.decision} 待决定\n\n## {other} 待处理\n", encoding="utf-8")
+            I = case.module.im_lark
+            original_watch, original_lock = N.reply_watch, I.fsutil.try_locked
+            ctx = N.context(case.f.ws)
+            first_deadline = original_watch(case.f.ws, ctx, I.fsutil.now(ctx["tz"]))["deadlineAt"]
+            injected, unlocked, sleeps = [], [], []
+            def observed(ws, context, now):
+                state = original_watch(ws, context, now)
+                if state["expired"] and not I.ledger.mutation_held(ws) and not injected:
+                    case.f.invoke(N, "send", "--kind", "todo", "--decision", other, "--text", "new independent question")
+                    injected.append(True)
+                return state
+            @contextlib.contextmanager
+            def locked(path, create=True):
+                with original_lock(path, create=create) as acquired:
+                    try:
+                        yield acquired
+                    finally:
+                        if acquired and Path(path).name == ".im-watch.lock":
+                            unlocked.append(I.ledger.mutation_held(case.f.ws))
+            def tick(seconds):
+                sleeps.append(seconds)
+                if len(sleeps) == 1:
+                    os.environ["JOB_MATE_NOW"] = first_deadline
+                else:
+                    case.f.configure(waitMinutes=0)
+            args = I.build_parser().parse_args(["watch", "--interval", "60"])
+            with patch.object(N, "reply_watch", side_effect=observed), patch.object(I.fsutil, "try_locked", side_effect=locked), \
+                    patch.object(I.time, "sleep", side_effect=tick), contextlib.redirect_stdout(io.StringIO()):
+                result, code = I.watch_loop(case.f.ws, args)
+            self.assertEqual((code, result["reason"]), (0, "disabled"))
+            self.assertEqual(injected, [True]); self.assertEqual(unlocked, [True])
+            self.assertEqual(len(sleeps), 2)
+            self.assertEqual(N.open_items(case.f.ws), [case.decision, other])
+        finally:
+            case.doCleanups()
 
     def test_w10_zero_exits_existing_foreground_without_consuming(self):
         child = self.start()
