@@ -45,14 +45,14 @@ reply 与 nudge 是**独立授权**：
 
 ### 2.1 对账
 
-- inbox的待决定会话缺 paused(D) 时补记；ledger.pausedBy 有D而inbox缺项时，用 decision.pausedRecords 的已知原因/时间/身份补事项，不猜选项或期限。
+- inbox的待决定会话缺 paused(D) 时补记；ledger.pausedBy 有D而inbox缺项时，用 decision.pausedRecords 的已知原因/时间/身份补事项，不猜选项或期限。D 为事项 ID，格式见[待决定事项](../../shared/notify.md#inboxdecisionsmd)。
 - inbox“已执行”只是展示，执行进度以 `ledger decision --id <ID>` 为准。ready只继续已经落盘的结论，不重新解释旧答复。
 - uncertain先沿平台、原始账号、attemptId核对；缺ID历史待对账，不按公司/姓名猜合并，不重放。
 
 ### 2.2 执行决定
 
 1. 本人选通知选项就发送其附带原文；本人给原话就原样发送；仅给结论（如接受并改期）则先起草clarify等确认。**本人批准文字不得trim、改写、替换空白或Unicode**。
-2. 结论先写inbox，再登记 `observe/decision`：同一D连续version、steps，每步唯一step及kind/text或resume。只续做effectiveVersion；新决定才增加版本，步骤名跨版本不复用。旧已sent不撤回、不重发；旧未决仍阻断，不能标废止来掩盖。
+2. 结论先写inbox，再登记 `observe/decision`：同一D连续version、steps，每步唯一step及kind/text或resume。只续做effectiveVersion（[决定字段](../../shared/derived.md#决定)）；新决定才增加版本，步骤名跨版本不复用。旧已sent不撤回、不重发；旧未决仍阻断，不能标废止来掩盖。
 3. manual会话不执行旧决定；本地动作在前、外发在后。改资料需本人明确要求、先备份；不要为了让事项完成编一条HR回复。
 4. `ledger decision --id <ID> --step <step>`：sent跳过；superseded不做；pending/uncertain/needs_review只核对原尝试，不建新尝试；failed_no_send本轮不重试。not_started才按第7节，用本人原文与decision/step发送，冻结版本不改绑。
 5. 全部有效动作完成且没有任何版本未决，最后写同D的unpaused；面试另记interview_decided。保存实际结果正文到inbox，再排队该结果版本done、标consumed。相同结果补发复用冻结正文，不拿本人决定原话当执行结果。
@@ -67,7 +67,7 @@ reply 与 nudge 是**独立授权**：
 **先盘点**：每账号首次按 [会话盘点](../../shared/inventory.md) 只读「全部」列表到底并接手，不设开关、不改setup。未完记进度续做，真到底才finish；禁发可盘点，全局暂停不浏览。本人说「重新盘点」才restart。
 
 同一会话去重，按顺序：
-1. `ledger threads` 的 pendingTails（即使无未读）；
+1. `ledger threads` 的 pendingTails（即使无未读，见[尾部与扫描](../../shared/derived.md#尾部与扫描)）；
 2. 平台未读会话；
 3. HR最后发言及 inventoryPending 未打开会话，最久未处理优先，共用 inboundScanPerRun（默认30）预算；后者不限天数。普通列表限 inboundScanDays（默认14天），连续3个非置顶项超龄、到底或风控就停，报告未查范围。
 4. canNudge:true 的待页面核验候选，或本轮明确点名、可能由nudge例外覆盖的目标；候选不是发送授权。
@@ -76,9 +76,9 @@ reply 与 nudge 是**独立授权**：
 
 公司精确匹配且招聘者一致才是同一会话。完整读锚点至末尾（含卡片），按[尾部协议](../../shared/tails.md) `ledger tail`，默认与handled比；处理后显式 `--base <本次实际处理tailId>` 重读，不把歧义、截断或mismatch当旧消息。
 
-盘点超龄会话按inventoryReply分流：接手前HR未答作历史参考，不代答、不进回复分诊；仅处理接手后新HR，混合尾部仍跳过旧问题，时间不明先核对。未超龄的接手前未答照常分诊代答。新HR以同会话tailId记replied取replyProof；重读、换base或迟到登记不退款。
+盘点超龄会话按inventoryReply分流：接手前HR未答作历史参考，不代答、不进回复分诊；仅处理接手后新HR，混合尾部仍跳过旧问题，时间不明先核对。未超龄的接手前未答照常分诊代答。新HR以同会话tailId记replied取replyProof（[新HR回复凭据](../../shared/tails.md#确认新hr回复)）；重读、换base或迟到登记不退款。
 
-处理后复核settled:true才handled最新快照。锚点改变须按尾部协议提交完整bridge、匹配sent并处理全部新HR；遗漏或歧义留本人带依据核对，换base/same不消除。中断先续pendingTails/未决，不跳过旧片段。
+处理后复核settled:true才handled最新快照。锚点改变须按[新HR回复凭据](../../shared/tails.md#确认新hr回复)提交完整bridge、匹配sent并处理全部新HR；遗漏或歧义留本人带依据核对，换base/same不消除。中断先续pendingTails/未决，不跳过旧片段。
 
 ## 4. 分诊（按顺序命中）
 
