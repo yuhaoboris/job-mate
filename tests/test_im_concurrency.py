@@ -135,6 +135,52 @@ class ImConcurrencyTest(unittest.TestCase):
         self.assertEqual(len(self.f.rows()["in"]), 1)
         self.assertEqual(self.f.poll()["businessCursorMs"], int(self.f.message()["create_time"]))
 
+    def test_f4_busy_sync_returns_before_foreign_mutation_is_released(self):
+        self.f.establish()
+        first = self.start("--fetch-only")  # 第一个真实进程持 im-sync，停在网络屏障。
+        ready, release = self.f.base / "mutation.ready", self.f.base / "mutation.release"
+        program = '''import sys,time
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import ledger
+with ledger.mutation_mutex(Path(sys.argv[2])):
+    Path(sys.argv[3]).touch()
+    end=time.monotonic()+10
+    while not Path(sys.argv[4]).exists():
+        if time.monotonic()>end: raise SystemExit(78)
+        time.sleep(.01)
+'''
+        holder = subprocess.Popen([sys.executable, "-B", "-I", "-c", program, str(ROOT / "scripts"),
+            str(self.f.ws), str(ready), str(release)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", env=self.env)
+        self.children.append(holder)
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists():
+                self.assertIsNone(holder.poll(), "mutation holder exited before readiness")
+                self.assertLess(time.monotonic(), deadline, "mutation holder did not become ready")
+                time.sleep(.01)
+            before = (self.f.ws / "ledger/im.jsonl").read_bytes()
+            contender = subprocess.Popen(self.command("im_lark", "sync", "--fetch-only"),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", env=self.env)
+            self.children.append(contender)
+            started = time.monotonic()
+            try:
+                stdout, stderr = contender.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.fail("busy sync waited for mutation beyond 2 seconds while both foreign locks remained held")
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertEqual((contender.returncode, stderr), (0, ""), stdout)
+            result = json.loads(stdout)
+            self.assertEqual((result["busy"], result["incomplete"], result["sent"], result["incoming"]["new"]),
+                             (True, True, 0, []))
+            self.assertIsNone(first.poll()); self.assertIsNone(holder.poll())
+            self.assertFalse(release.exists())
+            self.assertEqual((self.f.ws / "ledger/im.jsonl").read_bytes(), before)
+        finally:
+            release.touch()
+            holder.communicate(timeout=5)
+            self.assertEqual(self.finish(first)[0], 0)
+
     def test_s03_original_scan_crash_matrix_is_unchanged(self):
         # 真正的进程故障矩阵由 test_lark_scan 运行；此处核验该文件未被改动。
         result = subprocess.run(["git", "diff", "--exit-code", "459bf4b", "--", "tests/test_lark_scan.py", "scripts/im_scan.py"],

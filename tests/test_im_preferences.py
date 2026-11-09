@@ -86,6 +86,120 @@ class ImPreferencesTest(unittest.TestCase):
     def own_reply(self):
         return next(r for r in self.replies() if r["messageId"] == self.mid)
 
+    def test_f1_consumed_decision_stays_final_across_plan_revisions(self):
+        import history_fixture
+        decision = {"partId": "answer", "kind": "decision", "state": "executable",
+                    "decision": test_notify.D1, "quote": test_notify.D1 + " 已处理"}
+        unclear = {"partId": "unclear", "kind": "clarification", "state": "needs_clarification",
+                   "quote": "其他看着办", "questionFields": ["hardRequirements"]}
+        self.assertEqual(self.plan([decision, unclear])[0], 0)
+        history_fixture.append_action(self.f.ws, {"platform": "boss", "account": "synthetic", "runId": "old-apply",
+            "skill": "apply", "kind": "greet", "status": "uncertain", "attemptId": "f1-original",
+            "company": "合成公司", "recruiter": "合成HR", "decision": test_notify.D1,
+            "text": "original exact", "reason": "synthetic history"})
+        code, out = self.f.ledger_run("append", "--json", json.dumps({"platform": "boss", "kind": "greet",
+            "attemptId": "f1-original", "status": "sent", "skill": "user", "runId": "followup",
+            "text": "original exact", "reason": "owner confirmation", "evidence": self.mid}))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.f.run_cmd("reply-state", "--message", self.mid, "--run", "followup",
+                                        "--part", "answer", "--state", "consumed")[0], 0)
+        extra = {"partId": "salary", "kind": "clarification", "state": "needs_clarification",
+                 "quote": "薪资按新范围", "questionFields": ["salary.min", "salary.max"]}
+        self.assertEqual(self.plan([decision, unclear, extra], revision=2)[0], 0)
+        self.assertEqual(self.own_reply()["parts"][0]["state"], "consumed")
+        before = (self.f.ws / "ledger/im.jsonl").read_bytes()
+        code, out = self.f.run_cmd("reply-state", "--message", self.mid, "--run", "followup",
+                                  "--part", "answer", "--state", "ready")
+        self.assertEqual((code, out.get("duplicate")), (0, True), out)
+        self.assertEqual((self.f.ws / "ledger/im.jsonl").read_bytes(), before)
+        (self.stage / "profile.json").write_bytes(N.profile_bytes(self.profile))
+        self.setup_phase()
+        code, out = self.commit(part="answer")
+        self.assertEqual((code, out.get("code")), (2, "im_change_source_invalid"), out)
+        attempts = list(L.attempts_of(L.read_events(self.f.ws)[0]).values())
+        self.assertEqual([(a["attemptId"], a["status"]) for a in attempts], [("f1-original", "sent")])
+
+    def test_f2_preference_commit_requires_successful_dependencies(self):
+        for state in ("needs_clarification", "rejected"):
+            with self.subTest(dependency=state):
+                case = ImPreferencesTest(); case.setUp()
+                try:
+                    parent = {"partId": "parent", "kind": "clarification" if state == "needs_clarification" else "rejected",
+                              "state": state, "quote": "其他看着办", "questionFields": ["hardRequirements"]}
+                    child = case.preference({"locations": ["上海"]}); child["dependsOn"] = ["parent"]
+                    case.prepare(parts=[child, parent]); case.setup_phase()
+                    before = (case.f.ws / "profile.json").read_bytes()
+                    code, result = case.commit()
+                    case.assertEqual((code, result.get("code")), (2, "im_change_baseline_conflict"), result)
+                    case.assertEqual((case.f.ws / "profile.json").read_bytes(), before)
+                    case.assertFalse((case.f.ws / "backups").exists())
+                    case.assertFalse((case.f.ws / ".job-mate-txn.json").exists())
+                finally:
+                    case.doCleanups()
+
+    def test_f2_decision_requires_successful_not_rejected_dependencies(self):
+        for state in ("needs_clarification", "rejected"):
+            with self.subTest(dependency=state):
+                case = ImPreferencesTest(); case.setUp()
+                try:
+                    parent = {"partId": "parent", "kind": "clarification" if state == "needs_clarification" else "rejected",
+                              "state": state, "quote": "其他看着办"}
+                    child = {"partId": "answer", "kind": "decision", "state": "executable", "decision": test_notify.D1,
+                             "quote": test_notify.D1 + " 已处理", "dependsOn": ["parent"]}
+                    case.assertEqual(case.plan([parent, child])[0], 0)
+                    before = (case.f.ws / "ledger/im.jsonl").read_bytes()
+                    code, result = case.f.run_cmd("reply-state", "--message", case.mid, "--run", "followup",
+                                                 "--part", "answer", "--state", "ready")
+                    case.assertEqual((code, result.get("code")), (2, "im_change_baseline_conflict"), result)
+                    case.assertEqual((case.f.ws / "ledger/im.jsonl").read_bytes(), before)
+                    case.assertEqual(case.own_reply()["parts"][1]["state"], "executable")
+                finally:
+                    case.doCleanups()
+
+    def test_f2_applied_and_consumed_dependencies_allow_progress(self):
+        for state in ("applied", "consumed"):
+            with self.subTest(dependency=state):
+                case = ImPreferencesTest(); case.setUp()
+                try:
+                    parent = (case.preference({"targetRoles": ["后端开发"]}, pid="parent") if state == "applied" else
+                              {"partId": "parent", "kind": "decision", "state": "executable", "decision": test_notify.D1,
+                               "quote": test_notify.D1 + " 已处理"})
+                    child = case.preference({"locations": ["上海"]}); child["dependsOn"] = ["parent"]
+                    answer = {"partId": "answer", "kind": "decision", "state": "executable", "decision": test_notify.D2,
+                              "quote": "其他看着办", "dependsOn": ["parent"]}
+                    parts = [child, parent, answer]
+                    out = case.prepare(parts=parts)
+                    if state == "consumed":
+                        case.assertEqual(case.f.run_cmd("reply-state", "--message", case.mid, "--run", "followup",
+                                                       "--part", "parent", "--state", "consumed")[0], 0)
+                    else:
+                        (case.stage / "profile.json").write_bytes(N.profile_bytes(out["targets"]["parent"]))
+                        case.setup_phase(); case.assertEqual(case.commit(part="parent")[0], 0)
+                        case.assertEqual(case.f.ledger_run("lock", "release", "--run", "setup")[0], 0)
+                        case.assertEqual(case.f.ledger_run("lock", "acquire", "--skill", "followup", "--run", "followup")[0], 0)
+                        case.prepare(parts=parts, revision=2)
+                    case.setup_phase(); case.assertEqual(case.commit()[0], 0)
+                    case.assertEqual(case.f.ledger_run("lock", "release", "--run", "setup")[0], 0)
+                    case.assertEqual(case.f.ledger_run("lock", "acquire", "--skill", "followup", "--run", "followup")[0], 0)
+                    code, result = case.f.run_cmd("reply-state", "--message", case.mid, "--run", "followup",
+                                                 "--part", "answer", "--state", "ready")
+                    case.assertEqual(code, 0, result)
+                    case.assertEqual(case.own_reply()["parts"][2]["state"], "ready")
+                finally:
+                    case.doCleanups()
+
+    def test_f3_salary_change_cannot_bypass_unresolved_salary_question(self):
+        before = (self.f.ws / "profile.json").read_bytes()
+        part = self.preference({"salary.min": 20000})
+        question = {"partId": "salary-question", "kind": "clarification", "state": "needs_clarification",
+                    "quote": "薪资按新范围", "questionFields": ["salary.max"]}
+        code, result = self.plan([part, question])
+        self.assertEqual((code, result.get("code")), (2, "im_change_fields_forbidden"), result)
+        self.assertEqual((self.f.ws / "profile.json").read_bytes(), before)
+        self.assertFalse(N.load_state(self.f.ws)["plans"])
+        self.assertFalse((self.f.ws / "backups").exists())
+        self.assertFalse((self.f.ws / ".job-mate-txn.json").exists())
+
     def test_c01_c03_single_message_commits_with_backup_and_audit(self):
         before = (self.f.ws / "profile.json").read_bytes()
         self.prepare({"targetRoles": ["后端开发"], "locations": ["上海"], "hardRequirements": ["合成行业"],

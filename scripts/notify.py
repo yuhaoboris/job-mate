@@ -804,7 +804,8 @@ def cmd_incoming(args, ws):
 PREFERENCE_FIELDS = {"targetRoles", "locations", "hardRequirements", "recruiterActivity.maxAgeDays",
                      *("salary." + key for key in ("currency", "period", "taxBasis", "min", "max", "matchRule")),
                      *("exclusions." + key for key in ("roleTypes", "employmentTypes", "workSchedules", "keywords"))}
-PART_FINAL = {"applied", "consumed", "rejected"}
+PART_SUCCESS = {"applied", "consumed"}
+PART_FINAL = PART_SUCCESS | {"rejected"}
 
 
 def change_error(code):
@@ -869,7 +870,9 @@ def project_reply_parts(ws, st):
         parts = copy.deepcopy(plan["parts"])
         for part in parts:
             state = st["partStates"].get((message_id, part["partId"]))
-            if state and state["revision"] == plan["revision"]:
+            # 同一分项的终态跨计划修订保留；只有非终态必须属于当前 revision。
+            if state and state["revision"] <= plan["revision"] and (
+                    state["revision"] == plan["revision"] or state["state"] in PART_FINAL):
                 part["state"] = state["state"]
             audits = [record for record in st["changes"].values() if record["messageId"] == message_id
                       and part["partId"] in record["partIds"]]
@@ -979,10 +982,19 @@ def build_reply_plan(ws, ctx, st, message_id, requested):
     if set(old_parts) - ids or any(dep not in ids or dep == p["partId"] for p in parts for dep in p.get("dependsOn", [])):
         change_error("im_change_source_invalid")
     salary_groups = [p for p in parts if any(c["field"].startswith("salary.") for c in p.get("changes", []))]
-    if len(salary_groups) > 1:
+    salary_unresolved = any(p["kind"] == "clarification"
+        and old_parts.get(p["partId"], p)["state"] not in PART_FINAL
+        and any(field.startswith("salary.") for field in p.get("questionFields", [])) for p in parts)
+    if len(salary_groups) > 1 or (salary_groups and salary_unresolved):
         change_error("im_change_fields_forbidden")
     return {"type": "reply_plan", "planVersion": 1, "route": ctx["cfg"]["route"], "messageId": message_id,
             "revision": revision, "parts": parts, "sourceDigest": hashlib.sha256(canonical(reply["payload"]).encode()).hexdigest()}
+
+
+def require_part_dependencies(reply, part):
+    states = {p["partId"]: p["state"] for p in reply["parts"]}
+    if any(states.get(dep) not in PART_SUCCESS for dep in part.get("dependsOn", [])):
+        change_error("im_change_baseline_conflict")
 
 
 def process_reply_parts(args, ws, ctx):
@@ -1011,10 +1023,9 @@ def process_reply_parts(args, ws, ctx):
         part = next((p for p in reply.get("parts", []) if p["partId"] == args.part), None)
         if not part or part["kind"] == "preference" or args.state not in {"ready", "consumed", "clarifying", "ignored"}:
             change_error("im_change_source_invalid")
-        if any(p["state"] not in PART_FINAL for p in reply["parts"] if p["partId"] in part.get("dependsOn", [])):
-            change_error("im_change_baseline_conflict")
         if part["state"] in PART_FINAL:
             return emit({"ok": True, "duplicate": True})
+        require_part_dependencies(reply, part)
         state = "rejected" if args.state == "ignored" else args.state
         if part["kind"] == "clarification":
             questions = [o for o in st["out"].values() if o.get("kind") == "clarify"
@@ -1050,6 +1061,7 @@ def im_commit_plan(ws, message_id, part_id, staged):
         if audit["status"] == "applied":
             return None, audit
         change_error("im_change_source_invalid")
+    require_part_dependencies(source, part)
     if set(staged) != {"profile.json"}:
         change_error("im_change_fields_forbidden")
     raw = (ws / "profile.json").read_bytes()

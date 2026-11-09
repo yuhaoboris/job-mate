@@ -40,7 +40,7 @@ notify reply-state --message <messageId> --run <followupRun> --plan '<JSON>'
 - partId：1–64 位 ASCII 字母、数字、下划线或连字符，消息内唯一；
 - kind：preference / decision / clarification / rejected；
 - quote：本人原文片段；state：executable / needs_clarification / rejected；
-- preference 带 changes（field/before/after 的数组）和 members；同一字段不得重复或矛盾；salary 不能拆成多个提交组；
+- preference 带 changes（field/before/after 的数组）和 members；同一字段不得重复或矛盾；salary 不能拆成多个提交组，或与未决 salary questionFields 并存；冲突返回 im_change_fields_forbidden；
 - decision 带 inbox 已存在的 decision ID；dependsOn 是本计划的 partId 数组，不能引用自身；
 - clarification 可带 questionFields，标出尚缺的白名单字段；不能伪造具体值；
 - rejected 保留被拒的原话，不夹带 changes。
@@ -76,6 +76,6 @@ notify reply-state --message <messageId> --part <partId> --state consumed --run 
 notify reply-state --message <messageId> --reported <operationId> --run <followupRun>
 ```
 
-偏好 applied 只由 setup 提交路径登记，不用普通 state 伪造；依赖未终结则拒绝推进。全部分项终结才 consumed，已完成部分不重做。含糊组通过原 replyTo 追问，同一原消息的问题尽量合并；脚本从未决分项原话/字段/依赖生成稳定问题键，换措辞或自定义 key 不续期。只有未决问题实质改变才是新版本。追问 sent 后才标 clarifying；新答复自身处理完后，才按精确引用收口原澄清分项。
+偏好 applied 只由 setup 提交路径登记，不用普通 state 伪造；依赖只有 applied/consumed 算满足；其余（含 rejected）以 im_change_baseline_conflict 拒绝提交或推进。全部分项终结才 consumed，已完成部分不重做。含糊组通过原 replyTo 追问，同一原消息的问题尽量合并；脚本从未决分项原话/字段/依赖生成稳定问题键，换措辞或自定义 key 不续期。只有未决问题实质改变才是新版本。追问 sent 后才标 clarifying；新答复自身处理完后，才按精确引用收口原澄清分项。
 
 apply 不明结果的“已发出 / 未发出”，followup 仅沿平台、原始账号和 attemptId 追加 skill:user 的 sent / failed_no_send，带本人核对依据，保留原身份、文字和证据；不建新 attempt、不重试首次沟通。混合的 followup 决定分别按原版本/step/guard 执行。

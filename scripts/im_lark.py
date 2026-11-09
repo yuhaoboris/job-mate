@@ -400,16 +400,16 @@ def fetch(ws, ctx, command, start_ms, max_pages=None):
 
 
 def sync(ws, send_only=False, fetch_only=False, max_pages=None):
-    with ledger.gated(ws, "write"):
-        ctx = notify.context(ws)
-        if ctx["cfg"]["channel"] == "none":
-            return {"skipped": "channel_none"}
+    # 只读准入不取 mutation；忙时不得为了读配置先等待中央锁。
+    ledger.version_gate(ws, "write")
     with fsutil.try_locked(ws / "ledger/.im-sync.lock") as acquired:
         if not acquired:
             return {"busy": True, "incomplete": True, "incoming": {"new": [], "skipped": "busy"},
                     "sent": 0, "failed": 0, "unknown": 0, "errors": []}
         with ledger.gated(ws, "write"):
             ctx, start = notify.context(ws), notify.now_ms()
+            if ctx["cfg"]["channel"] == "none":
+                return {"skipped": "channel_none"}
             ctx["profileDigest"] = hashlib.sha256((ws / "profile.json").read_bytes()).hexdigest()
         return sync_locked(ws, ctx, start, send_only, fetch_only, max_pages)
 
