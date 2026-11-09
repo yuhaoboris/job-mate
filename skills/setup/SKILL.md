@@ -102,7 +102,7 @@ description: 建立、重设、修改或体检 job-mate 求职工作区。第一
 | 先到这 / 稍后再说 | 确保回答落盘，结束，提示下次说「继续 setup」 |
 | 放弃 | 本人确认后 progress clear，按 markerRemoved 报告 |
 
-草稿只经 workspace progress 原子读写；record 接受合法 JSON，IM 另校验第 10 节结构，含义由 Agent 核对。重答后回第一个未答项；草稿不改 profile、不授予发送权限。
+草稿只经 workspace 的 progress 接口原子读写；record 接受合法 JSON，IM 另校验第 10 节结构，含义由 Agent 核对。重答后回第一个未答项；草稿不改 profile、不授予发送权限。
 
 ### 3.3 确认与写入
 

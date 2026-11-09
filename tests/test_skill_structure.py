@@ -19,8 +19,7 @@ import notify
 import workspace
 
 COMMAND_RE = re.compile(
-    r"(?<![\w/.-])(ledger|workspace|notify|im_lark\.py) +"
-    r"((?:--[\w-]+(?: +(?!-)\S+)? +)*)([a-z][\w-]*)"
+    r"(?<![A-Za-z0-9_/.-])(ledger|workspace|notify|im_lark\.py)(?=[ \t]+[-a-z])"
 )
 ALLOW = set()
 FOLLOWUP_THREAD_FIELDS = (
@@ -62,28 +61,174 @@ def subcommands(parser):
                 if isinstance(action, argparse._SubParsersAction))
 
 
+def command_tokens(source):
+    """保留引号/占位符内的空白与中文；自然文边界不吞掉未闭合结构。"""
+    tokens = []
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if char in " \t[]":
+            index += 1
+            continue
+        if char in "`\n，。；：、（）→":
+            break
+        start = index
+        protected = char in "\"'<"
+        if protected:
+            end = ">" if char == "<" else char
+            index += 1
+            value = ""
+            while index < len(source) and source[index] != end:
+                if source[index] in "\r\n`":
+                    raise ValueError("unterminated_token")
+                if source[index] == "\\" and char == '"':
+                    index += 1
+                    if index >= len(source):
+                        raise ValueError("unterminated_token")
+                value += source[index]
+                index += 1
+            if index == len(source):
+                raise ValueError("unterminated_token")
+            index += 1
+            if char == "<":
+                value = "<" + value + ">"
+        else:
+            while index < len(source) and source[index] not in " \t[]`\n，。；：、（）→":
+                if source[index] in "\"'<":
+                    # --option=<value> / --option="value with spaces"
+                    prefix = source[start:index]
+                    tail = command_tokens(source[index:])
+                    if not tail:
+                        raise ValueError("missing_option_value")
+                    tokens.append((prefix + tail[0][0], True))
+                    return tokens + tail[1:]
+                index += 1
+            value = source[start:index]
+        tokens.append((value, protected))
+    return tokens
+
+
+def validate_command(parser, tokens):
+    position = 0
+    while True:
+        options = {flag: action for action in parser._actions for flag in action.option_strings}
+        positional = [action for action in parser._actions if not action.option_strings]
+        pos_index = 0
+        nested = False
+        while position < len(tokens):
+            token, protected = tokens[position]
+            # 中文说明不是英文命令参数；选项值由下面的 nargs 单独消费。
+            if not protected and re.search(r"[^\x00-\x7f]", token):
+                break
+            if token.startswith("-"):
+                flag, equal, inline = token.partition("=")
+                action = options.get(flag)
+                if action is None:
+                    return "invalid"
+                nargs = action.nargs
+                count = 1 if nargs is None else nargs
+                if equal:
+                    if count == 0 or not inline:
+                        return "invalid"
+                    count = 0 if isinstance(count, int) else count
+                position += 1
+                if isinstance(count, int):
+                    for _ in range(count):
+                        if position >= len(tokens) or tokens[position][0].startswith("--"):
+                            return "invalid"
+                        position += 1
+                elif count in ("?", "*", "+"):
+                    start = position
+                    while position < len(tokens) and not tokens[position][0].startswith("-"):
+                        if count == "?" and position > start:
+                            break
+                        position += 1
+                    if count == "+" and position == start and not equal:
+                        return "invalid"
+                else:
+                    return "unparsed"
+                continue
+            if pos_index >= len(positional):
+                return "invalid"
+            action = positional[pos_index]
+            if isinstance(action, argparse._SubParsersAction):
+                if token not in action.choices:
+                    return "invalid"
+                parser = action.choices[token]
+                position += 1
+                nested = True
+                break
+            # ledger lock/inventory/stoplist 的 action 是带 choices 的位置参数，
+            # 不是 SubParsersAction。占位符只表示值，不声称运行期参数齐全。
+            if action.choices and not (protected and token.startswith("<")) and token not in action.choices:
+                return "invalid"
+            position += 1
+            pos_index += 1
+        if nested:
+            continue
+        for action in positional[pos_index:]:
+            if isinstance(action, argparse._SubParsersAction) and action.required:
+                return "invalid"
+            if action.choices and action.nargs not in ("?", "*"):
+                return "invalid"
+        return "valid"
+
+
+def scan_commands(text):
+    parsers = {name: module.build_parser() for name, module in (
+        ("ledger", ledger), ("workspace", workspace), ("notify", notify), ("im_lark.py", im_lark))}
+    results = {name: [] for name in ("valid", "invalid", "unparsed")}
+    for match in COMMAND_RE.finditer(text):
+        source = text[match.end():].split("\n", 1)[0]
+        try:
+            tokens = command_tokens(source)
+            outcome = validate_command(parsers[match.group(1)], tokens) if tokens else "unparsed"
+        except ValueError:
+            outcome = "unparsed"
+        results[outcome].append((match.group(1), source))
+    return results["valid"], results["invalid"], results["unparsed"]
+
+
 class SkillStructureTest(unittest.TestCase):
     def test_document_commands_match_real_parsers(self):
-        parsers = {name: subcommands(module.build_parser()) for name, module in (
-            ("ledger", ledger), ("workspace", workspace),
-            ("notify", notify), ("im_lark.py", im_lark))}
-        progress = subcommands(parsers["workspace"]["progress"])
         files = sorted((ROOT / "skills").glob("*/SKILL.md")) + sorted((ROOT / "shared").rglob("*.md"))
         count = 0
         for path in files:
-            for match in COMMAND_RE.finditer(path.read_text(encoding="utf-8")):
-                command, _, action = match.groups()
-                reference = (path.relative_to(ROOT).as_posix(), command, action)
-                if reference in ALLOW:
-                    continue
-                count += 1
-                with self.subTest(reference=reference):
-                    self.assertIn(action, parsers[command])
-                    if command == "workspace" and action == "progress":
-                        child = re.match(r" +([a-z][\w-]*)", match.string[match.end():])
-                        if child:
-                            self.assertIn(child.group(1), progress)
+            valid, invalid, unparsed = scan_commands(path.read_text(encoding="utf-8"))
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertEqual(invalid, [])
+                self.assertEqual(unparsed, [])
+            count += len(valid)
         self.assertGreater(count, 0)
+        self.assertEqual(ALLOW, set())
+
+    def test_command_scanner_negative_and_positive_cases(self):
+        negatives = (
+            "用ledger definitely_invalid", "workspace progress --workspace X definitely_invalid",
+            "workspace progress definitely_invalid", "ledger --workspace <目录> definitely_invalid",
+            "`notify definitely_invalid`", "im_lark.py definitely_invalid", "ledger lock definitely_invalid",
+            "ledger lock", "workspace progress", "ledger threads --workspace X",
+            "notify replies --state", "ledger threads unexpected_word",
+        )
+        positives = (
+            "workspace --workspace <目录> progress start --mode new", "ledger lock acquire --skill followup",
+            "用 ledger threads", "`im_lark.py sync`", "notify replies --state test",
+            'ledger --workspace "带 空格的目录" threads', 'notify send --text="中文 空白" --kind todo',
+            "ledger lock acquire --no-send --skill=followup", "用ledger threads，说明", "ledger threads 中文说明",
+        )
+        for source in negatives:
+            with self.subTest(negative=source):
+                valid, invalid, unparsed = scan_commands(source)
+                self.assertTrue(invalid)
+                self.assertEqual((valid, unparsed), ([], []))
+        for source in positives:
+            with self.subTest(positive=source):
+                valid, invalid, unparsed = scan_commands(source)
+                self.assertTrue(valid)
+                self.assertEqual((invalid, unparsed), ([], []))
+        for source in ('ledger --workspace "unterminated', "ledger --workspace <broken threads"):
+            with self.subTest(unparsed=source):
+                self.assertTrue(scan_commands(source)[2])
 
     def test_followup_fields_match_real_threads(self):
         import history_fixture

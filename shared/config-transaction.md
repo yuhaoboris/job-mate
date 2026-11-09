@@ -28,7 +28,7 @@ python3 <技能目录>/scripts/workspace.py --workspace <工作区> commit --sta
 
 只接受非空列表。add 必须 name/reason/source 非空，aliases 可选字符串数组；remove 只接受明确的 name，不按别名或包含关系删除。未知操作/字段或未命中的 remove 拒绝整批，前面的 add 也不落盘。重复添加已有精确名称/别名保持原条目。脚本在内存中按顺序计算最终停止名单，统一校验和提交；这只是本人已确认操作的结构，不增加授权。
 
-**暂存 stoplist.yaml 与 stoplist-ops 同时出现拒绝**。setup 不先调用会落盘的 `ledger stoplist add/remove`，以免出现半次配置更新。其他技能的独立停止名单操作仍按台账契约。
+**暂存 stoplist.yaml 与 stoplist-ops 同时出现拒绝**。setup 不先调用会落盘的 `ledger stoplist add` / `ledger stoplist remove`，以免出现半次配置更新。其他技能的独立停止名单操作仍按台账契约。
 
 ## 备份与中断
 
