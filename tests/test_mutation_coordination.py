@@ -20,7 +20,7 @@ import fsutil
 import ledger
 import notify
 import workspace
-from test_version_gate import ENTRY_CASES, CREATION_CASES, MODULES, argv
+from test_version_gate import ENTRY_CASES, CREATION_CASES, MODULES, RELEASES_CENTRAL_LOCK, argv
 
 
 CHILD = r'''
@@ -310,13 +310,49 @@ class MutationCoordinationTest(unittest.TestCase):
                         self.assertFalse((ws / "setup-progress.json").exists())
                     self.assertEqual(ledger.read_json(ws / ledger.MARKER)["suiteVersion"], version)
 
+    def assert_adapter_short_transactions(self, command):
+        import im_lark
+        import test_im_lark
+        case = test_im_lark.ImLarkTest()
+        case.setUp()
+        try:
+            case.establish()
+            case.invoke(notify, "send", "--kind", "decision", "--decision", "D-20400102-01", "--text", "synthetic")
+            if command == "watch":
+                case.sync("--send-only")
+            case.add_messages(case.message())
+            writes, networks = [], []
+            original_append, original_network = notify.append_record, im_lark.run_lark
+            def append(ws, record, tz):
+                self.assertTrue(ledger.mutation_held(ws), record.get("type"))
+                writes.append(record["type"])
+                return original_append(ws, record, tz)
+            def network(*args, **kwargs):
+                self.assertFalse(ledger.mutation_held(case.ws))
+                networks.append(True)
+                return original_network(*args, **kwargs)
+            output = io.StringIO()
+            # 活跃监听仅此专项用测试拍数有界；版本遍历仍用无待回复项的普通 watch。
+            arguments = argv(command, case.ws) + (["--max-ticks", "1"] if command == "watch" else [])
+            with patch.object(notify, "append_record", side_effect=append), patch.object(im_lark, "run_lark", side_effect=network), contextlib.redirect_stdout(output):
+                code = im_lark.main(["--workspace", str(case.ws), *arguments])
+            self.assertEqual(code, 0, output.getvalue())
+            self.assertGreater(len(writes), 0)
+            self.assertGreater(len(networks), 0)
+        finally:
+            case.doCleanups()
+
     def test_all_registered_write_recover_and_creation_handlers_hold_coordination(self):
+        self.assertEqual(RELEASES_CENTRAL_LOCK, {("im_lark.py", "sync"), ("im_lark.py", "watch")})
         modules = MODULES
         for script, command, mode in ENTRY_CASES:
             with self.subTest(script=script, command=command):
                 ws = self.make_ws()
                 module = modules[script]
                 parsed = module.build_parser().parse_args(argv(command, ws))
+                if (script + ".py", parsed.cmd) in RELEASES_CENTRAL_LOCK and mode != "read":
+                    self.assert_adapter_short_transactions(command)
+                    continue
                 mapping = notify.HANDLERS if script == "notify" else module.COMMANDS
                 def checked(*unused):
                     self.assertEqual(ledger.mutation_held(ws), mode != "read")

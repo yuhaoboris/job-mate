@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -20,12 +21,17 @@ import workspace
 import im_lark
 
 MODULES = {"ledger": ledger, "notify": notify, "workspace": workspace, "im_lark": im_lark}
+# mode 仍表示写入准入，不能与“是否整段持中央锁”混为一谈。
+RELEASES_CENTRAL_LOCK = {("im_lark.py", "sync"), ("im_lark.py", "watch")}
 # 脚本、完整命令及影响副作用的参数、分类。参数值均为合成数据。
 ENTRY_CASES = [
     ("im_lark", "doctor", "read"),
     ("im_lark", "sync", "write"),
     ("im_lark", "sync --send-only", "write"),
     ("im_lark", "sync --fetch-only", "write"),
+    # make_ws 为 channel:none、无待回复项，普通 watch 预检后立即退出，不进入循环。
+    ("im_lark", "watch", "write"),
+    ("im_lark", "watch --status", "read"),
     ("ledger", "validate", "read"),
     ("ledger", "screen-check --platform boss --company 示例", "read"),
     ("ledger", "screen-check --platform boss --company 示例 --account main --title 开发 --job-id page-id --run screen-run", "read"),
@@ -184,6 +190,11 @@ class VersionGateTest(unittest.TestCase):
                 if p.is_file() and not p.name.endswith(".mutex") and p.relative_to(ws).as_posix() != "ledger/config.lock"}
 
     def test_entry_table_automatically_covers_all_argparse_command_paths(self):
+        self.assertEqual(RELEASES_CENTRAL_LOCK, {("im_lark.py", "sync"), ("im_lark.py", "watch")})
+        started = time.monotonic()
+        code, result = invoke(im_lark, self.make_ws("1.0.0"), "watch")
+        self.assertEqual((code, result["reason"]), (0, "inactive"))
+        self.assertLess(time.monotonic() - started, 5)
         for name, module in MODULES.items():
             registered = set()
             for script, command, mode in ENTRY_CASES:

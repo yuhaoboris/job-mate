@@ -400,9 +400,10 @@ def fetch(ws, ctx, command, start_ms, max_pages=None):
 
 
 def sync(ws, send_only=False, fetch_only=False, max_pages=None):
-    ctx = notify.context(ws)
-    if ctx["cfg"]["channel"] == "none":
-        return {"skipped": "channel_none"}
+    with ledger.gated(ws, "write"):
+        ctx = notify.context(ws)
+        if ctx["cfg"]["channel"] == "none":
+            return {"skipped": "channel_none"}
     with fsutil.try_locked(ws / "ledger/.im-sync.lock") as acquired:
         if not acquired:
             return {"busy": True, "incomplete": True, "incoming": {"new": [], "skipped": "busy"},
@@ -454,7 +455,7 @@ def watch_event(ws, ctx, state, event, reason=None, message_ids=None):
     line = notify.canonical(row) + "\n"
     path = ws / "ledger/im-watch.log"
     if path.exists() and path.stat().st_size + len(line.encode("utf-8")) > 1024 * 1024:
-        os.replace(path, path.with_name(path.name + ".1"))
+        fsutil.replace_atomic(path, path.with_name(path.name + ".1"))
     with path.open("a", encoding="utf-8", newline="") as stream:
         stream.write(line)
         stream.flush()
@@ -465,9 +466,11 @@ def watch_event(ws, ctx, state, event, reason=None, message_ids=None):
 
 
 def start_ack(ws, args, reason):
-    if args.child_token is not None:
+    if (args.child_token is not None and not getattr(args, "acknowledged", False)
+            and args.child_deadline is not None and time.monotonic() < args.child_deadline):
         path = ws / "ledger" / (".im-watch-start-" + args.child_token + ".json")
         fsutil.write_text_atomic(path, notify.canonical({"pid": os.getpid(), "token": args.child_token, "reason": reason}))
+        args.acknowledged = True
 
 
 def watch_loop(ws, args):
@@ -485,6 +488,12 @@ def watch_loop(ws, args):
             time.sleep(delay)
         if time.monotonic() >= args.child_deadline:
             return {"reason": "watch_start_expired"}, 1
+    # 无待回复项也先检查写入版本准入；无效版本不得创建控制文件。
+    with ledger.gated(ws, "write"):
+        ctx, state = watch_state(ws)
+        if not state["active"]:
+            start_ack(ws, args, "inactive")
+            return {"reason": "expired" if state["expired"] else "inactive"}, 11 if state["expired"] else 0
     with contextlib.ExitStack() as lifetime:
         acquired = lifetime.enter_context(fsutil.try_locked(ws / "ledger/.im-watch.lock"))
         if not acquired:
@@ -620,7 +629,11 @@ def cmd_watch(args, ws):
                 "watch_child_arguments_invalid")
         _, state = watch_state(ws)
         running, reason = watch_probe(ws)
-        return watch_emit({"running": running, "replyWatch": state, "reason": reason})
+        result = {"running": running, "replyWatch": state, "reason": reason}
+        warnings = ledger.version_gate(ws, "read")
+        if warnings:
+            result["warnings"] = warnings
+        return watch_emit(result)
     result, code = detach_watch(ws, args) if args.detach else watch_loop(ws, args)
     return watch_emit(result, code)
 
@@ -663,7 +676,7 @@ COMMANDS = {"doctor": cmd_doctor, "sync": cmd_sync, "watch": cmd_watch}
 
 
 def entry_mode(args):
-    return "read" if args.cmd == "doctor" else "write"
+    return "read" if args.cmd == "doctor" or (args.cmd == "watch" and args.status) else "write"
 
 
 def main(argv=None):
