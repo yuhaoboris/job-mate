@@ -158,6 +158,14 @@ class ReplyWatchTest(unittest.TestCase):
         self.f.im.user_says("unrelated")
         self.assertEqual(self.f.incoming(self.f.im.messages)[0], 0)
         self.assertEqual(len(self.status()["waiting"]), 1)
+        question = next(o["messageId"] for o in N.load_state(self.f.ws)["out"].values() if o.get("kind") == "clarify")
+        ignored = self.f.im.user_says("ignored reply", parent=question)
+        self.assertEqual(self.f.incoming(self.f.im.messages)[0], 0)
+        self.assertEqual(self.f.run_cmd("reply-state", "--message", ignored, "--state", "ignored")[0], 0)
+        self.assertEqual(len(self.status()["waiting"]), 1)
+        self.f.im.user_says("暂停", parent=question)
+        self.assertEqual(self.f.incoming(self.f.im.messages)[0], 0)
+        self.assertEqual(len(self.status()["waiting"]), 1)
 
     def test_w25_unknown_waits_and_exhaustion_is_undeliverable(self):
         self.queue()
@@ -171,6 +179,16 @@ class ReplyWatchTest(unittest.TestCase):
         state = self.status()
         self.assertEqual(state["waiting"], [])
         self.assertEqual(len(state["undeliverable"]), 1)
+        self.queue(D2, "todo")
+        for _ in range(3):
+            entry = self.f.claim()[0]
+            self.assertEqual(self.f.receipt(entry, result="failed", error="synthetic rejected")[0], 0)
+        state = self.status()
+        self.assertEqual(state["waiting"], [])
+        self.assertEqual(len(state["undeliverable"]), 2)
+        self.assertEqual(next(r for r in state["undeliverable"] if r["decision"] == D2)["reason"], "synthetic rejected")
+        self.assertEqual(N.load_state(self.f.ws)["out"]["todo:" + D2]["attempts"], 3)
+        self.assertEqual(self.f.claim(), [])
 
 
 class WatchProcessTest(unittest.TestCase):
