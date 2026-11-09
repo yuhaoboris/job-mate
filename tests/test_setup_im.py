@@ -39,7 +39,7 @@ class SetupImRecordTest(unittest.TestCase):
                 patch.object(A, "resolve_lark_command", side_effect=AssertionError("进度不定位工具")):
             for status in ("changed", "kept", "default", "skipped"):
                 for value in ({"channel": "none"}, self.good,
-                              {**self.good, "waitMinutes": 0}, {**self.good, "waitMinutes": 240}):
+                              {**self.good, "waitMinutes": 0}, {**self.good, "waitMinutes": 1}, {**self.good, "waitMinutes": 60}):
                     with self.subTest(status=status, value=value):
                         rc, out = self.record(value, status)
                         self.assertEqual(rc, 0, out)
@@ -53,7 +53,7 @@ class SetupImRecordTest(unittest.TestCase):
                {"channel": "lark"}, {"channel": "lark", "ownerId": "x"}, {"channel": "lark", "larkProfile": "x"},
                {**self.good, "ownerId": " "}, {**self.good, "ownerId": 1},
                {**self.good, "larkProfile": ""}, {**self.good, "extra": True}]
-        bad += [{**self.good, "waitMinutes": v} for v in (True, False, -1, 241, 1.0, "60", None)]
+        bad += [{**self.good, "waitMinutes": v} for v in (True, False, -1, 61, 240, 241, 1.0, "60", None)]
         bad += [{**self.good, "larkCommand": v} for v in (None, [], "node", [""], [" "], [1], ["node", False])]
         for status in ("changed", "kept", "default", "skipped"):
             for value in bad:

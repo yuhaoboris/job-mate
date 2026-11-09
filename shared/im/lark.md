@@ -6,7 +6,7 @@
 
 - 选择飞书时，Agent 按[依赖准备](../dependencies.md#3-飞书依赖仅选择飞书时)安装 lark-cli **1.0.96**，不逐项请求同意；复用或隔离安装，不覆盖其他版本。
 - 由本人完成机器人应用授权与 IM 收发权限，不靠用户登录修复机器人权限；不部署服务。
-- `profile.im` 使用 `channel: lark`、本人确认的 `ownerId`、准确的 `larkProfile`；`waitMinutes` 为 0–240，缺省 60。配置变更按 [配置事务](../config-transaction.md) 提交，不直接改真实工作区。
+- `profile.im` 使用 `channel: lark`、本人确认的 `ownerId`、准确的 `larkProfile`；`waitMinutes` 为 0–60，缺省 60，0 关闭监听。配置变更按 [配置事务](../config-transaction.md) 提交，不直接改真实工作区。
 
 ## 本人身份与配置档
 
@@ -46,7 +46,7 @@ python3 <技能目录>/scripts/im_lark.py --workspace <工作区> sync --fetch-o
 - doctor 只读检查入口、版本、配置档及机器人，输出 `ok/checks`；不证明本人身份、IM 权限齐全或收发成功。退出码：0 通过、1 不通过、2 本地配置/数据错误。
 - sync 复用 notify 状态机：投递、读取、投递新确认。send-only 不读远端；fetch-only 不认领/发送，确认保留 queued。
 - **所有 sync 模式都是 write 准入**，恢复锁或版本不兼容时拒绝；doctor 为 read。none 输出 `skipped: channel_none`，不定位或执行工具，不假装收到答复。
-- 每轮开始（入口对账后）、每处理完一个会话、收尾各同步一次。等待本人答复时，限于 waitMinutes，每 10 分钟同步并续期运行锁；不后台常驻。
+- 每轮开始（入口对账后）、每处理完一个会话、收尾各同步一次。独立监听见[等待本人回复](../notify.md#等待本人回复)，本轮不等答复。
 
 sync 输出 incoming、sent/failed/unknown 数量、incomplete、errors。退出码 0 **不等于送达或读完**；结合 `notify status` 查队列、路由冲突和拒收。errors 仅固定诊断码，最多 500 字符，不含远端错误正文、消息正文或凭据。
 

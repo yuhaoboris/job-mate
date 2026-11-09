@@ -363,7 +363,7 @@ class NotifyTest(unittest.TestCase):
         invalid = [None, False, [], {}, {"channel": "other"}, {"channel": []},
                    {"channel": "none", "waitMinutes": 60}, {"channel": "lark", "unknown": True}]
         for field, values in {"ownerId": [None, "", " ", 1], "larkProfile": [None, "", " ", []],
-                              "waitMinutes": [True, -1, 241, 0.1],
+                              "waitMinutes": [True, False, -1, 61, 240, 241, 0.1, "60", None],
                               "larkCommand": [None, [], "", [""], [1]]}.items():
             invalid += [{**base, field: value} for value in values]
         for im in invalid:
@@ -669,10 +669,10 @@ class NotifyTest(unittest.TestCase):
             code, out = self.run_cmd("poll")
             self.assertEqual(code, 2, out)
             self.assertIn("error", out)
-        for wait in (True, -1, 241, 0.5, float("nan")):
+        for wait in (True, False, -1, 61, 240, 241, 0.5, float("nan")):
             self.set_im(waitMinutes=wait)
             self.assertEqual(self.run_cmd("poll")[0], 2)
-        for wait in (0, 240):
+        for wait in (0, 1, 60):
             self.set_im(waitMinutes=wait)
             self.assertEqual(self.run_cmd("poll")[0], 0)
 

@@ -907,11 +907,11 @@ class WorkspaceIsolationTest(unittest.TestCase):
                 self.assertIn("--env", result.stderr)
 
     def test_lark_wait_minutes_are_data_only(self):
-        for wait in (0, 60, 240):
+        for wait in (0, 1, 60):
             self.profile["im"] = {"channel": "lark", "ownerId": "synthetic-owner", "larkProfile": "default", "waitMinutes": wait}
             self.save_profile()
             self.assertEqual(self.work("check")[0], 0)
-        for wait in (None, True, False, -1, 241, 60.0, "60"):
+        for wait in (None, True, False, -1, 61, 240, 241, 60.0, "60"):
             self.profile["im"]["waitMinutes"] = wait
             self.save_profile()
             code, out = self.work("check")

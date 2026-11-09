@@ -48,7 +48,7 @@ uncertain、reconciled、threads.unresolved 均按平台、账号、attemptId �
 {"channel":"lark","ownerId":"<本人确认ID>","larkProfile":"default","waitMinutes":60}
 ```
 
-ownerId 与 larkProfile 都是非空字符串，不按 ID 前缀猜身份。waitMinutes 为 0–240 的整数，缺省 60。可选 larkCommand 为非空字符串数组，只配置可执行程序和参数前缀。配置错误必须修复，不能静默停用。
+ownerId 与 larkProfile 都是非空字符串，不按 ID 前缀猜身份。waitMinutes 为空闲窗口，整数 0–60，缺省 60；0 关闭监听。可选 larkCommand 为非空字符串数组，只配置可执行程序和参数前缀。配置错误必须修复，不能静默停用。
 
 每个条目首次排队冻结 channel、ownerId、larkProfile；路由摘要只取这三项。配置变化后，旧路由未发条目阻断并在 status.routeConflicts 计数，不转投新收件人；旧私聊、游标与答复不用于新路由。由本人决定是否重新排队。
 

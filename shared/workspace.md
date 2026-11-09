@@ -143,7 +143,7 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
 - `limits` 为非负整数（dedupScope 仅 company/job）；生效顺序为内置 → 平台 defaultLimits → 全局 → platforms 平台覆盖。`nudge` 同样支持平台覆盖；各数值为正整数，maxPerSilence 为 1–3，maxPerThread 为 maxPerSilence–9。两授权独立；判定见[发送准备](sending.md)，配置不等于许可。
 - `nudge.existingMaxAgeDays`：盘点时超过此天数的会话只接手、不主动跟进，默认30，正整数；[盘点与恢复规则](inventory.md)。
 - `schedule.activeHours` 约束 `apply` 和主动跟进；回复 HR 不受限。
-- `im` 见 [notify.md](notify.md)：channel 为 none（只写 inbox，缺省）或 lark。waitMinutes 是 runtime 等待本人答复的最长分钟数，整数 0–240（非布尔），缺省 60；0 不等待。
+- `im` 见 [notify.md](notify.md)：channel 为 none（只写 inbox，缺省）或 lark。waitMinutes 是后台监听空闲窗口，整数 0–60（非布尔），缺省 60；0 关闭监听。
 - 飞书需要非空 ownerId 与 larkProfile；可选 larkCommand 为非空字符串数组。体检与 notify 共用校验，不按 ID 前缀猜身份。无需通知写 `{"channel":"none"}`，缺少 im 等同 none。
 - `progress` 仅保存访谈答案，不把答案自动应用到 profile。部分重新设置只合并所选领域的本人确认变更；未选字段与授权均保留。IM 与定时运行不能新增授权或修改求职条件。
 

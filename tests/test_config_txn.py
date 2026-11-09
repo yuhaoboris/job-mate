@@ -68,6 +68,28 @@ class ConfigTransactionTest(unittest.TestCase):
     def journal(self):
         return json.loads((self.ws / ".job-mate-txn.json").read_text(encoding="utf-8"))
 
+    def test_wait_window_commit_and_old_backup_rejection(self):
+        for wait in (0, 60):
+            profile = copy.deepcopy(test_workspace.PROFILE)
+            profile["im"] = {"channel": "lark", "ownerId": "synthetic", "larkProfile": "default", "waitMinutes": wait}
+            self.stage_file("profile.json", json.dumps(profile))
+            self.assertEqual(self.commit()[0], 0)
+        for wait in (61, 240):
+            profile["im"]["waitMinutes"] = wait
+            self.stage_file("profile.json", json.dumps(profile))
+            before = self.config()
+            backups = sorted(p.name for p in (self.ws / "backups").iterdir())
+            self.assertEqual(self.commit()[0], 2)
+            self.assertEqual(self.config(), before)
+            self.assertEqual(sorted(p.name for p in (self.ws / "backups").iterdir()), backups)
+            self.assertFalse((self.ws / ".job-mate-txn.json").exists())
+        valid = (self.ws / "profile.json").read_bytes()
+        (self.ws / "profile.json").write_text(json.dumps(profile), encoding="utf-8")
+        old = self.ok("workspace", "backup")["backup"]
+        (self.ws / "profile.json").write_bytes(valid)
+        self.assertEqual(self.cli("workspace", "restore", old, "--run", "setup-txn")[0], 2)
+        self.assertEqual((self.ws / "profile.json").read_bytes(), valid)
+
     def test_crash_points_rollback_new_files_and_are_idempotent(self):
         for point in ("after_backup", "after_journal", "after_file_1"):
             with self.subTest(point=point):

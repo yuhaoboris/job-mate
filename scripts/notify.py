@@ -13,7 +13,7 @@ import sys
 import unicodedata
 import uuid
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -80,8 +80,8 @@ def im_config(profile):
     if channel == "lark" and (not nonempty(im.get("ownerId")) or not nonempty(im.get("larkProfile"))):
         raise NotifyError("lark 需要非空 ownerId 与 larkProfile")
     wait = im.get("waitMinutes", DEFAULT_WAIT_MINUTES)
-    if type(wait) is not int or not 0 <= wait <= 240:
-        raise NotifyError("im.waitMinutes 应为 0–240 的整数")
+    if type(wait) is not int or not 0 <= wait <= 60:
+        raise NotifyError("im.waitMinutes 应为 0–60 的整数；请用 setup 修正旧配置，不自动截断")
     command = im.get("larkCommand")
     if "larkCommand" in im and (not isinstance(command, list) or not command or not all(nonempty(v) for v in command)):
         raise NotifyError("im.larkCommand 应为非空字符串数组")
@@ -810,11 +810,97 @@ def cmd_test(args, ws):
     return emit(out, code)
 
 
+def reply_watch(ws, ctx, now):
+    """现有通知、入站与事项的只读投影；进程控制文件不是业务依据。"""
+    files = (ws / "profile.json", im_path(ws), ws / "inbox/decisions.md", ws / "ledger/events.jsonl")
+    def snapshot():
+        return tuple(path.read_bytes() if path.exists() else None for path in files)
+    before = snapshot()
+    cfg = ctx["cfg"]
+    if context(ws)["cfg"] != cfg:
+        raise NotifyError("reply_watch_snapshot_changed")
+    st = sync_view(ws, cfg)
+    opened, error = candidates(ws)
+    if error:
+        raise NotifyError(error)
+    groups = {}
+    for out in st["out"].values():
+        if out.get("route") != cfg["route"]:
+            continue
+        kind, decision = out.get("kind"), out.get("decision")
+        if kind in ("decision", "todo") and decision:
+            key = "decision:" + decision
+        elif kind == "clarify" and out.get("replyTo"):
+            key = "clarify:" + out["replyTo"]
+        elif kind == "done" and decision and out.get("text", "").endswith(
+                "\n\n" + CHECK_HINT.format(seq=short_seq(decision))):
+            key = "result:" + decision + ":" + text_digest(result_body(out["text"], decision))
+        else:
+            continue
+        since = datetime.fromisoformat(out["firstAt"])
+        if since.tzinfo is None:
+            raise NotifyError("reply_watch_invalid_first_at")
+        group = groups.setdefault(key, {"watchKey": key, "keys": [], "kind": kind,
+                                       "decision": decision, "since": since, "entries": []})
+        group["since"] = min(group["since"], since)
+        group["keys"].append(out["key"])
+        group["entries"].append(out)
+    last = max((group["since"] for group in groups.values()), default=None)
+    deadline = last + timedelta(minutes=cfg["waitMinutes"]) if last else None
+    waiting, undeliverable = [], []
+    for key, group in sorted(groups.items()):
+        entries = group["entries"]
+        decision = group["decision"]
+        if group["kind"] == "clarify":
+            original = st["in"].get(entries[0]["replyTo"])
+            if original is None or original["state"] in ("consumed", "ignored", "test", "command"):
+                continue
+            linked = {original.get("decision"), original.get("decisionHint")} - {None}
+            decision = next(iter(linked)) if len(linked) == 1 else None
+        elif decision not in opened:
+            continue
+        mids = {out.get("messageId") for out in entries} - {None}
+        answered = False
+        for reply in st["in"].values():
+            if (reply["state"] in ("command", "test", "ignored")
+                    or reply.get("senderType") != "user" or reply.get("senderId") != cfg["ownerId"]
+                    or reply.get("route") != cfg["route"] or reply.get("deleted") is not False
+                    or reply.get("chatId") != st["chatId"]
+                    or reply.get("createTime", -1) < int(group["since"].timestamp() * 1000)):
+                continue
+            if reply.get("parentId") in mids or (decision and decision in (
+                    reply.get("decision"), reply.get("decisionHint"))):
+                answered = True
+                break
+        if answered:
+            continue
+        usable = [out for out in entries if out["status"] != "blocked" and not (
+            out["status"] == "failed" and out["attempts"] >= MAX_SEND_ATTEMPTS)]
+        selected = usable[-1] if usable else entries[-1]
+        row = {name: group[name] for name in ("watchKey", "keys", "kind", "decision")}
+        row.update(since=group["since"].isoformat(), deliveryStatus=selected["status"])
+        if usable:
+            waiting.append(row)
+        else:
+            row["reason"] = selected.get("error") or ("attempt_limit" if selected["status"] == "failed" else "blocked")
+            undeliverable.append(row)
+    if before != snapshot():
+        raise NotifyError("reply_watch_snapshot_changed")
+    enabled = cfg["channel"] == "lark" and cfg["waitMinutes"] > 0
+    return {"waiting": waiting, "lastNewAt": last.isoformat() if last else None,
+            "deadlineAt": deadline.isoformat() if deadline else None,
+            "active": bool(enabled and waiting and deadline and now < deadline),
+            "expired": bool(enabled and waiting and deadline and now >= deadline),
+            "undeliverable": undeliverable}
+
+
 def cmd_status(args, ws):
     ctx = context(ws)
     st = sync_view(ws, ctx["cfg"])
     rows = outbox_rows(ws, ctx)
     awaiting, error = awaiting_check(ws)
+    if error:
+        return emit({"error": error, "warnings": [error]}, 2)
     return emit({**poll(ws, ctx), "chatEstablished": bool(st["chatId"]), "chatConflicts": sorted(set(st["chatConflicts"])),
                  "openItems": open_items(ws), "pendingReplies": [public_reply(r) for r in pending_replies(st)],
                  "readyReplies": [public_reply(r) for r in st["in"].values() if r["state"] == "ready"],
@@ -824,7 +910,8 @@ def cmd_status(args, ws):
                                       for o in rows if o["status"] != "sent"],
                  "stale": [{k: o.get(k) for k in ("key", "token", "attempt")} for o in rows if o.get("stale")],
                  "routeConflicts": [o["key"] for o in rows if o.get("route") != ctx["cfg"]["route"] and o["status"] != "sent"],
-                 "awaitingCheck": awaiting, "warnings": [error] if error else []})
+                 "awaitingCheck": awaiting, "replyWatch": reply_watch(ws, ctx, fsutil.now(ctx["tz"])),
+                 "warnings": [error] if error else []})
 
 
 def build_parser():
