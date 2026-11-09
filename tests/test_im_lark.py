@@ -276,7 +276,7 @@ class ImLarkTest(unittest.TestCase):
                     target = "+messages-send" if command == "send" else "/open-apis/im/v1/messages/"
                     if not any(target in value for value in argv):
                         return original(argv, **kwargs)
-                    self.assertEqual(kwargs.pop("timeout"), 30)
+                    self.assertEqual(kwargs.pop("timeout"), 20)
                     self.assertFalse(kwargs.pop("shell"))
                     self.assertTrue(kwargs.pop("capture_output"))
                     child = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
@@ -527,7 +527,26 @@ class ImLarkTest(unittest.TestCase):
                     p.communicate()
         for p, (stdout, stderr) in zip(children, results):
             self.assertEqual(p.returncode, 0, stdout + stderr)
+        for out, _ in results:
+            result = json.loads(out)
+            if result.get("busy"):
+                self.assertIs(result["incomplete"], True)
+                self.assertEqual(result["incoming"]["new"], [])
+                self.assertEqual(result["sent"], 0)
         self.assertEqual(sum(len(json.loads(out)["incoming"]["new"]) for out, _ in results), 1)
+        before = (self.ws / "ledger/im.jsonl").read_bytes()
+        cursor = self.poll()["businessCursorMs"]
+        with im_lark.fsutil.try_locked(self.ws / "ledger/.im-sync.lock") as held:
+            self.assertTrue(held)
+            process = subprocess.run(args, cwd=self.base, capture_output=True, encoding="utf-8", timeout=10)
+            self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+            busy = json.loads(process.stdout)
+            self.assertIs(busy["busy"], True)
+            self.assertIs(busy["incomplete"], True)
+            self.assertEqual(busy["incoming"]["new"], [])
+            self.assertEqual(busy["sent"], 0)
+            self.assertEqual((self.ws / "ledger/im.jsonl").read_bytes(), before)
+            self.assertEqual(self.poll()["businessCursorMs"], cursor)
         self.assertEqual(len(self.rows()["in"]), 1)
         self.assertEqual(self.poll()["businessCursorMs"], int(message["create_time"]))
         self.assertEqual(self.poll()["sinceMs"], self.poll()["scanThroughMs"])
@@ -581,7 +600,28 @@ class ImLarkTest(unittest.TestCase):
         for p, (stdout, stderr) in zip(children, outcomes):
             self.assertEqual(p.returncode, 0, stdout + stderr)
             self.assertFalse(stderr)
+        for stdout, _ in outcomes:
+            result = json.loads(stdout)
+            if result.get("busy"):
+                self.assertIs(result["incomplete"], True)
+                self.assertEqual(result["sent"], 0)
+                self.assertEqual(result["incoming"]["new"], [])
         self.assertEqual(sum(json.loads(stdout)["sent"] for stdout, _ in outcomes), 1)
+        before = (self.ws / "ledger/im.jsonl").read_bytes()
+        cursor = self.poll()["businessCursorMs"]
+        calls = self.state_data()["calls"]
+        with im_lark.fsutil.try_locked(self.ws / "ledger/.im-sync.lock") as held:
+            self.assertTrue(held)
+            process = subprocess.run(args, cwd=self.base, capture_output=True, encoding="utf-8", timeout=10)
+            self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+            busy = json.loads(process.stdout)
+            self.assertIs(busy["busy"], True)
+            self.assertIs(busy["incomplete"], True)
+            self.assertEqual(busy["sent"], 0)
+            self.assertEqual(busy["incoming"]["new"], [])
+            self.assertEqual((self.ws / "ledger/im.jsonl").read_bytes(), before)
+            self.assertEqual(self.poll()["businessCursorMs"], cursor)
+            self.assertEqual(self.state_data()["calls"], calls)
         self.assertEqual([c["command"] for c in self.state_data()["calls"]], ["send", "native-get"])
         self.assertEqual(self.rows()["out"]["queued"]["attempts"], 1)
 

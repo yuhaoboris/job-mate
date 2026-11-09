@@ -1,6 +1,7 @@
 """跨系统文件锁、UTF-8、原子替换、时区与可控时钟；仅用标准库。"""
 
 import contextlib
+import errno
 import os
 import sys
 import tempfile
@@ -43,6 +44,48 @@ def locked(path):
             fcntl.flock(fd, fcntl.LOCK_EX)
         acquired = True
         yield
+    finally:
+        try:
+            if acquired:
+                if os.name == "nt":
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+@contextlib.contextmanager
+def try_locked(path, create=True):
+    """只尝试一次；仅真实锁争用返回 False，权限/文件系统错误原样上报。"""
+    path = Path(path)
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | (os.O_CREAT if create else 0), 0o600)
+    acquired = False
+    try:
+        os.set_inheritable(fd, False)
+        if os.fstat(fd).st_size == 0:
+            try:
+                os.write(fd, b"\0")
+            except OSError:
+                if os.fstat(fd).st_size == 0:
+                    raise
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except OSError as error:
+            busy = {errno.EACCES, errno.EAGAIN} if os.name == "nt" else {errno.EAGAIN, errno.EWOULDBLOCK}
+            if error.errno not in busy:
+                raise
+        yield acquired
     finally:
         try:
             if acquired:

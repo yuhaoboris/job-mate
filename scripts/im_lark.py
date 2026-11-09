@@ -4,6 +4,7 @@
 notify 保留队列、回执、游标与业务状态机；本模块只做进程边界及原生响应校验。
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -19,7 +20,7 @@ import im_scan
 import ledger
 import notify
 
-TIMEOUT = 30
+TIMEOUT = 20
 MAX_PAGES = 20
 API_MESSAGES = "/open-apis/im/v1/messages"
 REJECT_CODES = {99992351}  # 仅实测发送拒绝；其他非零退出不证明未投递。
@@ -270,8 +271,15 @@ def sent_time(ws, command, entry, mid, chat):
 
 
 def drain(ws, ctx, command, result, seen):
-    for entry in notify.outbox(ws, ctx, claim=True, exclude=seen)["entries"]:
+    while True:
+        with ledger.gated(ws, "write"):
+            require(notify.context(ws)["cfg"] == ctx["cfg"], "im_config_changed")
+            entries = notify.outbox(ws, ctx, limit=1, claim=True, exclude=seen)["entries"]
+        if not entries:
+            return
+        entry = entries[0]
         seen.add(entry["key"])
+        notify.scan_crash("sync_after_claim")
         profile = entry["larkProfile"]
         args = ["im", "+messages-reply", "--message-id", entry["replyTo"]] if entry["replyTo"] else ["im", "+messages-send", "--user-id", entry["ownerId"]]
         args += ["--as", "bot", "--text", entry["text"], "--idempotency-key", entry["idempotencyKey"], "--format", "json"]
@@ -295,9 +303,12 @@ def drain(ws, ctx, command, result, seen):
             error = str(failure)
         if error:
             add_error(result, error)
-        notify.receipt(ws, ctx, key=entry["key"], token=entry["token"], result=status,
-                       message_id=mid, chat_id=chat, create_time=created, error=error)
+        notify.scan_crash("sync_after_remote")
+        with ledger.gated(ws, "write"):
+            notify.receipt(ws, ctx, key=entry["key"], token=entry["token"], result=status,
+                           message_id=mid, chat_id=chat, create_time=created, error=error)
         result[status] += 1
+        notify.scan_crash("sync_after_receipt")
 
 
 def native_message(item, plan, lower, upper):
@@ -328,11 +339,14 @@ def native_message(item, plan, lower, upper):
                      "parentId": item.get("parent_id"), "deleted": item["deleted"]}
 
 
-def fetch(ws, ctx, command, start_ms):
-    plan = notify.poll(ws, ctx)
-    if not plan["readable"]:
-        return {"skipped": "not_readable"}, False
-    scan = notify.scan_open(ws, ctx, start_ms)
+def fetch(ws, ctx, command, start_ms, max_pages=None):
+    max_pages = MAX_PAGES if max_pages is None else max_pages
+    with ledger.gated(ws, "write"):
+        require(notify.context(ws)["cfg"] == ctx["cfg"], "im_config_changed")
+        plan = notify.poll(ws, ctx)
+        if not plan["readable"]:
+            return {"skipped": "not_readable"}, False
+        scan = notify.scan_open(ws, ctx, start_ms)
     if scan is None:
         return {"skipped": "boundary_after_sync_start"}, False
     lower, upper = scan["startMs"], scan["endMs"]
@@ -343,7 +357,7 @@ def fetch(ws, ctx, command, start_ms):
     messages, tokens, versions = [], list(scan["seenTokens"]), dict(scan["versions"])
     previous, pages = scan["lastMs"], scan["pageCount"]
     complete = False
-    for _ in range(MAX_PAGES):
+    for _ in range(max_pages):
         response = cli_call(ws, "write", command, plan["larkProfile"],
                             ["api", "GET", API_MESSAGES, "--as", "bot", "--params", notify.canonical(params), "--format", "json"])
         data = data_of(response)
@@ -377,16 +391,22 @@ def fetch(ws, ctx, command, start_ms):
     return notify.scan_accept(ws, ctx, scan, progress, batch), not complete
 
 
-def sync(ws, send_only=False, fetch_only=False):
-    with ledger.gated(ws, "write"):
-        return sync_locked(ws, send_only, fetch_only)
-
-
-def sync_locked(ws, send_only, fetch_only):
-    # 整轮持 mutation 锁，所有 helper 只嵌套 poll → im / lock；不在网络调用中持 im。
-    ctx, start = notify.context(ws), notify.now_ms()
+def sync(ws, send_only=False, fetch_only=False, max_pages=None):
+    ctx = notify.context(ws)
     if ctx["cfg"]["channel"] == "none":
         return {"skipped": "channel_none"}
+    with fsutil.try_locked(ws / "ledger/.im-sync.lock") as acquired:
+        if not acquired:
+            return {"busy": True, "incomplete": True, "incoming": {"new": [], "skipped": "busy"},
+                    "sent": 0, "failed": 0, "unknown": 0, "errors": []}
+        with ledger.gated(ws, "write"):
+            ctx, start = notify.context(ws), notify.now_ms()
+            ctx["profileDigest"] = hashlib.sha256((ws / "profile.json").read_bytes()).hexdigest()
+        return sync_locked(ws, ctx, start, send_only, fetch_only, max_pages)
+
+
+def sync_locked(ws, ctx, start, send_only, fetch_only, max_pages):
+    # im-sync 只串行适配器；每个本地事务分别取 mutation，网络不持业务锁。
     command = resolve_lark_command(ctx["cfg"])  # 任何认领之前完成；失败不改变队列。
     result = {"incoming": {}, "sent": 0, "failed": 0, "unknown": 0, "incomplete": False, "errors": []}
     seen = set()
@@ -394,7 +414,7 @@ def sync_locked(ws, send_only, fetch_only):
         drain(ws, ctx, command, result, seen)
     if not send_only:
         try:
-            result["incoming"], result["incomplete"] = fetch(ws, ctx, command, start)
+            result["incoming"], result["incomplete"] = fetch(ws, ctx, command, start, max_pages)
         except (LarkError, im_scan.ScanError) as error:
             result["incomplete"] = True
             add_error(result, str(error))
@@ -436,7 +456,8 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         ws = ledger.find_workspace(args.workspace)
-        with ledger.gated(ws, entry_mode(args)):
+        # sync 自己只在本地事务期间取得写锁；main 不把网络包进长 gate。
+        with ledger.gated(ws, "read"):
             return COMMANDS[args.cmd](args, ws)
     except ledger.VersionGateError as error:
         return ledger.emit({"error": error.code, "code": error.code}, 2)

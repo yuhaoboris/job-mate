@@ -512,6 +512,11 @@ def scan_open(ws, ctx, started_ms):
 def scan_accept(ws, ctx, scan, progress, batch):
     """唯一推进 seam：复用 incoming 完成全部可重放副作用后，才持久化下一页或终页水位。"""
     with ledger.gated(ws, "write"):
+        if (context(ws)["cfg"] != ctx["cfg"] or (ctx.get("profileDigest") is not None
+                and hashlib.sha256((ws / "profile.json").read_bytes()).hexdigest() != ctx["profileDigest"])):
+            raise NotifyError("im_config_changed")
+        if sync_view(ws, ctx["cfg"])["chatId"] != scan["chatId"]:
+            raise NotifyError("im_chat_changed")
         with poll_mutex(ws):
             with im_mutex(ws):
                 records = read_records(ws)
