@@ -297,7 +297,8 @@ class ExecutionRulesTest(unittest.TestCase):
         self.assert_terms(skill, ("按第2节完整同步链", "核心脚本不等待"))
 
     def test_setup_uses_lark_configuration_and_explicit_im_test(self):
-        skill = (ROOT / "skills/setup/SKILL.md").read_text(encoding="utf-8")
+        skill = ((ROOT / "skills/setup/SKILL.md").read_text(encoding="utf-8")
+                 + (ROOT / "shared/im/lark-setup.md").read_text(encoding="utf-8"))
         self.assert_terms(skill, ("ownerId", "larkProfile", "waitMinutes", "larkCommand",
                                  "notify test", "只排队（queued）", "im_lark.py doctor", "im_lark.py sync",
                                  "notify status", "notify replies --state test", "引用测试消息回复「收到」",
@@ -307,7 +308,9 @@ class ExecutionRulesTest(unittest.TestCase):
         for relative in ("skills/apply/SKILL.md", "skills/followup/SKILL.md", "skills/setup/SKILL.md", "shared/notify.md"):
             with self.subTest(path=relative):
                 content = (ROOT / relative).read_text(encoding="utf-8")
-                self.assertIn("im_lark.py sync", content)
+                im_content = (content + (ROOT / "shared/im/lark-setup.md").read_text(encoding="utf-8")
+                              if relative == "skills/setup/SKILL.md" else content)
+                self.assertIn("im_lark.py sync", im_content)
                 self.assertIn("shared/im/lark.md" if relative.startswith("skills/") else "im/lark.md", content)
                 self.assertNotRegex(content, r"notify (?:outbox --claim|receipt|incoming)\b")
         followup = (ROOT / "skills/followup/SKILL.md").read_text(encoding="utf-8")

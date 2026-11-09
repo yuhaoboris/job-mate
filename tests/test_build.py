@@ -881,12 +881,16 @@ class TakeoverRulesBuildTest(unittest.TestCase):
             "分钟 [10:00,10:01) 跨过 10:00:30": ("[10:00, 10:01)", "跨分界", "暂停询问"),
             "日期全天跨分界": ("只显示日期为当天全天", "同一天日期标签"),
             "跨午夜：前日全天早于次日分界": ("区间整个早于分界", "历史"),
-            "读后、登记前本人发出": ("adopted.readAt", "登记不用写入时间", "整个晚于分界"),
+            "读后、登记前本人发出": ("整个晚于分界",),
             "构成分界的 sent 当天日期仍可匹配": ("包括构成分界的那条", "前后2分钟"),
             "本人发简历或同意卡片": ("同意交换联系方式", "接受面试", "我方文字与发简历"),
             "上午交还，下午分钟新活动接管": ("下午新发「14:00」是接管",),
             "上午交还，下午同日期第2条仍模糊": ("第2条再次暂停", "不能算历史"),
         }
+        # 分界计算由 tests/test_ledger.py:933-946、tests/test_inventory.py:119 保证。
+        section = skill.split("## 9.", 1)[1].split("## 10.", 1)[0]
+        for field in ("boundaryAt", "outboundTexts", "../../shared/ledger.md#观察与决定"):
+            self.assertIn(field, section)
         for scenario, terms in cases.items():
             with self.subTest(scenario=scenario):
                 for term in terms:

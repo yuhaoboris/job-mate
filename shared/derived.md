@@ -47,7 +47,7 @@ pendingTail 包含 tailId、baseTailId、result、newCount、readAt、reason、s
 
 - 即使 result:same 或 settled:true，没有对应最新读取 ID 的 handled 仍然 pending；不按内容或比较结果自行消除。
 - reviewReasons 保留本人核对收口前的阻断原因，最新 reason:same 不会遮住先前的撤回、桥接遗漏或未决发送。具体准入仍由[尾部安全判定](ledger.md#尾部读取与处理)统一校验。
-- 跳过扫描须无 pending、无未读、列表标记与 lastHandled.listMark 相同，且已处理完整快照的 lastHandled.readAt 在核对周期内。不能使用 lastOpenedAt 或 handled 写入时间 at 延期；本接口不执行扫描。
+- 跳过扫描须无 pending、无未读、列表标记与 lastHandled.listMark 相同，且已处理完整快照的 lastHandled.readAt 在核对周期内（`limits.inboundRecheckHours`，缺省 24 小时）。不能使用 lastOpenedAt 或 handled 写入时间 at 延期；本接口不执行扫描，也不计算跳过与否，由 Agent 对照当前列表判断。
 
 ## 决定
 

@@ -84,8 +84,9 @@ class ReleaseStaticContractTest(unittest.TestCase):
 
     def test_setup_test_instruction_and_restore_output_contract(self):
         setup = self.skill("setup")
-        self.assertIn("引用测试消息回复「收到」", setup)
-        self.assertNotIn("回复任意文字", setup)
+        lark_setup = (ROOT / "shared/im/lark-setup.md").read_text(encoding="utf-8")
+        self.assertIn("引用测试消息回复「收到」", lark_setup)
+        self.assertNotIn("回复任意文字", lark_setup)
         for phrase in ("`restoreSucceeded` / `restoreError`", "`release` / `releaseError`",
                        "退出码 2", "`restored`", "`release.attempted`", "不擅自删除锁"):
             self.assertIn(phrase, setup)

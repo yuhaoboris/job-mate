@@ -30,8 +30,7 @@ FOLLOWUP_THREAD_FIELDS = (
     "lastHandled", "info.pending", "info.gaveUp",
 )
 BASELINE_FOLLOWUP_SHA256 = "454d1c7714e0c6e7c29938e2d20f508b7f80bf81ae9522edd10cf097f7f3fc4b"
-BASELINE_ABSENT = {"nudgeReason": "T2.1", "outboundTexts": "T2.2",
-                   "info.pending": "T2.3", "info.gaveUp": "T2.3"}
+BASELINE_ABSENT = {}
 
 
 def followup_text():

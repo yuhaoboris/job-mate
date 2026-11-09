@@ -72,7 +72,7 @@ reply 与 nudge 是**独立授权**：
 3. HR最后发言及 inventoryPending 未打开会话，最久未处理优先，共用 inboundScanPerRun（默认30）预算；后者不限天数。普通列表限 inboundScanDays（默认14天），连续3个非置顶项超龄、到底或风控就停，报告未查范围。
 4. canNudge:true 的待页面核验候选，或本轮明确点名、可能由nudge例外覆盖的目标；候选不是发送授权。
 
-只有无pending/未读、listMark与lastHandled相同，且其完整readAt在 inboundRecheckHours（默认24小时）内才可跳过。lastOpenedAt、handled写入时间、同摘要不延长周期；超期仍打开，不保证24小时全发现。
+能否跳过，拿当前列表标记（listMark）对照 threads 的 `lastHandled`，条件只按[尾部与扫描](../../shared/derived.md#尾部与扫描)判断；不满足就打开，不保证 24 小时内全部发现。
 
 公司精确匹配且招聘者一致才是同一会话。完整读锚点至末尾（含卡片），按[尾部协议](../../shared/tails.md) `ledger tail`，默认与handled比；处理后显式 `--base <本次实际处理tailId>` 重读，不把歧义、截断或mismatch当旧消息。
 
@@ -107,7 +107,7 @@ reply 与 nudge 是**独立授权**：
 
 先回应对方，再在同一条消息顺带了解信息，不像问卷。资料仅来自candidate.md、qa.yaml和已核实上下文；style控制称呼、语气、字数、禁词与emoji。期望薪资按qa区间，不自行报具体数字。
 
-子项为 salary.range、salary.months、hours.schedule、hours.time、location.address、leave.annual、employment.type。按currentJobKey取[派生信息](../../shared/derived.md#信息)：硬条件checks优先，其余inquiry.priority；已知不问，两次HR回复仍未回答的项gaveUp，留给本人面试了解。JD“双休”只知道hours.schedule，不代表hours.time。
+子项为 salary.range、salary.months、hours.schedule、hours.time、location.address、leave.annual、employment.type。按currentJobKey取[派生信息](../../shared/derived.md#信息)：硬条件checks优先，其余inquiry.priority；按 `info.pending` 的顺序问；`info.gaveUp` 里的项不再问，留给本人面试时了解。JD“双休”只知道hours.schedule，不代表hours.time。
 
 首次招呼不问信息；HR首次实质回复后，先回答/发简历，再每条顺带1–inquiry.maxPerMessage（默认2）个子项。每轮HR发言最多一条带询问消息；上一条没回应不追问新项。回答记observe/info，facts用子项，asks记录本条实际问题，tags记intent:ask_info。职位变了重算，不挪用另一职位结论。
 
@@ -137,21 +137,15 @@ Agent **不答应、也不提出任何面试时间**，不追问或提供自己�
 
 canNudge:true仅本地候选，nudgeNeedsPageState:true，不证明当前已读/送达或本轮授权。按[最终门禁](../../shared/sending.md#主动跟进的最终门禁)真实填写最后发言方、我方状态/绝对时间/精度/readAt；完整读取后才声明我方最后发言。日期不精确、陌生我方活动、新HR或歧义先核对。prepare带pageState；每次guard重新读，不回退旧值。
 
-盘点超 nudge.existingMaxAgeDays（默认30天）只接手、不进候选；确认接手后新HR才恢复，历史HR、handled/released不解除保护。等待、间隔、连续/累计/每日次数与时段以有效配置和最终门禁为准。首次pending占次数，失败/不明不退款；新HR凭据才重开连续，累计不清零，handled/released不重置。suggestSilent则登记silent，不再发。
+候选与次数只看 `ledger threads`：`canNudge`/`nudgeReason`（盘点超龄为 `inventory_stale`）、`nudgeSeq`、`nudgeIntent`、`suggestSilent`。等待、间隔、次数和时段由[最终门禁](../../shared/sending.md#主动跟进的最终门禁)检查，被拒按原因码处理，不自己重算。`suggestSilent:true` 就登记 silent，不再发。
 
-| maxPerSilence | 1次 | 2次 | 3次 |
-|---|---|---|---|
-| 1 | ask_answer | — | — |
-| 2 | confirm_open | ask_answer | — |
-| 3 | confirm_open | propose_interview | ask_answer |
-
-tags精确带nudge:<nudgeSeq>、intent:<nudgeIntent>：confirm_open确认在招并表达匹配，propose_interview表达面试意愿，ask_answer请明确答复、接受婉拒。按JD/真实经历/style重写；禁词进度/跟进/催，若与历史招呼/intro/nudge过似则换说法，不删标签、不换kind。
+tags 恰好带 `nudge:<nudgeSeq>` 和 `intent:<nudgeIntent>`；`nudgeIntent` 为 null 时不发。confirm_open：确认还在招，带一个最相关的匹配点；propose_interview：表达面试意愿，不提具体时间；ask_answer：请对方给明确答复、接受婉拒，如果它是第 1 次（连续上限为 1），同时确认还在招。按JD/真实经历/style重写；禁词进度/跟进/催，若与历史招呼/intro/nudge过似则换说法，不删标签、不换kind。
 
 ## 9. 接管与交还
 
 首次盘点记 adopted（skill:followup、adoptionSource:inventory），readAt 为该列表项实际读取时间，不覆盖已有状态。盘点后新出现的未接手我方会话只汇报，可重新盘点或点名交出；点名仍在有效锁内用 skill:user、readAt 记 adopted。
 
-boundaryAt 取本地 sent、adopted.readAt、released 的最大值，登记不用写入时间，不推到未来。先比对所有本地 sent（包括构成分界的那条）：同类、正文相符、时间在页面区间前后2分钟内才算Agent所发。核对我方文字与发简历、同意交换联系方式、接受面试等卡片活动。
+分界用 threads 的 `boundaryAt`，本地已发内容用 `outboundTexts`（[字段说明](../../shared/ledger.md#观察与决定)）。先比对所有本地 sent（包括构成分界的那条）：同类、正文相符、时间在页面区间前后2分钟内才算Agent所发。核对我方文字与发简历、同意交换联系方式、接受面试等卡片活动。
 
 - 分钟 [10:00, 10:01)，只显示日期为当天全天；区间整个早于分界算历史，整个晚于分界记manual。
 - 跨分界（同一分钟或同一天日期标签）、执行者/时间不清，本轮不发，paused后inbox暂停询问“本人处理 / 交给Agent继续”。

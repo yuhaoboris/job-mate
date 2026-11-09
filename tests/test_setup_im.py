@@ -295,8 +295,8 @@ class SetupImFlowTest(unittest.TestCase):
         self.assertEqual(self.f.invoke(N, "replies", "--state", "test")["replies"], [])
 
     def test_skill_has_formal_configuration_and_consent_order(self):
-        skill = (ROOT / "skills/setup/SKILL.md").read_text(encoding="utf-8")
-        text = skill.split("## 10. IM 通知\n", 1)[1].split("## 11.", 1)[0]
+        skill = (ROOT / "shared/im/lark-setup.md").read_text(encoding="utf-8")
+        text = skill.split("## 配置步骤\n", 1)[1]
         for term in ("只读列配置档", "不猜 active", "多候选让本人选", "展示姓名请本人确认 ownerId",
                      "事务提交后", "正式工作区配置", "不填假 ownerId", "不绕事务", "不算机器人验证成功",
                      "另行同意测试内容", "结构通过不证明身份或入口可用", "补查失败不重发", "普通业务答复仍 received"):
