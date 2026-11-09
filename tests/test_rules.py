@@ -28,10 +28,36 @@ def core_documents():
                   for path in (ROOT / directory).rglob("*.md"))
 
 
+SELF_SPAWN_TEMPLATE = '''
+def spawn_watch(ws, interval, token, deadline, max_ticks=None):
+    argv = [sys.executable, str(Path(__file__).resolve()), "--workspace", str(ws.resolve()),
+            "watch", "--interval", str(interval), "--child-token", token, "--child-deadline", str(deadline)]
+    if max_ticks is not None:
+        argv += ["--max-ticks", str(max_ticks)]
+    env = dict(os.environ, JOB_MATE_WATCH_CHILD_TOKEN=token)
+    flags = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    return subprocess.Popen(argv, shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, close_fds=True, cwd=str(ws.resolve()), env=env, **flags)
+'''
+
+
+def function_shape(node):
+    if node is None:
+        return None
+    body = list(node.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        body = body[1:]
+    return ast.dump(ast.FunctionDef(name=node.name, args=node.args, body=body, decorator_list=[]))
+
+
 def external_execution_violations(content, allow_build_git=False, allow_lark=False):
     """仅 build 的常量 git 与飞书适配器的唯一受控 run 有例外。"""
     tree = ast.parse(content)
     aliases, violations = {}, []
+    functions = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    owners = {id(n): fn for fn in functions for n in ast.walk(fn)}
+    spawn_shape = function_shape(ast.parse(SELF_SPAWN_TEMPLATE).body[0])
+    bounded = ast.dump(ast.parse("timeout = TIMEOUT if deadline is None else min(TIMEOUT, deadline - time.monotonic())").body[0])
     forbidden = {"desktop", "agent_desktop", "lark", "tools", "subprocess", "asyncio", "multiprocessing", "pty", "ctypes", "importlib",
                  "runpy", "requests", "urllib", "http", "httpx", "aiohttp", "webbrowser"}
     for node in ast.walk(tree):
@@ -70,8 +96,16 @@ def external_execution_violations(content, allow_build_git=False, allow_lark=Fal
                              for e, expected in zip(node.args[0].elts, ("prefix", "arguments")))
                      and all(isinstance(keywords.get(k), ast.Constant) and keywords[k].value == v
                              for k, v in (("shell", False), ("capture_output", True), ("encoding", "utf-8")))
-                     and isinstance(keywords.get("timeout"), ast.Name) and keywords["timeout"].id == "TIMEOUT")
-        if safe_git or safe_lark:
+                     and isinstance(keywords.get("timeout"), ast.Name) and (
+                         keywords["timeout"].id == "TIMEOUT" or (
+                             keywords["timeout"].id == "timeout" and id(node) in owners
+                             and owners[id(node)].name == "run_lark"
+                             and [ast.dump(n) for n in ast.walk(owners[id(node)]) if isinstance(n, ast.Assign)
+                                  and any(isinstance(t, ast.Name) and t.id == "timeout" for t in n.targets)] == [bounded])))
+        safe_spawn = (allow_lark and name == "subprocess.Popen" and id(node) in owners
+                      and function_shape(owners[id(node)]) == spawn_shape
+                      and not any(alias != value for alias, value in aliases.items() if value == "subprocess"))
+        if safe_git or safe_lark or safe_spawn:
             continue
         if (root in forbidden or root == "socket" and member != "gethostname"
                 or root == "os" and (member in {"system", "popen", "fork", "forkpty", "startfile"}
@@ -227,6 +261,19 @@ class ExecutionRulesTest(unittest.TestCase):
             self.assertTrue(external_execution_violations(content, allow_lark=True), content)
         self.assertFalse(external_execution_violations("import socket; socket.gethostname()"))
         self.assertFalse(external_execution_violations("import subprocess; subprocess.run(['git', 'status'])", True))
+
+    def test_self_spawn_exception_is_exact_and_not_an_interpreter_escape(self):
+        source = "import subprocess\n" + SELF_SPAWN_TEMPLATE
+        self.assertEqual(external_execution_violations(source, allow_lark=True), [])
+        for mutated in (source.replace("shell=False", "shell=True"),
+                        source.replace("str(Path(__file__).resolve())", "script"),
+                        source.replace('"watch", "--interval"', 'mode, "--interval"'),
+                        source.replace("close_fds=True", "close_fds=False"),
+                        source.replace("import subprocess", "import subprocess as sp").replace("subprocess.", "sp."),
+                        source.replace('argv += ["--max-ticks", str(max_ticks)]', 'argv += extra'),
+                        source.replace("sys.executable", "executable")):
+            self.assertTrue(external_execution_violations(mutated, allow_lark=True))
+        self.assertTrue(external_execution_violations(source, allow_lark=False))
 
     def test_new_document_links_and_anchors_resolve(self):
         maintained = (ROOT / name for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md",

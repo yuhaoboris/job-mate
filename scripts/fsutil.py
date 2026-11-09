@@ -66,7 +66,7 @@ def try_locked(path, create=True):
     acquired = False
     try:
         os.set_inheritable(fd, False)
-        if os.fstat(fd).st_size == 0:
+        if create and os.fstat(fd).st_size == 0:
             try:
                 os.write(fd, b"\0")
             except OSError:

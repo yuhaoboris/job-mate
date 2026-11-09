@@ -1,7 +1,13 @@
 """回复窗口真实通知投影与监听进程行为；只用合成工作区。"""
+import contextlib
+import io
 import json
 import os
+import subprocess
+import sys
+import time
 import unittest
+from pathlib import Path
 from datetime import datetime
 from unittest.mock import patch
 
@@ -165,6 +171,280 @@ class ReplyWatchTest(unittest.TestCase):
         state = self.status()
         self.assertEqual(state["waiting"], [])
         self.assertEqual(len(state["undeliverable"]), 1)
+
+
+class WatchProcessTest(unittest.TestCase):
+    def setUp(self):
+        import test_im_lark
+        self.module = test_im_lark
+        self.f = test_im_lark.ImLarkTest()
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        self.env = dict(os.environ)
+        self.children, self.detached = [], []
+        self.addCleanup(self.stop_children)
+        self.decision = "D-20400102-01"
+        self.f.invoke(N, "send", "--kind", "decision", "--decision", self.decision, "--text", "synthetic secret body")
+
+    def stop_children(self):
+        for child in self.children:
+            if child.poll() is None:
+                child.terminate()
+            child.communicate(timeout=10)
+        if self.detached:
+            self.f.configure(waitMinutes=0)
+            end = time.monotonic() + 3
+            while self.module.im_lark.watch_probe(self.f.ws)[0] and time.monotonic() < end:
+                time.sleep(.01)
+            if self.module.im_lark.watch_probe(self.f.ws)[0]:
+                for pid in self.detached:
+                    if os.name == "nt":
+                        import ctypes
+                        handle = ctypes.windll.kernel32.OpenProcess(1, False, pid)
+                        if handle:
+                            ctypes.windll.kernel32.TerminateProcess(handle, 1)
+                            ctypes.windll.kernel32.CloseHandle(handle)
+                    else:
+                        import signal
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+
+    def argv(self, *args, script=None):
+        return [sys.executable, "-B", "-I", str(script or self.module.ROOT / "scripts/im_lark.py"),
+                "--workspace", str(self.f.ws), "watch", *args]
+
+    def control(self, *args, env=None, expected=0):
+        result = subprocess.run(self.argv(*args), capture_output=True, encoding="utf-8", env=env or self.env, timeout=10)
+        self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+        self.assertFalse(result.stderr, result.stderr)
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        return rows
+
+    def start(self, *args, script=None):
+        child = subprocess.Popen(self.argv("--interval", "1", *args, script=script),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", env=self.env)
+        self.children.append(child)
+        return child
+
+    def wait_for(self, predicate, child=None, timeout=5):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if predicate():
+                return
+            if child is not None and child.poll() is not None:
+                self.fail(str(child.communicate()))
+            time.sleep(.01)
+        self.fail("watch condition timeout")
+
+    def log(self):
+        path = self.f.ws / "ledger/im-watch.log"
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+    def test_w13_watch_does_not_own_or_renew_execution_lock(self):
+        self.f.invoke(self.module.ledger, "lock", "acquire", "--skill", "followup", "--run", "foreground")
+        lock = self.f.ws / "ledger/lock.json"
+        before = lock.read_bytes()
+        rows = self.control("--max-ticks", "1")
+        self.assertIn("watch_started", [r.get("event") for r in rows])
+        self.assertEqual(lock.read_bytes(), before)
+        self.f.invoke(self.module.ledger, "lock", "release", "--run", "foreground")
+        self.f.invoke(self.module.ledger, "lock", "acquire", "--skill", "setup", "--run", "recovery", "--recovery")
+        self.control("--max-ticks", "1", expected=2)
+
+    def test_w14_competing_parents_and_installation_copies(self):
+        import test_build
+        output = self.f.base / "packages"
+        self.assertEqual(test_build.run_build("--out", str(output))[0], 0)
+        parents = [subprocess.Popen(self.argv("--detach", "--interval", "1", script=path),
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", env=self.env)
+                   for path in output.glob("job-mate-*/scripts/im_lark.py")]
+        results = []
+        for parent in parents:
+            stdout, stderr = parent.communicate(timeout=10)
+            self.assertEqual(parent.returncode, 0, stdout + stderr)
+            result = json.loads(stdout); results.append(result)
+            if result["started"]:
+                self.detached.append(result["pid"])
+        self.assertEqual(sum(r["started"] for r in results), 1)
+        self.assertEqual(sum(r["alreadyRunning"] for r in results), 2)
+        self.wait_for(lambda: len([r for r in self.log() if r["event"] == "watch_started"]) == 1)
+        self.assertIs(self.control("--status")[-1]["running"], True)
+        self.assertTrue((self.f.ws / "ledger/.im-watch.lock").exists())
+        self.assertEqual(list((self.f.ws / "ledger").glob(".im-watch-start-*")), [])
+
+    def test_w15_unknown_lock_never_spawns(self):
+        I = self.module.im_lark
+        args = I.build_parser().parse_args(["watch", "--detach"])
+        with patch.object(I, "watch_probe", return_value=(None, "watch_lock_unknown")), patch.object(I, "spawn_watch", side_effect=AssertionError):
+            result, code = I.detach_watch(self.f.ws, args)
+        self.assertEqual((code, result["started"], result["reason"]), (1, False, "watch_lock_unknown"))
+        with patch.object(I.fsutil, "try_locked", side_effect=PermissionError):
+            self.assertEqual(I.watch_probe(self.f.ws), (None, "watch_lock_unknown"))
+
+    def test_w18_detached_survives_real_parent_exit_and_fetches(self):
+        self.f.sync("--send-only")
+        outgoing = self.f.rows()["out"]["decision:" + self.decision]["messageId"]
+        notified = N.now_ms()
+        self.env["JOB_MATE_NOW"] = datetime.fromtimestamp((notified + 10000) / 1000, datetime.fromisoformat(os.environ["JOB_MATE_NOW"]).tzinfo).isoformat()
+        os.environ["JOB_MATE_NOW"] = self.env["JOB_MATE_NOW"]
+        result = self.control("--detach", "--interval", "1")[-1]
+        self.assertTrue(result["started"])
+        self.detached.append(result["pid"])
+        # control 的真实父进程已经退出；随后才给假CLI增加本人消息。
+        item = self.f.message(text="synthetic secret reply", created=notified + 9500)
+        item["parent_id"] = outgoing
+        with I_lock(self.f.state):
+            self.f.add_messages(item)
+        self.wait_for(lambda: bool(self.f.rows()["in"]))
+        self.wait_for(lambda: not self.module.im_lark.watch_probe(self.f.ws)[0])
+        events = self.log()
+        self.assertLess(next(i for i,r in enumerate(events) if r["event"] == "reply_available"),
+                        next(i for i,r in enumerate(events) if r["event"] == "watch_exit"))
+        self.assertTrue(all(r["state"] == "received" for r in self.f.rows()["in"].values()))
+        self.assertNotIn("synthetic secret", json.dumps(events))
+
+    def test_w06_w07_one_reply_leaves_other_item_listening(self):
+        other = "D-20400102-02"
+        (self.f.ws / "inbox/decisions.md").write_text(
+            f"## {self.decision} 待决定\n\n## {other} 待处理\n", encoding="utf-8")
+        self.f.invoke(N, "send", "--kind", "todo", "--decision", other, "--text", "synthetic")
+        self.f.sync("--send-only")
+        notified = N.now_ms()
+        self.env["JOB_MATE_NOW"] = datetime.fromtimestamp((notified + 10000) / 1000,
+            datetime.fromisoformat(os.environ["JOB_MATE_NOW"]).tzinfo).isoformat()
+        os.environ["JOB_MATE_NOW"] = self.env["JOB_MATE_NOW"]
+        before = {name: (self.f.ws / name).read_bytes() if (self.f.ws / name).exists() else None
+                  for name in ("inbox/decisions.md", "ledger/events.jsonl", "ledger/lock.json")}
+        child = self.start()
+        self.wait_for(lambda: bool(self.log()), child)
+        first = self.f.message(n=20, created=notified + 9500)
+        first["parent_id"] = self.f.rows()["out"]["decision:" + self.decision]["messageId"]
+        with I_lock(self.f.state):
+            self.f.add_messages(first)
+        self.wait_for(lambda: len(self.f.rows()["in"]) == 1, child)
+        ctx = N.context(self.f.ws)
+        state = N.reply_watch(self.f.ws, ctx, self.module.im_lark.fsutil.now(ctx["tz"]))
+        self.assertEqual([r["decision"] for r in state["waiting"]], [other])
+        self.assertIsNone(child.poll())
+        second = self.f.message(n=21, created=notified + 9501)
+        second["parent_id"] = self.f.rows()["out"]["todo:" + other]["messageId"]
+        with I_lock(self.f.state):
+            self.f.add_messages(second)
+        stdout, stderr = child.communicate(timeout=5)
+        self.assertEqual(child.returncode, 0, stdout + stderr)
+        self.assertEqual(len(self.f.rows()["in"]), 2)
+        self.assertTrue(all(r["state"] == "received" for r in self.f.rows()["in"].values()))
+        for name, data in before.items():
+            self.assertEqual((self.f.ws / name).read_bytes() if (self.f.ws / name).exists() else None, data)
+        events = self.log()
+        self.assertEqual(events[-1]["reason"], "cleared")
+        self.assertEqual(len([r for r in events if r["event"] == "reply_available"]), 2)
+
+    def test_w16_w21_watch_network_barrier_allows_execution_and_busy_sync(self):
+        import test_im_concurrency
+        case = test_im_concurrency.ImConcurrencyTest(); case.setUp()
+        try:
+            case.f.establish()
+            case.f.invoke(N, "send", "--kind", "decision", "--decision", self.decision, "--text", "synthetic")
+            case.f.configure(larkCommand=[sys.executable, str(case.wrapper)])
+            child = subprocess.Popen(case.command("im_lark", "watch", "--max-ticks", "1"),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
+                env=dict(case.env, IM_BARRIER_KIND="fetch"))
+            case.children.append(child)
+            self.wait_for(lambda: case.barrier.with_suffix(".ready").exists(), child)
+            before = (case.f.ws / "ledger/im.jsonl").read_bytes()
+            code, result = case.call("im_lark", "sync", "--fetch-only")
+            self.assertEqual((code, result["busy"], result["incomplete"]), (0, True, True))
+            self.assertEqual((case.f.ws / "ledger/im.jsonl").read_bytes(), before)
+            for args in (("lock", "acquire", "--skill", "followup", "--run", "parallel"),
+                         ("lock", "renew", "--run", "parallel"), ("lock", "release", "--run", "parallel")):
+                self.assertEqual(case.call("ledger", *args)[0], 0)
+                self.assertFalse(case.barrier.with_suffix(".release").exists())
+            case.release()
+            stdout, stderr = child.communicate(timeout=5)
+            self.assertEqual(child.returncode, 0, stdout + stderr)
+        finally:
+            case.doCleanups()
+
+    def test_w17_os_lock_released_after_crash_keeps_deadline(self):
+        ctx = N.context(self.f.ws)
+        before = N.reply_watch(self.f.ws, ctx, self.module.im_lark.fsutil.now(ctx["tz"]))
+        records = N.read_records(self.f.ws)
+        child = self.start()
+        self.wait_for(lambda: bool(self.log()), child)
+        child.kill(); child.communicate(timeout=5)
+        self.assertIs(self.control("--status")[-1]["running"], False)
+        out = self.control("--detach", "--interval", "1")[-1]
+        self.assertTrue(out["started"]); self.detached.append(out["pid"])
+        after = N.reply_watch(self.f.ws, ctx, self.module.im_lark.fsutil.now(ctx["tz"]))
+        self.assertEqual(after["deadlineAt"], before["deadlineAt"])
+        self.assertEqual(N.read_records(self.f.ws), records)
+
+    def test_w19_failed_spawn_and_late_child_are_degraded(self):
+        I = self.module.im_lark
+        args = I.build_parser().parse_args(["watch", "--detach"])
+        with patch.object(I.subprocess, "Popen", side_effect=PermissionError):
+            result, code = I.detach_watch(self.f.ws, args)
+        self.assertEqual((code, result["reason"], result["started"]), (1, "watch_spawn_failed", False))
+        env = dict(self.env, JOB_MATE_WATCH_START_DELAY="6")
+        result = self.control("--detach", "--interval", "1", env=env, expected=1)[-1]
+        self.assertFalse(result["started"])
+        self.assertIn(result["reason"], ("watch_start_timeout", "watch_start_unknown"))
+        self.assertIs(self.control("--status")[-1]["running"], False)
+        for token in ("../escape", "0" * 32):
+            self.control("--child-token", token, "--child-deadline", str(time.monotonic() + 2), expected=2)
+        self.assertEqual(list((self.f.ws / "ledger").glob(".im-watch-start-*")), [])
+
+    def test_w20_wall_clock_expiry_does_not_sleep_an_extra_tick(self):
+        I = self.module.im_lark
+        args = I.build_parser().parse_args(["watch", "--interval", "60"])
+        deadline = N.reply_watch(self.f.ws, N.context(self.f.ws),
+                                I.fsutil.now(N.context(self.f.ws)["tz"]))["deadlineAt"]
+        sleeps = []
+        def advance(seconds):
+            sleeps.append(seconds)
+            os.environ["JOB_MATE_NOW"] = deadline
+        with patch.object(I.time, "sleep", side_effect=advance), contextlib.redirect_stdout(io.StringIO()):
+            result, code = I.watch_loop(self.f.ws, args)
+        self.assertEqual((code, result["reason"]), (11, "expired"))
+        self.assertEqual(sleeps, [60])
+        self.assertEqual(N.open_items(self.f.ws), [self.decision])
+
+    def test_w10_zero_exits_existing_foreground_without_consuming(self):
+        child = self.start()
+        self.wait_for(lambda: bool(self.log()), child)
+        self.f.configure(waitMinutes=0)
+        stdout, stderr = child.communicate(timeout=4)
+        self.assertEqual(child.returncode, 0, stdout + stderr)
+        self.assertEqual(N.open_items(self.f.ws), [self.decision])
+
+    def test_w30_six_transient_failures_do_not_abandon_window(self):
+        self.f.sync("--send-only")
+        for _ in range(6):
+            self.f.fault("native-list", "nonzero")
+        rows = self.control("--interval", "1", "--max-ticks", "6")
+        self.assertEqual(len([r for r in rows if r.get("event") == "watch_tick"]), 6)
+        self.assertEqual(rows[-1]["reason"], "test_tick_limit")
+        self.assertEqual(N.open_items(self.f.ws), [self.decision])
+
+    def test_w30_logs_rotate_and_are_not_business_truth(self):
+        log = self.f.ws / "ledger/im-watch.log"
+        line = '{"event":"synthetic"}\n'
+        log.write_text(line * ((1024 * 1024) // len(line)), encoding="utf-8")
+        self.control("--max-ticks", "1")
+        self.assertLessEqual(log.stat().st_size, 1024 * 1024)
+        self.assertLessEqual(log.with_name(log.name + ".1").stat().st_size, 1024 * 1024)
+        ctx = N.context(self.f.ws)
+        before = N.reply_watch(self.f.ws, ctx, self.module.im_lark.fsutil.now(ctx["tz"]))
+        log.unlink(); log.with_name(log.name + ".1").unlink()
+        self.assertEqual(N.reply_watch(self.f.ws, ctx, self.module.im_lark.fsutil.now(ctx["tz"])), before)
+
+
+def I_lock(path):
+    import fsutil
+    return fsutil.locked(path.with_name(path.name + ".lock"))
 
 
 if __name__ == "__main__":

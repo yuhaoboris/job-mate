@@ -4,6 +4,8 @@
 notify 保留队列、回执、游标与业务状态机；本模块只做进程边界及原生响应校验。
 """
 import argparse
+import contextlib
+from contextvars import ContextVar
 import hashlib
 import json
 import math
@@ -13,6 +15,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fsutil
@@ -22,6 +26,7 @@ import notify
 
 TIMEOUT = 20
 MAX_PAGES = 20
+CALL_DEADLINE = ContextVar("im_call_deadline", default=None)
 API_MESSAGES = "/open-apis/im/v1/messages"
 REJECT_CODES = {99992351}  # 仅实测发送拒绝；其他非零退出不证明未投递。
 BAD_SUFFIXES = {".cmd", ".bat", ".ps1", ".psm1", ".vbs", ".vbe", ".wsf", ".wsh", ".hta", ".sh", ".com"}
@@ -172,7 +177,10 @@ def run_lark(command, arguments, windows=None):
         for key in ("NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONINSPECT", "BASH_ENV", "ENV"):
             env.pop(key, None)
         env.update(PYTHONUTF8="1", LARKSUITE_CLI_NO_UPDATE_NOTIFIER="1", LARKSUITE_CLI_NO_SKILLS_NOTIFIER="1")
-        return subprocess.run([*prefix, *arguments], shell=False, timeout=TIMEOUT,
+        deadline = CALL_DEADLINE.get()
+        timeout = TIMEOUT if deadline is None else min(TIMEOUT, deadline - time.monotonic())
+        require(timeout > 0, "lark_window_expired")
+        return subprocess.run([*prefix, *arguments], shell=False, timeout=timeout,
                               capture_output=True, encoding="utf-8", env=env)
     except subprocess.TimeoutExpired:
         raise LarkError("lark_timeout") from None
@@ -423,6 +431,205 @@ def sync_locked(ws, ctx, start, send_only, fetch_only, max_pages):
     return result
 
 
+def watch_state(ws):
+    ctx = notify.context(ws)
+    return ctx, notify.reply_watch(ws, ctx, fsutil.now(ctx["tz"]))
+
+
+def watch_probe(ws):
+    try:
+        with fsutil.try_locked(ws / "ledger/.im-watch.lock", create=False) as acquired:
+            return not acquired, "not_running" if acquired else "running"
+    except FileNotFoundError:
+        return False, "not_running"
+    except OSError:
+        return None, "watch_lock_unknown"
+
+
+def watch_event(ws, ctx, state, event, reason=None, message_ids=None):
+    row = {"at": ledger.now_iso(ctx["tz"]), "pid": os.getpid(), "event": event,
+           "reason": reason, "count": len(state["waiting"]), "deadlineAt": state["deadlineAt"]}
+    if message_ids:
+        row.update(workspace=str(ws.resolve()), route=ctx["cfg"]["route"], messageIds=message_ids)
+    line = notify.canonical(row) + "\n"
+    path = ws / "ledger/im-watch.log"
+    if path.exists() and path.stat().st_size + len(line.encode("utf-8")) > 1024 * 1024:
+        os.replace(path, path.with_name(path.name + ".1"))
+    with path.open("a", encoding="utf-8", newline="") as stream:
+        stream.write(line)
+        stream.flush()
+    try:
+        print(line, end="", flush=True)
+    except BrokenPipeError:
+        pass  # 日志仍可供无即时事件入口的 runtime 查询。
+
+
+def start_ack(ws, args, reason):
+    if args.child_token is not None:
+        path = ws / "ledger" / (".im-watch-start-" + args.child_token + ".json")
+        fsutil.write_text_atomic(path, notify.canonical({"pid": os.getpid(), "token": args.child_token, "reason": reason}))
+
+
+def watch_loop(ws, args):
+    if args.max_ticks is not None:
+        require(os.environ.get("JOB_MATE_TESTING") == "1" and args.max_ticks > 0, "test_ticks_refused")
+    require(1 <= args.interval <= 60, "watch_interval_invalid")
+    if args.child_token is not None or args.child_deadline is not None:
+        require(isinstance(args.child_token, str) and re.fullmatch(r"[0-9a-f]{32}", args.child_token) is not None
+                and os.environ.get("JOB_MATE_WATCH_CHILD_TOKEN") == args.child_token
+                and isinstance(args.child_deadline, float) and math.isfinite(args.child_deadline)
+                and 0 < args.child_deadline <= time.monotonic() + 5, "watch_child_arguments_invalid")
+        if os.environ.get("JOB_MATE_TESTING") == "1":
+            delay = float(os.environ.get("JOB_MATE_WATCH_START_DELAY", "0"))
+            require(0 <= delay <= 10, "watch_test_delay_invalid")
+            time.sleep(delay)
+        if time.monotonic() >= args.child_deadline:
+            return {"reason": "watch_start_expired"}, 1
+    with contextlib.ExitStack() as lifetime:
+        acquired = lifetime.enter_context(fsutil.try_locked(ws / "ledger/.im-watch.lock"))
+        if not acquired:
+            start_ack(ws, args, "already_running")
+            return {"reason": "already_running"}, 3
+        try:
+            with ledger.gated(ws, "write"):
+                ctx, state = watch_state(ws)
+                if not state["active"]:
+                    start_ack(ws, args, "inactive")
+                    lifetime.close()
+                    return {"reason": "expired" if state["expired"] else "inactive"}, 11 if state["expired"] else 0
+                if args.child_deadline is not None and time.monotonic() >= args.child_deadline:
+                    return {"reason": "watch_start_expired"}, 1
+                start_ack(ws, args, "started")
+            watch_event(ws, ctx, state, "watch_started")
+            seen, ticks = set(), 0
+            while True:
+                ctx, state = watch_state(ws)
+                replies = notify.pending_replies(notify.sync_view(ws, ctx["cfg"]))
+                ids = sorted(r["messageId"] for r in replies if r["messageId"] not in seen)
+                for offset in range(0, len(ids), 100):
+                    watch_event(ws, ctx, state, "reply_available", message_ids=ids[offset:offset + 100])
+                seen.update(ids)
+                if not state["active"]:
+                    # 与 ensure 的本地准入共用 mutation；复查和释放生命周期锁不可穿插。
+                    with ledger.gated(ws, "write"):
+                        ctx, state = watch_state(ws)
+                        if state["active"]:
+                            continue
+                        lifetime.close()
+                    reason = "expired" if state["expired"] else ("disabled" if ctx["cfg"]["waitMinutes"] == 0
+                             or ctx["cfg"]["channel"] == "none" else "cleared")
+                    watch_event(ws, ctx, state, "watch_exit", reason)
+                    return {"reason": reason}, 11 if state["expired"] else 0
+                remaining = max(0, (datetime_deadline(state) - fsutil.now(ctx["tz"])).total_seconds())
+                token = CALL_DEADLINE.set(time.monotonic() + remaining)
+                try:
+                    if notify.poll(ws, ctx)["readable"]:
+                        result = sync(ws, fetch_only=True, max_pages=1)
+                        reason = "sync_busy" if result.get("busy") else ("im_incomplete" if result.get("incomplete") else "synced")
+                    else:
+                        reason = "not_readable"
+                finally:
+                    CALL_DEADLINE.reset(token)
+                ctx, state = watch_state(ws)
+                watch_event(ws, ctx, state, "watch_tick", reason)
+                ticks += 1
+                # 下一拍首先提示刚落盘的回复，即便集合已清空；不在这里提前退出。
+                if args.max_ticks is not None and ticks >= args.max_ticks:
+                    replies = notify.pending_replies(notify.sync_view(ws, ctx["cfg"]))
+                    ids = sorted(r["messageId"] for r in replies if r["messageId"] not in seen)
+                    for offset in range(0, len(ids), 100):
+                        watch_event(ws, ctx, state, "reply_available", message_ids=ids[offset:offset + 100])
+                    watch_event(ws, ctx, state, "watch_exit", "test_tick_limit")
+                    return {"reason": "test_tick_limit"}, 0
+                if not state["active"]:
+                    continue
+                remaining = max(0, (datetime_deadline(state) - fsutil.now(ctx["tz"])).total_seconds())
+                time.sleep(min(args.interval, remaining))
+        except (notify.NotifyError, ledger.LedgerError, LarkError, OSError, ValueError) as error:
+            start_ack(ws, args, "error")
+            # 固定码，不把配置、消息或外部错误正文写日志。
+            try:
+                watch_event(ws, ctx, state, "watch_exit", "watch_local_state_invalid")
+            except (UnboundLocalError, OSError):
+                pass
+            return {"reason": "watch_local_state_invalid"}, 2
+
+
+def datetime_deadline(state):
+    from datetime import datetime
+    return datetime.fromisoformat(state["deadlineAt"])
+
+
+def spawn_watch(ws, interval, token, deadline, max_ticks=None):
+    """唯一自启动入口：固定当前解释器、当前脚本与 watch 参数，不接受命令模板。"""
+    argv = [sys.executable, str(Path(__file__).resolve()), "--workspace", str(ws.resolve()),
+            "watch", "--interval", str(interval), "--child-token", token, "--child-deadline", str(deadline)]
+    if max_ticks is not None:
+        argv += ["--max-ticks", str(max_ticks)]
+    env = dict(os.environ, JOB_MATE_WATCH_CHILD_TOKEN=token)
+    flags = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    return subprocess.Popen(argv, shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, close_fds=True, cwd=str(ws.resolve()), env=env, **flags)
+
+
+def detach_watch(ws, args):
+    require(1 <= args.interval <= 60, "watch_interval_invalid")
+    require(args.max_ticks is None or (os.environ.get("JOB_MATE_TESTING") == "1" and args.max_ticks > 0), "test_ticks_refused")
+    require(args.child_token is None and args.child_deadline is None, "watch_child_arguments_invalid")
+    with ledger.gated(ws, "write"):
+        _, state = watch_state(ws)
+        running, reason = watch_probe(ws)
+        if running is not False:
+            return {"started": False, "alreadyRunning": running is True, "reason": reason, "pid": None}, 0 if running else 1
+        if not state["active"]:
+            return {"started": False, "alreadyRunning": False, "reason": "inactive", "pid": None}, 0
+    token, deadline = uuid.uuid4().hex, time.monotonic() + 5
+    path = ws / "ledger" / (".im-watch-start-" + token + ".json")
+    try:
+        child = spawn_watch(ws, args.interval, token, deadline, args.max_ticks)
+    except (OSError, ValueError):
+        return {"started": False, "alreadyRunning": False, "reason": "watch_spawn_failed", "pid": None}, 1
+    try:
+        while time.monotonic() < deadline:
+            if path.exists():
+                ack = strict_json(path.read_text(encoding="utf-8"))
+                require(ack.get("token") == token and ack.get("pid") == child.pid, "watch_handshake_invalid")
+                reason = ack.get("reason")
+                require(reason in {"started", "already_running", "inactive", "error"}, "watch_handshake_invalid")
+                return {"started": reason == "started", "alreadyRunning": reason == "already_running",
+                        "reason": reason, "pid": child.pid if reason == "started" else None}, 0 if reason != "error" else 2
+            if child.poll() is not None:
+                return {"started": False, "alreadyRunning": False, "reason": "watch_start_failed", "pid": None}, 1
+            time.sleep(.01)
+        # 仅对自己刚启动、仍有句柄的子进程请求结束；绝不抢别人的实例锁。
+        try:
+            child.terminate()
+            child.wait(timeout=1)
+            reason = "watch_start_timeout"
+        except (OSError, subprocess.TimeoutExpired):
+            reason = "watch_start_unknown"
+        return {"started": False, "alreadyRunning": False, "reason": reason, "pid": None}, 1
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def cmd_watch(args, ws):
+    require(1 <= args.interval <= 60, "watch_interval_invalid")
+    if args.status:
+        require(args.child_token is None and args.child_deadline is None and args.max_ticks is None,
+                "watch_child_arguments_invalid")
+        _, state = watch_state(ws)
+        running, reason = watch_probe(ws)
+        return watch_emit({"running": running, "replyWatch": state, "reason": reason})
+    result, code = detach_watch(ws, args) if args.detach else watch_loop(ws, args)
+    return watch_emit(result, code)
+
+
+def watch_emit(result, code=0):
+    print(notify.canonical(result), flush=True)
+    return code
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument("--workspace")
@@ -432,6 +639,14 @@ def build_parser():
     modes = action.add_mutually_exclusive_group()
     modes.add_argument("--send-only", action="store_true")
     modes.add_argument("--fetch-only", action="store_true")
+    watch = sub.add_parser("watch", allow_abbrev=False)
+    controls = watch.add_mutually_exclusive_group()
+    controls.add_argument("--detach", action="store_true")
+    controls.add_argument("--status", action="store_true")
+    watch.add_argument("--interval", type=int, default=60)
+    watch.add_argument("--max-ticks", type=int, help=argparse.SUPPRESS)
+    watch.add_argument("--child-token", help=argparse.SUPPRESS)
+    watch.add_argument("--child-deadline", type=float, help=argparse.SUPPRESS)
     return parser
 
 
@@ -444,7 +659,7 @@ def cmd_sync(args, ws):
     return ledger.emit(sync(ws, args.send_only, args.fetch_only))
 
 
-COMMANDS = {"doctor": cmd_doctor, "sync": cmd_sync}
+COMMANDS = {"doctor": cmd_doctor, "sync": cmd_sync, "watch": cmd_watch}
 
 
 def entry_mode(args):
@@ -454,17 +669,18 @@ def entry_mode(args):
 def main(argv=None):
     fsutil.utf8_stdio()
     args = build_parser().parse_args(argv)
+    emit = watch_emit if args.cmd == "watch" else ledger.emit
     try:
         ws = ledger.find_workspace(args.workspace)
         # sync 自己只在本地事务期间取得写锁；main 不把网络包进长 gate。
         with ledger.gated(ws, "read"):
             return COMMANDS[args.cmd](args, ws)
     except ledger.VersionGateError as error:
-        return ledger.emit({"error": error.code, "code": error.code}, 2)
+        return emit({"error": error.code, "code": error.code}, 2)
     except LarkError as error:
-        return ledger.emit({"error": str(error)[:500]}, 2)
+        return emit({"error": str(error)[:500]}, 2)
     except (notify.NotifyError, ledger.LedgerError, OSError, UnicodeError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
-        return ledger.emit({"error": "im_local_state_invalid"}, 2)
+        return emit({"error": "im_local_state_invalid"}, 2)
 
 
 if __name__ == "__main__":
