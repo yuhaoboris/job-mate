@@ -5,6 +5,7 @@
 """
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -143,7 +144,8 @@ def append_record(ws, rec, tz):
 
 def fold(records, cfg=None):
     st = {"out": {}, "outByMessage": {}, "in": {}, "chatId": None, "cursor": 0,
-          "commandResults": {}, "lastIncomplete": False, "chatConflicts": [], "incomingRejected": {}}
+          "commandResults": {}, "lastIncomplete": False, "chatConflicts": [], "incomingRejected": {},
+          "plans": {}, "partStates": {}, "changes": {}, "reported": set()}
     for r in records:
         t = r.get("type")
         current = cfg is None or r.get("route") == cfg["route"]
@@ -160,6 +162,14 @@ def fold(records, cfg=None):
             reply = st["in"][r["messageId"]]
             reply.update(state=r["state"], decision=r.get("decision") or reply.get("decision"),
                          note=r.get("note"), stateAt=r["at"])
+        elif t == "reply_plan" and current:
+            st["plans"][r["messageId"]] = r
+        elif t == "reply_part" and current:
+            st["partStates"][(r["messageId"], r["partId"])] = r
+        elif t == "preference_change" and current:
+            st["changes"][(r["operationId"], r["txnId"])] = r
+        elif t == "preference_report" and current:
+            st["reported"].add((r["operationId"], r["txnId"]))
         elif t == "command":
             st["commandResults"][r["messageId"]] = r
         elif t == "cursor" and current:
@@ -198,7 +208,8 @@ def pending_commands(st):
 
 
 def public_reply(r):
-    return {k: r.get(k) for k in ("messageId", "at", "text", "decisionHint", "decisionCandidates", "state", "decision", "note")}
+    return {k: r.get(k) for k in ("messageId", "at", "text", "decisionHint", "decisionCandidates", "state", "decision", "note",
+                              "planRevision", "parts", "preferenceChanges")}
 
 
 def inbox_items(ws):
@@ -463,6 +474,7 @@ def sync_view(ws, cfg):
     last_cursor = max((i for i, r in enumerate(records) if r.get("type") == "cursor" and r.get("route") == cfg["route"]), default=-1)
     if scans["completedAt"].get(key, -1) > last_cursor:
         st["lastIncomplete"] = False
+    project_reply_parts(ws, st)
     return st
 
 
@@ -766,6 +778,11 @@ def cmd_send(args, ws):
         if args.decision in opened:
             text += "\n\n" + CHECK_HINT.format(seq=short_seq(args.decision))
     key = default_key(args.kind, args.decision, args.reply_to, args.run, args.key, text)
+    if args.kind == "clarify" and args.reply_to:
+        st = sync_view(ws, ctx["cfg"])
+        identity = clarification_identity(st, args.reply_to)
+        if identity:
+            key = "clarify:" + args.reply_to + ":q:" + identity
     if not nonempty(key) or (args.reply_to is not None and not nonempty(args.reply_to)):
         raise NotifyError("key/replyTo 不能为空")
     code, out = deliver(ws, ctx, key, text, args.kind, args.decision, args.reply_to)
@@ -784,14 +801,311 @@ def cmd_incoming(args, ws):
     return emit(incoming(ws, context(ws), batch))
 
 
+PREFERENCE_FIELDS = {"targetRoles", "locations", "hardRequirements", "recruiterActivity.maxAgeDays",
+                     *("salary." + key for key in ("currency", "period", "taxBasis", "min", "max", "matchRule")),
+                     *("exclusions." + key for key in ("roleTypes", "employmentTypes", "workSchedules", "keywords"))}
+PART_FINAL = {"applied", "consumed", "rejected"}
+
+
+def change_error(code):
+    raise ledger.VersionGateError(code, code)
+
+
+def profile_bytes(value):
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
+
+
+def value_at(profile, field):
+    value = profile
+    for key in field.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def set_value(profile, field, value):
+    keys = field.split(".")
+    target = profile
+    for key in keys[:-1]:
+        if target.get(key) is None:
+            target[key] = {}
+        if not isinstance(target[key], dict):
+            change_error("im_change_fields_forbidden")
+        target = target[key]
+    target[keys[-1]] = copy.deepcopy(value)
+
+
+def reply_phase(ws, run, skill):
+    with ledger.lock_mutex(ws):
+        lock = ledger.read_lock(ws)
+        if (not lock or lock.get("runId") != run or lock.get("skill") != skill or lock.get("releasing")
+                or lock.get("mode") == "recovery" or ledger.lock_expired(lock, fsutil.now(ledger.recovery_tz(ws)))):
+            change_error("setup_lock_required" if skill == "setup" else "followup_lock_required")
+
+
+def source_reply(st, cfg, message_id):
+    reply = st["in"].get(message_id)
+    if (not reply or reply.get("route") != cfg["route"] or reply.get("senderId") != cfg["ownerId"]
+            or reply.get("senderType") != "user" or reply.get("deleted") is not False
+            or reply.get("chatId") != st["chatId"] or reply.get("state") in ("command", "test")):
+        change_error("im_change_source_invalid")
+    return reply
+
+
+def project_reply_parts(ws, st):
+    pending_txn = None
+    path = ws / ".job-mate-txn.json"
+    if path.exists():
+        try:
+            journal = json.loads(path.read_text(encoding="utf-8"))
+            pending_txn = journal["txnId"]
+        except (ValueError, KeyError, TypeError):
+            raise NotifyError("im_change_journal_invalid") from None
+    for message_id, plan in st["plans"].items():
+        reply = st["in"].get(message_id)
+        if reply is None:
+            change_error("im_change_source_invalid")
+        parts = copy.deepcopy(plan["parts"])
+        for part in parts:
+            state = st["partStates"].get((message_id, part["partId"]))
+            if state and state["revision"] == plan["revision"]:
+                part["state"] = state["state"]
+            audits = [record for record in st["changes"].values() if record["messageId"] == message_id
+                      and part["partId"] in record["partIds"]]
+            if audits:
+                record = audits[-1]
+                part["state"] = "pending" if record["txnId"] == pending_txn else (
+                    "applied" if record["status"] == "applied" else "needs_review")
+        reply["parts"] = parts
+        reply["planRevision"] = plan["revision"]
+        reply["preferenceChanges"] = [dict(record,
+            status="pending" if record["txnId"] == pending_txn else record["status"],
+            reported=(record["operationId"], record["txnId"]) in st["reported"])
+            for record in st["changes"].values() if record["messageId"] == message_id]
+        reply["state"] = "consumed" if all(p["state"] in PART_FINAL for p in parts) else (
+            "ready" if any(p["state"] == "ready" for p in parts) else "received")
+
+
+def clarification_identity(st, message_id):
+    reply = st["in"].get(message_id) or {}
+    scopes = {canonical([p["quote"], sorted(p.get("questionFields", [])), p.get("decision"),
+                         sorted(p.get("dependsOn", []))]) for p in reply.get("parts", [])
+              if p["kind"] == "clarification" and p["state"] not in PART_FINAL}
+    return hashlib.sha256(canonical(sorted(scopes)).encode()).hexdigest() if scopes else None
+
+
+def preference_target(profile, part):
+    target = copy.deepcopy(profile)
+    for field in part["changes"]:
+        set_value(target, field["field"], field["after"])
+    target["updatedAt"] = part["updatedAt"]
+    return profile_bytes(target)
+
+
+def build_reply_plan(ws, ctx, st, message_id, requested):
+    import config_schema
+    reply = source_reply(st, ctx["cfg"], message_id)
+    if not isinstance(requested, dict) or set(requested) != {"revision", "parts"}:
+        change_error("im_change_source_invalid")
+    old = st["plans"].get(message_id)
+    revision = requested["revision"]
+    if type(revision) is not int or revision != (old["revision"] + 1 if old else 1):
+        change_error("im_change_source_invalid")
+    if not isinstance(requested["parts"], list) or not requested["parts"]:
+        change_error("im_change_source_invalid")
+    profile_raw = (ws / "profile.json").read_bytes()
+    profile = json.loads(profile_raw)
+    parts, ids, fields = [], set(), set()
+    old_parts = {p["partId"]: p for p in reply.get("parts", [])}
+    for raw in requested["parts"]:
+        if not isinstance(raw, dict) or set(raw) - {"partId", "kind", "quote", "state", "changes", "decision", "dependsOn", "members", "questionFields"}:
+            change_error("im_change_source_invalid")
+        part = copy.deepcopy(raw)
+        pid, kind = part.get("partId"), part.get("kind")
+        if (not isinstance(pid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", pid) or pid in ids
+                or kind not in {"preference", "decision", "clarification", "rejected"}
+                or not nonempty(part.get("quote")) or part["quote"] not in reply["text"]
+                or part.get("state") not in {"executable", "needs_clarification", "rejected"}):
+            change_error("im_change_source_invalid")
+        ids.add(pid)
+        previous = old_parts.get(pid)
+        if previous and previous["state"] in PART_FINAL:
+            # 已终结分项从原计划继承，不接受更换含义或重新执行。
+            original = next(p for p in old["parts"] if p["partId"] == pid)
+            if any(raw.get(k) != original.get(k) for k in raw):
+                change_error("im_change_source_invalid")
+            parts.append(original)
+            continue
+        dependencies = part.setdefault("dependsOn", [])
+        if not isinstance(dependencies, list) or any(not isinstance(k, str) for k in dependencies):
+            change_error("im_change_source_invalid")
+        if kind == "preference":
+            changes = part.get("changes")
+            if part["state"] != "executable" or not isinstance(changes, list) or not changes:
+                change_error("im_change_source_invalid")
+            for change in changes:
+                if not isinstance(change, dict) or set(change) != {"field", "before", "after"}:
+                    change_error("im_change_fields_forbidden")
+                field = change["field"]
+                if field not in PREFERENCE_FIELDS or field in fields:
+                    change_error("im_change_fields_forbidden")
+                fields.add(field)
+                if value_at(profile, field) != change["before"]:
+                    change_error("im_change_baseline_conflict")
+            if previous and (previous.get("changes") != changes or previous["quote"] != part["quote"]):
+                change_error("im_change_baseline_conflict")
+            part["operationId"] = hashlib.sha256(canonical([ctx["cfg"]["route"], message_id, pid, changes]).encode()).hexdigest()
+            part["beforeHash"] = hashlib.sha256(profile_raw).hexdigest()
+            part["updatedAt"] = ledger.now_iso(ctx["tz"])
+            target = preference_target(profile, part)
+            config_schema.validate("profile.json", target)
+            part["afterHash"] = hashlib.sha256(target).hexdigest()
+            members = part.setdefault("members", [pid])
+            if not isinstance(members, list) or not members or len(set(members)) != len(members) or any(
+                    not isinstance(k, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", k) for k in members):
+                change_error("im_change_source_invalid")
+        elif part.get("changes"):
+            change_error("im_change_fields_forbidden")
+        if kind == "decision" and (part.get("decision") not in inbox_items(ws)):
+            change_error("im_change_source_invalid")
+        if kind == "clarification":
+            if part["state"] != "needs_clarification":
+                change_error("im_change_source_invalid")
+            qfields = part.setdefault("questionFields", [])
+            if not isinstance(qfields, list) or any(f not in PREFERENCE_FIELDS for f in qfields):
+                change_error("im_change_fields_forbidden")
+        parts.append(part)
+    if set(old_parts) - ids or any(dep not in ids or dep == p["partId"] for p in parts for dep in p.get("dependsOn", [])):
+        change_error("im_change_source_invalid")
+    salary_groups = [p for p in parts if any(c["field"].startswith("salary.") for c in p.get("changes", []))]
+    if len(salary_groups) > 1:
+        change_error("im_change_fields_forbidden")
+    return {"type": "reply_plan", "planVersion": 1, "route": ctx["cfg"]["route"], "messageId": message_id,
+            "revision": revision, "parts": parts, "sourceDigest": hashlib.sha256(canonical(reply["payload"]).encode()).hexdigest()}
+
+
+def process_reply_parts(args, ws, ctx):
+    reply_phase(ws, args.run, "followup")
+    with im_mutex(ws):
+        st = sync_view(ws, ctx["cfg"])
+        reply = source_reply(st, ctx["cfg"], args.message)
+        if args.plan is not None:
+            if args.part is not None:
+                change_error("im_change_source_invalid")
+            record = build_reply_plan(ws, ctx, st, args.message, json.loads(args.plan))
+            append_record(ws, record, ctx["tz"])
+            scan_crash("im_after_plan")
+            return emit({"ok": True, "plan": record,
+                         "targets": {p["partId"]: json.loads(preference_target(ledger.load_profile(ws), p))
+                                     for p in record["parts"] if p["kind"] == "preference"}})
+        if args.reported is not None:
+            changes = [r for r in reply.get("preferenceChanges", []) if r["operationId"] == args.reported]
+            if not changes or any(r["status"] == "pending" for r in changes):
+                change_error("im_change_source_invalid")
+            for record in changes:
+                if (record["operationId"], record["txnId"]) not in st["reported"]:
+                    append_record(ws, {"type": "preference_report", "route": ctx["cfg"]["route"],
+                        "messageId": args.message, "operationId": record["operationId"], "txnId": record["txnId"]}, ctx["tz"])
+            return emit({"ok": True})
+        part = next((p for p in reply.get("parts", []) if p["partId"] == args.part), None)
+        if not part or part["kind"] == "preference" or args.state not in {"ready", "consumed", "clarifying", "ignored"}:
+            change_error("im_change_source_invalid")
+        if any(p["state"] not in PART_FINAL for p in reply["parts"] if p["partId"] in part.get("dependsOn", [])):
+            change_error("im_change_baseline_conflict")
+        if part["state"] in PART_FINAL:
+            return emit({"ok": True, "duplicate": True})
+        state = "rejected" if args.state == "ignored" else args.state
+        if part["kind"] == "clarification" and state != "clarifying":
+            change_error("im_change_source_invalid")
+        append_record(ws, {"type": "reply_part", "route": ctx["cfg"]["route"], "messageId": args.message,
+                          "partId": args.part, "revision": reply["planRevision"], "state": state}, ctx["tz"])
+    return emit({"ok": True, "partId": args.part, "state": state})
+
+
+def im_commit_plan(ws, message_id, part_id, staged):
+    ctx = context(ws)
+    st = sync_view(ws, ctx["cfg"])
+    source = source_reply(st, ctx["cfg"], message_id)
+    plan = st["plans"].get(message_id)
+    part = next((p for p in (plan or {}).get("parts", []) if p["partId"] == part_id), None)
+    if (plan is None or part is None or part["kind"] != "preference" or part["state"] != "executable"
+            or plan["route"] != ctx["cfg"]["route"]
+            or plan["sourceDigest"] != hashlib.sha256(canonical(source["payload"]).encode()).hexdigest()):
+        change_error("im_change_source_invalid")
+    audits = [r for r in source.get("preferenceChanges", []) if r["operationId"] == part["operationId"]]
+    if audits:
+        audit = audits[-1]
+        if audit["status"] == "applied":
+            return None, audit
+        change_error("im_change_source_invalid")
+    if set(staged) != {"profile.json"}:
+        change_error("im_change_fields_forbidden")
+    raw = (ws / "profile.json").read_bytes()
+    if hashlib.sha256(raw).hexdigest() != part["beforeHash"]:
+        change_error("im_change_baseline_conflict")
+    target = preference_target(json.loads(raw), part)
+    if hashlib.sha256(target).hexdigest() != part["afterHash"] or staged["profile.json"] != target:
+        change_error("im_change_fields_forbidden")
+    return {"operationId": part["operationId"], "messageId": message_id, "partIds": [part_id],
+            "revision": plan["revision"], "route": plan["route"], "sourceDigest": plan["sourceDigest"],
+            "beforeHash": part["beforeHash"], "afterHash": part["afterHash"]}, None
+
+
+def validate_im_metadata(ws, meta):
+    keys = {"operationId", "messageId", "partIds", "revision", "route", "sourceDigest", "beforeHash", "afterHash"}
+    if (not isinstance(meta, dict) or set(meta) != keys or type(meta.get("revision")) is not int
+            or not nonempty(meta.get("messageId")) or not isinstance(meta.get("partIds"), list)
+            or len(meta["partIds"]) != 1 or not all(isinstance(meta.get(k), str) and re.fullmatch(r"[0-9a-f]{64}", meta[k])
+                for k in ("operationId", "route", "sourceDigest", "beforeHash", "afterHash"))):
+        change_error("im_change_source_invalid")
+    st = load_state(ws)
+    plan = st["plans"].get(meta["messageId"])
+    part = next((p for p in (plan or {}).get("parts", []) if p["partId"] == meta["partIds"][0]), None)
+    source = st["in"].get(meta["messageId"])
+    if (plan is None or part is None or part.get("kind") != "preference" or plan["revision"] != meta["revision"]
+            or plan["route"] != meta["route"] or not source or source.get("route") != meta["route"]
+            or hashlib.sha256(canonical(source["payload"]).encode()).hexdigest() != meta["sourceDigest"]
+            or any(part.get(k) != meta[k] for k in ("operationId", "beforeHash", "afterHash"))
+            or any(c["field"] not in PREFERENCE_FIELDS for c in part["changes"])):
+        change_error("im_change_source_invalid")
+    return part
+
+
+def im_audit(ws, meta, txn_id, backup, status):
+    part = validate_im_metadata(ws, meta)
+    st = load_state(ws)
+    previous = st["changes"].get((meta["operationId"], txn_id))
+    if previous and previous["status"] == status:
+        return previous
+    record = {"type": "preference_change", **meta, "fields": part["changes"], "members": part["members"],
+              "txnId": txn_id, "backup": backup, "effectiveAt": ledger.now_iso(ledger.recovery_tz(ws)), "status": status}
+    with im_mutex(ws):
+        append_record(ws, record, ledger.recovery_tz(ws))
+    return record
+
+
+def finish_im_part(ws, meta):
+    validate_im_metadata(ws, meta)
+    st = load_state(ws)
+    record = {"type": "reply_part", "route": meta["route"], "messageId": meta["messageId"],
+              "partId": meta["partIds"][0], "revision": meta["revision"], "state": "applied"}
+    prior = st["partStates"].get((record["messageId"], record["partId"]))
+    if prior is None or any(prior.get(k) != v for k, v in record.items()):
+        with im_mutex(ws):
+            append_record(ws, record, ledger.recovery_tz(ws))
+
+
 def cmd_replies(args, ws):
-    st = load_state(ws, context(ws)["cfg"])
+    st = sync_view(ws, context(ws)["cfg"])
     return emit({"replies": [public_reply(r) for r in st["in"].values() if not args.state or r["state"] == args.state],
                  "openItems": open_items(ws)})
 
 
 def cmd_reply_state(args, ws):
     ctx = context(ws)
+    if args.plan is not None or args.part is not None or args.reported is not None:
+        return process_reply_parts(args, ws, ctx)
     with im_mutex(ws):
         st = sync_view(ws, ctx["cfg"])
         r = st["in"].get(args.message)
@@ -836,7 +1150,7 @@ def reply_watch(ws, ctx, now):
         if kind in ("decision", "todo") and decision:
             key = "decision:" + decision
         elif kind == "clarify" and out.get("replyTo"):
-            key = "clarify:" + out["replyTo"]
+            key = out["key"] if ":q:" in out["key"] else "clarify:" + out["replyTo"]
         elif kind == "done" and decision and out.get("text", "").endswith(
                 "\n\n" + CHECK_HINT.format(seq=short_seq(decision))):
             key = "result:" + decision + ":" + text_digest(result_body(out["text"], decision))
@@ -858,6 +1172,8 @@ def reply_watch(ws, ctx, now):
         decision = group["decision"]
         if group["kind"] == "clarify":
             original = st["in"].get(entries[0]["replyTo"])
+            if ":q:" in key and key.rsplit(":q:", 1)[1] != clarification_identity(st, entries[0]["replyTo"]):
+                continue
             if original is None or original["state"] in ("consumed", "ignored", "test", "command"):
                 continue
             linked = {original.get("decision"), original.get("decisionHint")} - {None}
@@ -945,7 +1261,12 @@ def build_parser():
     replies.add_argument("--state", choices=sorted(REPLY_STATES | {"received", "command", "test"}))
     state = sub.add_parser("reply-state")
     state.add_argument("--message", required=True)
-    state.add_argument("--state", required=True, choices=sorted(REPLY_STATES))
+    state_modes = state.add_mutually_exclusive_group(required=True)
+    state_modes.add_argument("--state", choices=sorted(REPLY_STATES))
+    state_modes.add_argument("--plan")
+    state_modes.add_argument("--reported")
+    state.add_argument("--run")
+    state.add_argument("--part")
     state.add_argument("--decision")
     state.add_argument("--note")
     sub.add_parser("test", help="只排队测试通知")
