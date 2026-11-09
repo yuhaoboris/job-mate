@@ -906,6 +906,15 @@ def preference_target(profile, part):
     return profile_bytes(target)
 
 
+def require_salary_group(parts, previous_parts=None):
+    groups = [p for p in parts if any(c["field"].startswith("salary.") for c in p.get("changes", []))]
+    unresolved = any(p["kind"] == "clarification"
+        and (previous_parts or {}).get(p["partId"], p)["state"] not in PART_FINAL
+        and any(field.startswith("salary.") for field in p.get("questionFields", [])) for p in parts)
+    if len(groups) > 1 or (groups and unresolved):
+        change_error("im_change_fields_forbidden")
+
+
 def build_reply_plan(ws, ctx, st, message_id, requested):
     import config_schema
     reply = source_reply(st, ctx["cfg"], message_id)
@@ -981,12 +990,7 @@ def build_reply_plan(ws, ctx, st, message_id, requested):
         parts.append(part)
     if set(old_parts) - ids or any(dep not in ids or dep == p["partId"] for p in parts for dep in p.get("dependsOn", [])):
         change_error("im_change_source_invalid")
-    salary_groups = [p for p in parts if any(c["field"].startswith("salary.") for c in p.get("changes", []))]
-    salary_unresolved = any(p["kind"] == "clarification"
-        and old_parts.get(p["partId"], p)["state"] not in PART_FINAL
-        and any(field.startswith("salary.") for field in p.get("questionFields", [])) for p in parts)
-    if len(salary_groups) > 1 or (salary_groups and salary_unresolved):
-        change_error("im_change_fields_forbidden")
+    require_salary_group(parts, old_parts)
     return {"type": "reply_plan", "planVersion": 1, "route": ctx["cfg"]["route"], "messageId": message_id,
             "revision": revision, "parts": parts, "sourceDigest": hashlib.sha256(canonical(reply["payload"]).encode()).hexdigest()}
 
@@ -1062,6 +1066,7 @@ def im_commit_plan(ws, message_id, part_id, staged):
             return None, audit
         change_error("im_change_source_invalid")
     require_part_dependencies(source, part)
+    require_salary_group(source["parts"])
     if set(staged) != {"profile.json"}:
         change_error("im_change_fields_forbidden")
     raw = (ws / "profile.json").read_bytes()

@@ -200,6 +200,24 @@ class ImPreferencesTest(unittest.TestCase):
         self.assertFalse((self.f.ws / "backups").exists())
         self.assertFalse((self.f.ws / ".job-mate-txn.json").exists())
 
+    def test_f3_commit_rechecks_salary_questions_in_legacy_persisted_plan(self):
+        self.prepare({"salary.min": 20000})
+        # 旧版可持久化的计划：既有冻结提交组旁还有未决 salary.max。
+        # 只注入合成持久数据；真实 setup/commit、文件锁和备份路径不替换。
+        path = self.f.ws / "ledger/im.jsonl"
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        plan = next(r for r in reversed(records) if r["type"] == "reply_plan")
+        plan["parts"].append({"partId": "salary-question", "kind": "clarification", "state": "needs_clarification",
+                              "quote": "薪资按新范围", "questionFields": ["salary.max"], "dependsOn": []})
+        path.write_text("".join(N.canonical(r) + "\n" for r in records), encoding="utf-8")
+        self.setup_phase()
+        before = (self.f.ws / "profile.json").read_bytes()
+        code, result = self.commit()
+        self.assertEqual((code, result.get("code")), (2, "im_change_fields_forbidden"), result)
+        self.assertEqual((self.f.ws / "profile.json").read_bytes(), before)
+        self.assertFalse((self.f.ws / "backups").exists())
+        self.assertFalse((self.f.ws / ".job-mate-txn.json").exists())
+
     def test_c01_c03_single_message_commits_with_backup_and_audit(self):
         before = (self.f.ws / "profile.json").read_bytes()
         self.prepare({"targetRoles": ["后端开发"], "locations": ["上海"], "hardRequirements": ["合成行业"],
