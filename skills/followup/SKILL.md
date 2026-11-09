@@ -1,6 +1,6 @@
 ---
 name: followup
-description: 首次盘点已有会话并巡检HR消息，按授权代答、发简历和主动跟进；承诺与未知事项交本人决定。用于看看HR回复、处理消息、回复HR、跟进、重新盘点、IM答复或定时巡检。不做首次联系或求职设置，不自行提出或答应面试时间。
+description: 首次盘点已有会话并巡检HR消息，按授权代答、发简历和主动跟进；承诺与未知事项交本人决定。用于看看HR回复、处理消息、回复HR、跟进、重新盘点、IM答复或定时巡检。不做首次联系或求职设置，不自行提出或答应面试时间。还没有求职工作区时先用 setup。
 ---
 
 # followup：处理消息、本人决定与主动跟进
@@ -18,7 +18,7 @@ ledger / notify / im_lark.py 分别为 `python3 <本文件上两级目录>/scrip
 
 ## 1. 准备与授权
 
-1. 定位并告知工作区，`ledger validate`；读取 profile.json、candidate.md、qa.yaml、resumes/index.yaml、rules.md、stoplist.yaml。资料或校验有误不外发，不编造缺失事实。
+1. 没有工作区：本人在场就说明先用 setup 建好（约十分钟，不在平台发消息）；无人值守按[无人值守运行](../../shared/ask.md#无人值守运行)只汇报。定位并告知工作区，`ledger validate`；读取 profile.json、candidate.md、qa.yaml、resumes/index.yaml、rules.md、stoplist.yaml。资料或校验有误不外发，不编造缺失事实。
 2. 先判断本轮禁发/全局暂停，再登记明确的动作、目标、数量 restriction；最后才判断长期权限、额外 grant 或本人决定。grant 不替代 restriction，不扩大其范围，不写回 profile。本人说“本轮只回复甲一条”，就登记 reply / 甲 / 1；ack、普通回复、已批准步骤和新增 grant 共用该上限。
 3. **加锁前能力自检**按执行契约检查工作区、脚本、profile.browser、可见浏览器与结果证据。配置非法/偏好不支持时不操作平台、不回退；不能读写或运行脚本时不写记录。缺证据用禁发锁，平台受阻仍可本地对账。
 4. `ledger lock acquire --skill followup`，必要时附 --no-send、--restrict、--grant；记runId。被占用就结束，不自行释放其他实例；runtime另保证旧实例及后代停止。持锁后先按[释放与对账契约](../../shared/ledger.md#释放与对账契约)对 reconciled、完整 threads.unresolved 与 inbox 对账，空 reconciled 也检查；保留原决定 ID。

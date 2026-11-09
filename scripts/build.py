@@ -193,7 +193,7 @@ def rewrite_markdown(text, src, dest, skill, skill_dir, pending):
 
 
 def rewrite_skill_md(text, skill):
-    """SKILL.md 专有的改写：技能名、描述中提到的其他技能名、脚本位置的说法。"""
+    """SKILL.md 专有的改写：技能名、描述及正文中的技能引用、脚本位置的说法。"""
     lines = text.split("\n")
     if lines[0] != "---":
         raise BuildError(f"skills/{skill}/SKILL.md 缺少 frontmatter")
@@ -204,7 +204,10 @@ def rewrite_skill_md(text, skill):
         elif lines[i].startswith("description:"):
             for other in SKILL_NAMES:
                 lines[i] = re.sub(rf"用 {other}(?![-\w])", f"用 {PREFIX}{other}", lines[i])
-    text = "\n".join(lines)
+    body = "\n".join(lines[end + 1:])
+    for other in SKILL_NAMES:
+        body = re.sub(rf"用 {other}(?![-\w])", f"用 {PREFIX}{other}", body)
+    text = "\n".join(lines[:end + 1]) + "\n" + body
     text = text.replace("<本文件上两级目录>/scripts/", "<本文件所在目录>/scripts/")
     text = text.replace(".../scripts/", "<本文件所在目录>/scripts/")
     return text
