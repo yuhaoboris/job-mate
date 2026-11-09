@@ -442,6 +442,29 @@ def stoplist_ops(ws, filename):
 
 def cmd_commit(args):
     ws = ledger.find_workspace(args.workspace)
+    if args.im_reply is not None or args.im_part is not None:
+        if not notify.nonempty(args.im_reply) or not notify.nonempty(args.im_part):
+            notify.change_error("im_change_source_invalid")
+    if args.im_reply is not None:
+        if args.recover or args.abandon or args.stoplist_ops or args.confirm_mixed_config:
+            notify.change_error("im_change_fields_forbidden")
+        notify.reply_phase(ws, args.run, "setup")
+        config_txn.refuse_pending(ws)
+        try:
+            staged = config_txn.stage_files(ws, args.staging)
+        except (ValueError, OSError, ledger.LedgerError):
+            notify.change_error("im_change_fields_forbidden")
+        try:
+            meta, duplicate = notify.im_commit_plan(ws, args.im_reply, args.im_part, staged)
+        except (notify.NotifyError, KeyError, TypeError, ValueError):
+            notify.change_error("im_change_source_invalid")
+        if duplicate:
+            notify.finish_im_part(ws, {key: duplicate[key] for key in (
+                "operationId", "messageId", "partIds", "revision", "route", "sourceDigest", "beforeHash", "afterHash")})
+            return emit({"committed": True, "duplicate": True, "txnId": duplicate["txnId"], "backup": duplicate["backup"]})
+        result = config_txn.commit(ws, staged, args.run, do_backup, im_change=meta)
+        notify.finish_im_part(ws, meta)
+        return emit(result)
     if args.recover:
         if args.stoplist_ops or args.staging or args.abandon != args.confirm_mixed_config:
             raise WorkspaceError("recover 不接收暂存/操作；放弃须同时 --abandon --confirm-mixed-config")
@@ -694,6 +717,8 @@ def build_parser():
     source = commit.add_mutually_exclusive_group(required=True)
     source.add_argument("--staging")
     source.add_argument("--recover", action="store_true")
+    commit.add_argument("--im-reply")
+    commit.add_argument("--im-part")
     commit.add_argument("--stoplist-ops", help="本人确认的停止名单 add/remove JSON 操作文件")
     commit.add_argument("--abandon", action="store_true")
     commit.add_argument("--confirm-mixed-config", action="store_true")
@@ -751,13 +776,15 @@ def main(argv=None):
         ws = ledger.find_workspace(path)
         if args.cmd in ("commit", "restore", "backup"):
             config_txn.guard_root(ws)
+        if args.cmd == "commit" and (args.im_reply or args.im_part):
+            notify.reply_phase(ws, args.run, "setup")
         with ledger.gated(ws, entry_mode(args)):
             if args.cmd in ("commit", "restore", "backup"):
                 with fsutil.locked(config_txn.safe(ws, "ledger/config.lock")):
                     ledger.version_gate(ws, entry_mode(args))
                     return COMMANDS[args.cmd](args)
             return COMMANDS[args.cmd](args)
-    except (WorkspaceError, ledger.LedgerError, ValueError, OSError) as e:
+    except (WorkspaceError, ledger.LedgerError, notify.NotifyError, ValueError, OSError) as e:
         return emit(ledger.error_result(e), getattr(e, "exit_code", 2))
 
 

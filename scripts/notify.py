@@ -1016,8 +1016,19 @@ def process_reply_parts(args, ws, ctx):
         if part["state"] in PART_FINAL:
             return emit({"ok": True, "duplicate": True})
         state = "rejected" if args.state == "ignored" else args.state
-        if part["kind"] == "clarification" and state != "clarifying":
-            change_error("im_change_source_invalid")
+        if part["kind"] == "clarification":
+            questions = [o for o in st["out"].values() if o.get("kind") == "clarify"
+                         and o.get("replyTo") == args.message and o.get("route") == ctx["cfg"]["route"]
+                         and o["status"] == "sent"]
+            if state == "clarifying" and not questions:
+                change_error("im_change_source_invalid")
+            if state == "consumed":
+                mids = {o.get("messageId") for o in questions}
+                if not any(r.get("parentId") in mids and r["state"] == "consumed"
+                           and r.get("senderId") == ctx["cfg"]["ownerId"] for r in st["in"].values()):
+                    change_error("im_change_source_invalid")
+            elif state != "clarifying":
+                change_error("im_change_source_invalid")
         append_record(ws, {"type": "reply_part", "route": ctx["cfg"]["route"], "messageId": args.message,
                           "partId": args.part, "revision": reply["planRevision"], "state": state}, ctx["tz"])
     return emit({"ok": True, "partId": args.part, "state": state})

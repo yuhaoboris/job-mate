@@ -219,7 +219,7 @@ def load_journal(ws):
     try:
         raw = read_file(ws, JOURNAL)
         obj = schema.json_value(raw)
-        schema.object_fields(obj, {"txnId", "state", "runId", "startedAt", "backupDir", "manifestSha", "files"},
+        schema.object_fields(obj, {"txnId", "state", "runId", "startedAt", "backupDir", "manifestSha", "files", "imChange"},
                              {"txnId", "state", "runId", "startedAt", "backupDir", "manifestSha", "files"})
         if (not isinstance(obj["txnId"], str) or not re.fullmatch(r"[0-9a-f]{32}", obj["txnId"])
                 or obj["state"] not in ("committing", "rolling_back") or not schema.text(obj["runId"])
@@ -249,9 +249,33 @@ def load_journal(ws):
             path = safe(ws, item["path"])
             if path.exists() and not path.is_file():
                 fail("journal_corrupt", "目标不是普通文件")
+        if "imChange" in obj:
+            im_metadata(ws, obj["imChange"])
+            profile = next(item for item in obj["files"] if item["path"] == "profile.json")
+            if (profile["backupSha"] != obj["imChange"]["beforeHash"]
+                    or profile["stagedSha"] != obj["imChange"]["afterHash"]):
+                fail("journal_corrupt", "IM 事务摘要与配置日志不一致")
         return obj, raw
     except (OSError, ValueError, ledger.LedgerError) as error:
         raise TransactionError("journal_corrupt", "事务日志校验失败，保留证据：" + str(error)) from error
+
+
+def im_metadata(ws, meta):
+    import notify
+    try:
+        return notify.validate_im_metadata(ws, meta)
+    except (notify.NotifyError, ledger.LedgerError, ValueError, KeyError, TypeError) as error:
+        raise TransactionError("journal_corrupt", "IM事务关联或原计划损坏") from error
+
+
+def audit_im_transaction(ws, obj, status):
+    if "imChange" not in obj:
+        return
+    import notify
+    try:
+        notify.im_audit(ws, obj["imChange"], obj["txnId"], obj["backupDir"].split("/")[1], status)
+    except (notify.NotifyError, ledger.LedgerError, ValueError, KeyError, TypeError) as error:
+        raise TransactionError("im_audit_invalid", "IM事务审计失败，保留日志") from error
 
 
 def recover(ws, abandon=False, preserve_version=True, run=None):
@@ -269,6 +293,7 @@ def recover(ws, abandon=False, preserve_version=True, run=None):
                                                    "sha256": sha(current[item["path"]]) if item["path"] in current else None} for item in obj["files"]]})
         if run is not None:
             live_setup(ws, run, "recover")
+        audit_im_transaction(ws, obj, "needs_review")
         safe(ws, JOURNAL).unlink()
         return {"abandoned": True, "txnId": obj["txnId"], "savedAs": name, "warning": "当前配置可能新旧混合",
                 "next": "请本人选择恢复另一份完整备份或重新设置；对照已保存状态核对配置"}
@@ -309,14 +334,24 @@ def recover(ws, abandon=False, preserve_version=True, run=None):
         fail("rollback_incomplete", "回滚后逐文件核验未通过，保留日志")
     if run is not None:
         live_setup(ws, run, "recover")
+    audit_im_transaction(ws, obj, "rolled_back")
+    crash("im_after_rollback_audit")
     safe(ws, JOURNAL).unlink()
     return {"recovered": True, "txnId": obj["txnId"], "verified": verified}
 
 
-def commit(ws, staged, run, backup_fn, mode="write", backup_label="commit"):
+def commit(ws, staged, run, backup_fn, mode="write", backup_label="commit", im_change=None):
     refuse_pending(ws)
     live_setup(ws, run, mode)
     validate(staged)
+    if im_change is not None:
+        if mode != "write" or set(staged) != {"profile.json"}:
+            fail("im_change_fields_forbidden", "IM事务仅接受普通setup阶段的profile")
+        im_metadata(ws, im_change)
+        if sha(read_file(ws, "profile.json")) != im_change["beforeHash"]:
+            fail("im_change_baseline_conflict", "配置基线已变化")
+        if sha(staged["profile.json"]) != im_change["afterHash"]:
+            fail("im_change_fields_forbidden", "暂存与计划不一致")
     before = capture(ws)
     version = schema.json_value(before[ledger.MARKER])["suiteVersion"]
     data = dict(staged)
@@ -336,6 +371,8 @@ def commit(ws, staged, run, backup_fn, mode="write", backup_label="commit"):
            "backupDir": "backups/" + backup, "manifestSha": manifest_sha,
            "files": [{"path": name, "existed": name in before, "backupSha": sha(before[name]) if name in before else None,
                       "stagedSha": sha(data.get(name, before.get(name))) if data.get(name, before.get(name)) is not None else None, "done": False} for name in ordered]}
+    if im_change is not None:
+        obj["imChange"] = im_change
     save_journal(ws, obj)
     crash("after_journal")
     changed = 0
@@ -357,7 +394,12 @@ def commit(ws, staged, run, backup_fn, mode="write", backup_label="commit"):
         if any((safe(ws, item["path"]).exists() if item["stagedSha"] is None else
                 not safe(ws, item["path"]).is_file() or sha(safe(ws, item["path"]).read_bytes()) != item["stagedSha"]) for item in obj["files"]):
             fail("commit_incomplete", "提交后摘要核验失败")
+        audit_im_transaction(ws, obj, "applied")
+        if im_change is not None:
+            crash("im_after_applied_audit")
         safe(ws, JOURNAL).unlink()
+        if im_change is not None:
+            crash("im_after_journal_delete")
     except (OSError, ValueError, ledger.LedgerError) as error:
         try:
             rolled_back = recover(ws, preserve_version=False)
