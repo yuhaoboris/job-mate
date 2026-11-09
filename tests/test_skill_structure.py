@@ -1,4 +1,13 @@
-"""核对文档引用与真实解析器 / 合成 threads 输出，不锁定中文措辞。"""
+"""核对操作示例与真实解析器 / 合成 threads 输出，不锁定中文措辞。
+
+严格命令语法范围：skills/*/SKILL.md + shared/**/*.md（随技能加载的操作示例）。
+检查命令树及已写出的参数；沿用叶子命令简写约定，不声称必需运行期取值齐全。
+不扫描根目录、docs/、assets/ 或平台事实文档；它们由既有链接/接口/工具守卫检查。
+docs/design.md 是架构及接口说明，包含并非完整调用的命令前缀，不属于可运行操作示例；
+它自然不在上述目录范围内，没有逐文件豁免。
+命令后须有明确边界：代码跨度、正文标点或行尾；说明优先用反引号与命令分开。
+代码跨度内完整解析，不能用中文或标点截断参数；合法中文选项值/位置值照常消费。
+"""
 
 import argparse
 import contextlib
@@ -61,8 +70,38 @@ def subcommands(parser):
                 if isinstance(action, argparse._SubParsersAction))
 
 
-def command_tokens(source):
-    """保留引号/占位符内的空白与中文；自然文边界不吞掉未闭合结构。"""
+def command_fragment(text, match):
+    """显式区分代码 span/围栏与正文；未闭合 span 不冒充完整命令。"""
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    source = text[match.end():].split("\n", 1)[0]
+    fence = None
+    for line in text[:line_start].splitlines():
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            run, tail = marker.groups()
+            if fence is None:
+                fence = run
+            elif run[0] == fence[0] and len(run) >= len(fence) and not tail.strip():
+                fence = None
+    if fence is not None:
+        return source, True
+    delimiter = None
+    for run in re.finditer(r"(?<!\\)`+", text[line_start:match.start()]):
+        if delimiter is None:
+            delimiter = run.group()
+        elif run.group() == delimiter:
+            delimiter = None
+    if delimiter is not None:
+        for run in re.finditer(r"`+", source):
+            if run.group() == delimiter:
+                return source[:run.start()], True
+        raise ValueError("unterminated_command_span")
+    return source, False
+
+
+def command_tokens(source, code=False):
+    """选项值/位置参数按语法消费；只有正文中的明确标点可分隔说明。"""
+    boundaries = "\r\n" if code else "`\r\n，。；：、（）→"
     tokens = []
     index = 0
     while index < len(source):
@@ -70,8 +109,10 @@ def command_tokens(source):
         if char in " \t[]":
             index += 1
             continue
-        if char in "`\n，。；：、（）→":
+        if char in boundaries:
             break
+        if code and char == "`":
+            raise ValueError("unsupported_command_token")
         start = index
         protected = char in "\"'<"
         if protected:
@@ -79,7 +120,7 @@ def command_tokens(source):
             index += 1
             value = ""
             while index < len(source) and source[index] != end:
-                if source[index] in "\r\n`":
+                if source[index] in "\r\n" or (not code and source[index] == "`"):
                     raise ValueError("unterminated_token")
                 if source[index] == "\\" and char == '"':
                     index += 1
@@ -93,11 +134,13 @@ def command_tokens(source):
             if char == "<":
                 value = "<" + value + ">"
         else:
-            while index < len(source) and source[index] not in " \t[]`\n，。；：、（）→":
+            while index < len(source) and source[index] not in " \t[]" + boundaries:
+                if code and source[index] == "`":
+                    raise ValueError("unsupported_command_token")
                 if source[index] in "\"'<":
                     # --option=<value> / --option="value with spaces"
                     prefix = source[start:index]
-                    tail = command_tokens(source[index:])
+                    tail = command_tokens(source[index:], code=code)
                     if not tail:
                         raise ValueError("missing_option_value")
                     tokens.append((prefix + tail[0][0], True))
@@ -146,9 +189,6 @@ def validate_command(parser, tokens):
                 else:
                     return "unparsed"
                 continue
-            # 仅非选项的未保护中文可作为自然文边界；选项值已按 nargs 消费。
-            if not protected and re.search(r"[^\x00-\x7f]", token):
-                break
             if pos_index >= len(positional):
                 return "invalid"
             action = positional[pos_index]
@@ -175,18 +215,21 @@ def validate_command(parser, tokens):
         return "valid"
 
 
-def scan_commands(text):
+def scan_commands(text, diagnostics=None):
     parsers = {name: module.build_parser() for name, module in (
         ("ledger", ledger), ("workspace", workspace), ("notify", notify), ("im_lark.py", im_lark))}
     results = {name: [] for name in ("valid", "invalid", "unparsed")}
     for match in COMMAND_RE.finditer(text):
         source = text[match.end():].split("\n", 1)[0]
         try:
-            tokens = command_tokens(source)
+            source, code = command_fragment(text, match)
+            tokens = command_tokens(source, code=code)
             outcome = validate_command(parsers[match.group(1)], tokens) if tokens else "unparsed"
         except ValueError:
             outcome = "unparsed"
         results[outcome].append((match.group(1), source))
+        if diagnostics is not None and outcome != "valid":
+            diagnostics.append((text.count("\n", 0, match.start()) + 1, outcome, match.group(1) + source))
     return results["valid"], results["invalid"], results["unparsed"]
 
 
@@ -195,10 +238,14 @@ class SkillStructureTest(unittest.TestCase):
         files = sorted((ROOT / "skills").glob("*/SKILL.md")) + sorted((ROOT / "shared").rglob("*.md"))
         count = 0
         for path in files:
-            valid, invalid, unparsed = scan_commands(path.read_text(encoding="utf-8"))
-            with self.subTest(path=path.relative_to(ROOT).as_posix()):
-                self.assertEqual(invalid, [])
-                self.assertEqual(unparsed, [])
+            relative = path.relative_to(ROOT).as_posix()
+            diagnostics = []
+            valid, invalid, unparsed = scan_commands(path.read_text(encoding="utf-8"), diagnostics)
+            details = "\n".join(f"{relative}:{line}: {kind}: {source[:120]}" for line, kind, source in diagnostics)
+            hint = details + "\n若后文是说明，请补反引号或其他明确边界；若在代码跨度内，请修正参数或闭合反引号。"
+            with self.subTest(path=relative):
+                self.assertEqual(invalid, [], hint)
+                self.assertEqual(unparsed, [], hint)
             count += len(valid)
         self.assertGreater(count, 0)
         self.assertEqual(ALLOW, set())
@@ -215,7 +262,7 @@ class SkillStructureTest(unittest.TestCase):
             "workspace --workspace <目录> progress start --mode new", "ledger lock acquire --skill followup",
             "用 ledger threads", "`im_lark.py sync`", "notify replies --state test",
             'ledger --workspace "带 空格的目录" threads', 'notify send --text="中文 空白" --kind todo',
-            "ledger lock acquire --no-send --skill=followup", "用ledger threads，说明", "ledger threads 中文说明",
+            "ledger lock acquire --no-send --skill=followup", "用ledger threads，说明", "`ledger threads` 中文说明",
         )
         for source in negatives:
             with self.subTest(negative=source):
@@ -241,6 +288,79 @@ class SkillStructureTest(unittest.TestCase):
                 self.assertTrue(invalid, (valid, invalid, unparsed))
                 self.assertEqual((valid, unparsed), ([], []))
         self.assertEqual(scan_commands("notify send --text=中文 --kind todo")[1:], ([], []))
+
+    def test_f10_unicode_positionals_match_real_parser_rejections(self):
+        import shlex
+        cases = (
+            ("ledger threads 中文", ledger, "threads 中文"),
+            ("ledger threads 中文 --bogus=abc", ledger, "threads 中文 --bogus=abc"),
+            ("ledger threads --bogus=abc 中文", ledger, "threads --bogus=abc 中文"),
+            ("workspace progress 中文", workspace, "progress 中文"),
+            ("notify send 中文", notify, "send 中文"),
+            ("notify send --kind todo 中文", notify, "send --kind todo 中文"),
+            ("im_lark.py sync 中文", im_lark, "sync 中文"),
+            ('ledger threads "中文"', ledger, 'threads "中文"'),
+            ("ledger threads '中文'", ledger, "threads '中文'"),
+            ("ledger threads <中文>", ledger, "threads <中文>"),
+            ("`ledger threads 中文`", ledger, "threads 中文"),
+            ("```sh\nledger threads 中文\n```", ledger, "threads 中文"),
+            ("ledger threads abc中文", ledger, "threads abc中文"),
+            ("ledger threads --opt 中文", ledger, "threads --opt 中文"),
+            ('ledger threads --bogus="中文"', ledger, 'threads --bogus="中文"'),
+            ("ledger threads --bogus=中文", ledger, "threads --bogus=中文"),
+            ("ledger threads --bogus=abc中文", ledger, "threads --bogus=abc中文"),
+            ("`ledger threads --bogus=中文`", ledger, "threads --bogus=中文"),
+            ("notify send --text=中文 --bogus", notify, "send --text=中文 --bogus"),
+        )
+        for source, module, arguments in cases:
+            with self.subTest(source=source):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as rejected:
+                    module.build_parser().parse_args(shlex.split(arguments))
+                self.assertEqual(rejected.exception.code, 2)
+                valid, invalid, unparsed = scan_commands(source)
+                self.assertTrue(invalid, (valid, invalid, unparsed))
+                self.assertEqual((valid, unparsed), ([], []))
+        for source, module, arguments in (
+                ("notify send --text 中文 --kind todo", notify, "send --text 中文 --kind todo"),
+                ("notify send --text=中文 --kind todo", notify, "send --text=中文 --kind todo"),
+                ("`ledger threads` 中文说明", ledger, "threads"),
+                ("ledger threads，中文说明", ledger, "threads"),
+                ("workspace init 中文目录", workspace, "init 中文目录")):
+            with self.subTest(valid=source):
+                module.build_parser().parse_args(shlex.split(arguments))
+                valid, invalid, unparsed = scan_commands(source)
+                self.assertTrue(valid)
+                self.assertEqual((invalid, unparsed), ([], []))
+
+    def test_f10_code_spans_do_not_treat_punctuation_as_prose(self):
+        for source in ("`ledger threads，中文`", "``ledger threads，中文``", "```sh\nledger threads，中文\n```"):
+            with self.subTest(source=source):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as rejected:
+                    ledger.build_parser().parse_args(["threads，中文"])
+                self.assertEqual(rejected.exception.code, 2)
+                valid, invalid, unparsed = scan_commands(source)
+                self.assertTrue(invalid, (valid, invalid, unparsed))
+                self.assertEqual((valid, unparsed), ([], []))
+        self.assertTrue(scan_commands("`ledger threads")[2])
+        self.assertTrue(scan_commands("ledger threads，中文说明")[0])
+
+    def test_f10_failure_identifies_document_line_and_span_fix(self):
+        from unittest.mock import patch
+        target = ROOT / "shared/accounts.md"
+        original = Path.read_text
+        before = original(target, encoding="utf-8")
+        mutated = before + "\nledger threads 中文\n"
+        line = (before + "\n").count("\n") + 1
+        def read(path, *args, **kwargs):
+            return mutated if path.resolve() == target.resolve() else original(path, *args, **kwargs)
+        output = io.StringIO()
+        with patch.object(Path, "read_text", read):
+            result = unittest.TextTestRunner(stream=output).run(unittest.TestSuite([
+                SkillStructureTest("test_document_commands_match_real_parsers")]))
+        self.assertEqual(result.errors, [], output.getvalue())
+        self.assertEqual(len(result.failures), 1, output.getvalue())
+        self.assertIn(f"shared/accounts.md:{line}", output.getvalue())
+        self.assertIn("补反引号", output.getvalue())
 
     def test_followup_fields_match_real_threads(self):
         import history_fixture

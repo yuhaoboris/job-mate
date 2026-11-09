@@ -81,7 +81,7 @@ followup 交来的明确 IM 筛选差异，只按[IM 条件事务](../../shared/
 
 ### 3.1 开始与接续
 
-- 新建：第 1 屏确认目录 → `workspace --workspace <目录> progress start --mode new`，同时建立骨架、不覆盖文件，账号在第 5 屏补齐。也可先 workspace init <目录> 再 start。
+- 新建：第 1 屏确认目录 → `workspace --workspace <目录> progress start --mode new`，同时建立骨架、不覆盖文件，账号在第 5 屏补齐。也可先 `workspace init <目录>` 再 start。
 - 重新设置：`workspace backup --label resetup` → `workspace progress start --mode resetup --base-backup <备份名>`。
 - 部分重设：`workspace backup --label partial` → 本人选菜单 → `workspace progress start --mode partial --select <阶段或步骤id,…> --base-backup <备份名>`。
 - 继续用 show 的模式、计划、当前项与回答。重来或放弃须本人确认后 progress clear；重来按原模式开始，损坏草稿保留现场。
@@ -116,9 +116,9 @@ setup 的新建屏划分只取脚本 `currentScreen`，重新设置与部分重�
 
 1. 新建汇总全部取值，含自动默认与生成的问答；三个授权用中文分别列出及来源（本人选择 / 默认），以本人在汇总卡上「确认保存」为准。重设列逐文件差异，标默认、跳过、未知。卡片问「确认保存 / 改某一屏」，修改用 progress goto。只在所选步骤补默认并告知；不选的字段、文件和授权保持原样。
 2. **本人确认后** ledger lock acquire --skill setup，不抢锁。按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 检查完整 threads 的 unresolved 与 inbox，即使 acquire 的 `reconciled` 为空也对账；不操作平台。重设再 workspace changed --since <备份名>，有并发变化则重读合并、重新确认。
-3. 先读 [配置事务](../../shared/config-transaction.md)。只把本人确认的变更合并到工作区外暂存目录，未选文件不放暂存；同一 profile 内的未选字段、兄弟授权也保留。workspace commit --staging <目录> --run <runId> 一次提交；停止名单用同事务 --stoplist-ops，不提前写。残留日志先按对话规则说明结果，再持锁 workspace commit --recover --run <runId>，恢复前不新提交。读回后 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 处理 reconciled 与释放失败。失败保留草稿，内部区分主体与释放结果，对本人给一个可执行办法。
+3. 先读 [配置事务](../../shared/config-transaction.md)。只把本人确认的变更合并到工作区外暂存目录，未选文件不放暂存；同一 profile 内的未选字段、兄弟授权也保留。`workspace commit --staging <目录> --run <runId>` 一次提交；停止名单用同事务 --stoplist-ops，不提前写。残留日志先按对话规则说明结果，再持锁 workspace commit --recover --run <runId>，恢复前不新提交。读回后 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 处理 reconciled 与释放失败。失败保留草稿，内部区分主体与释放结果，对本人给一个可执行办法。
 4. 正式配置提交后，才做经本人另行同意的 IM 全链路测试（第 10 节）；不安装后台服务。
-5. workspace progress finish 复用体检、不计草稿存在：退出 0 才删草稿；1 有问题保留草稿，回相关步骤；2 命令或草稿错误先报告。clear 仅用于放弃/重来，不代替完成。再 workspace check 核对数据；配置通过不等于 runtime、真实收发或平台操作通过，不记验收状态。
+5. `workspace progress finish` 复用体检、不计草稿存在：退出 0 才删草稿；1 有问题保留草稿，回相关步骤；2 命令或草稿错误先报告。clear 仅用于放弃/重来，不代替完成。再 `workspace check` 核对数据；配置通过不等于 runtime、真实收发或平台操作通过，不记验收状态。
 
 ## 4. 修改
 
@@ -126,7 +126,7 @@ setup 的新建屏划分只取脚本 `currentScreen`，重新设置与部分重�
 
 ## 5. 体检
 
-workspace check、notify status 只读检查。用白话解释问题与警告，经本人同意按第 4 节修复，不静默补字段或改路由；不以本地状态声称远端连通或真实投递成功。
+workspace check、`notify status` 只读检查。用白话解释问题与警告，经本人同意按第 4 节修复，不静默补字段或改路由；不以本地状态声称远端连通或真实投递成功。
 
 ## 6. 材料与取值规则
 
@@ -188,4 +188,4 @@ salary 合问区间、税前/税后、月薪/年薪及 matchRule；resumes 问�
 - 用白话说明已经设置好什么、工作区绝对路径与尚缺内容；不播报内部操作。
 - 条件、风格、询问顺序、限额；用中文分别列出主动打招呼、有把握的问题直接回答、对方不回时跟进的开关及默认来源。
 - 招呼语及方式、本人要完成的平台设置、缺失事实与待确认事项。
-- IM 排队、实际投递、测试回复、路由冲突分别报告；workspace check 数据结果与 runtime 能力、未验证的真实环境分开，不记验收状态。
+- IM 排队、实际投递、测试回复、路由冲突分别报告；`workspace check` 数据结果与 runtime 能力、未验证的真实环境分开，不记验收状态。
