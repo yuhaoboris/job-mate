@@ -4,6 +4,8 @@ setup 确认写入、恢复备份或发现 `.job-mate-txn.json` 时读本文件�
 
 ## 提交
 
+普通交互由本人确认差异；IM 条件修改以唯一映射的原话一次授权，按[IM 分项协议](im-replies.md)执行，不二次确认，也不扩大普通提交权限。
+
 本人确认差异后，持有效的普通 setup 锁，把完整的待替换文件生成到**工作区外、与工作区互不包含**的暂存目录，然后运行：
 
 ```sh
@@ -14,6 +16,12 @@ python3 <技能目录>/scripts/workspace.py --workspace <工作区> commit --sta
 - 文件是完整内容，不是 JSON patch。JSON 拒绝重复键、未知字段、未知 schemaVersion 和非法值；profile 仅接受 schemaVersion:1 的完整结构，不兼容或迁移其他版本。YAML 使用工作区说明中的逐条键值/内联数组格式，拒绝未知字段；简历索引的 uploaded 用内联映射。字段校验不代替 `progress finish` 的完整工作区体检。
 - 脚本不依赖当前 profile/停止名单可解析：只校验暂存内容，时区读不出用 Asia/Shanghai。暂存字节在校验前读入并冻结，提交期间换掉源文件不会换掉已校验内容。
 - 成功退出0，返回 committed、txnId、backup、files；读回核对再收尾。错误退出2。普通提交成功时才把较低 suiteVersion 升级到脚本版本，不降级，不在备份前改标记。失败回滚保护提交前原字节。
+
+### IM 筛选条件受限入口
+
+`workspace commit --im-reply <messageId> --im-part <partId> --staging <目录> --run <setupRun>` 只在普通 setup 非访谈阶段接受外部暂存的 profile.json。校验当前锁/runId、可信本人原消息与计划版本、白名单、配置基线及完整差异；前置失败退出2，不建备份/日志、不标 applied，不退回直接写文件。
+
+可选 imChange 关联原 im.jsonl 计划。成功配置读回后先写 applied 审计、再删事务日志；日志存在时只报 pending。recover 按原协议回滚并写 rolled_back 后删日志；abandon 记 needs_review。未知/损坏关联拒绝恢复并保留证据；旧日志无此字段照旧恢复。删日志后中断只凭可验证审计补分项，不重复提交。完整输入与审计查询见[IM 条件事务](im-replies.md)。
 
 ### 同事务停止名单操作
 

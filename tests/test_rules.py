@@ -182,7 +182,10 @@ class ExecutionRulesTest(unittest.TestCase):
         self.assertEqual(headings, list(sections))
         for heading, terms in sections.items():
             section = self.execution.split("## " + heading + "\n", 1)[1].split("\n## ", 1)[0]
-            self.assert_terms(section, terms)
+            for term in terms:
+                target = ((ROOT / "shared/notify.md").read_text(encoding="utf-8").split("## 发送", 1)[1].split("## 同步 IM", 1)[0]
+                          if heading.startswith("7.") and term == "YYYY-MM-DD" else section)
+                self.assertIn(term, target)
 
     def test_browser_is_thin_generic_entry(self):
         content = CORE_RULES[1].read_text(encoding="utf-8")
@@ -339,9 +342,12 @@ class ExecutionRulesTest(unittest.TestCase):
                                  "handoff无回执不重投", "没有IM能力", "不另找通道", "incomingRejected",
                                  "ledger_unreadable", "sync确认sent后才标clarifying"))
         protocol = (ROOT / "shared/notify.md").read_text(encoding="utf-8")
-        self.assert_terms(protocol, ("原 idempotencyKey", "larkProfile", "readable=false", "IM 未读完",
-                                     "queued、blocked、failed、unknown", "当前 poll 路由"))
-        self.assert_terms(skill, ("按第2节完整同步链", "核心脚本不等待"))
+        for index, term in enumerate(("原 idempotencyKey", "larkProfile", "readable=false", "IM 未读完",
+                                      "queued、blocked、failed、unknown", "当前 poll 路由")):
+            target = (ROOT / "shared/im-replies.md").read_text(encoding="utf-8") if index == 4 else protocol
+            self.assertIn(term, target)
+        self.assertIn("../../shared/notify.md#等待本人回复", skill)
+        self.assertIn("../../shared/im-replies.md", skill)
 
     def test_setup_uses_lark_configuration_and_explicit_im_test(self):
         skill = ((ROOT / "skills/setup/SKILL.md").read_text(encoding="utf-8")
@@ -361,7 +367,9 @@ class ExecutionRulesTest(unittest.TestCase):
                 self.assertIn("shared/im/lark.md" if relative.startswith("skills/") else "im/lark.md", content)
                 self.assertNotRegex(content, r"notify (?:outbox --claim|receipt|incoming)\b")
         followup = (ROOT / "skills/followup/SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("每10分钟运行 `im_lark.py sync`", followup)
+        self.assertIn("../../shared/notify.md#等待本人回复", followup)
+        apply = (ROOT / "skills/apply/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("../../shared/notify.md#等待本人回复", apply)
 
     def test_platform_facts_do_not_reintroduce_tool_instructions(self):
         for path in (ROOT / "platforms/boss").glob("*.md"):

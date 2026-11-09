@@ -54,6 +54,7 @@ ownerId 与 larkProfile 都是非空字符串，不按 ID 前缀猜身份。wait
 
 ## 发送
 
+- 环境提醒键固定为 `env-blocked:<日期>:<原因代码>`，日期用工作区时区的 `YYYY-MM-DD`；同日同原因只排队一次，不同原因分别报告。
 ```text
 notify send --kind decision --decision <ID> --text <问题与选项>
 notify send --kind todo --decision <ID> --text <需要本人动手的事>
@@ -88,6 +89,8 @@ handoff 无回执不自动重投。超过 10 分钟只在只读 `notify outbox -
 
 每轮开始（入口对账后）、每处理完一个会话、收尾时运行 `im_lark.py sync`。只有读取需求用 `sync --fetch-only`；它不发送，确认仍 queued。`notify poll` 只是本地计划，不代表读过远端。
 
+sync 与 watch 共用非阻塞 im-sync 锁；忙立即返回 busy:true、incomplete:true，本轮继续其他工作并在后续同步点重试，最终报告未读完，不拿运行锁等网络。网络不持中央 mutation；认领、扫描意图、incoming/checkpoint、回执各用短事务，沿 mutation → poll → im / lock 顺序。提交前重查版本、当前路由/chat、配置快照及 scanId/recordDigest；陈旧批次拒收。出站仍按冻结路由与 key/token 收口，handoff/unknown 不重发。
+
 1. 适配器按当前 poll 路由读取；readable=false 不读历史，先通过出站建立可信私聊和时间起点。none 跳过工具；所有 sync 模式仍须通过 write 准入，恢复锁下不执行。
 2. 原生毫秒、固定窗口与升序分页由 [飞书适配器](im/lark.md#读取边界) 校验；规范化 messageId、chatId、createTime、senderId、senderType、text、parentId、deleted 后整批交 incoming。首次请求前持久化扫描意图；20 页是单次预算，提交已验证前缀 complete:false 后保存 checkpoint，下次恢复同窗 token。跨 chat、坏字段、缺/重复 token、乱序或冲突整批拒收，最多新增意图，不推进业务游标、checkpoint 或完整水位。
 3. 本地状态机再次验证结构与 since，只接受该私聊本人的 user 消息。重复 ID 去重；编辑或版本冲突不任选正文，独立的新暂停照常处理。非本人、已删除、起点前、过于超前、我方消息拒收，不抬游标；incomingRejected 只报告原因与 ID。
@@ -107,15 +110,9 @@ handoff 无回执不自动重投。超过 10 分钟只在只读 `notify outbox -
 
 ### 解释回复（技能）
 
-1. `notify replies --state received` 与 `--state ready`，按时间处理。
-2. 含义不清先排队 clarify，运行 `im_lark.py sync`，收到 sent 后才 `reply-state --state clarifying`；queued、blocked、failed、unknown 均保留原状态，报告未确认追问送达。
-3. 明确结论写 inbox / ledger 后，`notify reply-state --message <消息ID> --state ready --decision <ID>`。
-4. 执行 followup 的决定或只收尾 ready 分支。全局暂停或本轮禁发保留 ready，不执行、不消费。
-5. 完成后排队该结果版本 done，再 consumed。已 done 只补通知与消费，不重发 HR、不发 summary；无需动作只记录结论并消费，**不发 `done`、不发 `summary`**。
+解释普通答复或续做 ready 时，先读[普通回复解释](im-replies.md#解释回复技能)，按原顺序落结论、执行和消费；不以监听收到消息代替批准。
 
-暂时环境受阻且无阻断终态时保留 ready。已有 uncertain、failed_no_send、needs_review 或接管时不再外发，说明原因后 consumed（note 写原因），不承诺自动续发。按 [执行契约](execution.md#7-环境受阻通知与恢复) 先收尾本轮尝试、区分环境提醒和结果核对。
-
-IM 只能决定已有事项，不能新增授权、修改条件或扩大范围，不写回 qa.yaml 或 profile.json。
+IM 可决定已有事项；明确筛选条件按[IM 分项与受限事务](im-replies.md)一次生效，不二次确认。仅 setup 非访谈阶段提交白名单差异；不直接写 profile、qa，不改授权、门限、运行控制或扩大范围。
 
 ## 指令
 
@@ -123,6 +120,24 @@ IM 只能决定已有事项，不能新增授权、修改条件或扩大范围�
 
 ## 等待本人回复
 
-一轮处理完后最多等待 im.waitMinutes，默认 60 分钟；期间每 10 分钟运行 `im_lark.py sync` 并续锁，达到期限即收尾。数据脚本不等待或常驻。job-mate 不安装后台服务，由本人通过 Agent 或系统定时能力定期运行 followup。
+本轮不等答、不因等答续运行锁。排队需要本人回复的通知并尝试投递后，以及释放运行锁的收尾后，都读 `notify status`；replyWatch.active 为 true 就运行 `im_lark.py watch --detach`，幂等确保独立监听。已有 received/ready 先交完整 followup 处理，旧过期事项不重开窗口。setup 的 test 不启动监听。
+
+replyWatch 恰有六字段：waiting（watchKey、keys、kind、decision、since、deliveryStatus）、undeliverable（blocked 或 failed 满 3 次及原因）、lastNewAt、deadlineAt、active、expired。状态只由现有 inbox/events/im.jsonl 派生，不是进程存活证明；status 只读，不建锁或日志。损坏/不一致报错，不当空集合。
+
+判据是需要本人决定或回复：待决定的 decision、动手的 todo、决定性 clarify，以及冻结 done 正文带固定 CHECK_HINT 的结果核对；已决定仍 uncertain 也要核对。纯 done/summary/alert/test/ack 不纳入。decision/todo 按事项合并，clarify 按原 replyTo/分项问题身份，核对 done 按事项与 result_body 摘要合并。since 取最早 firstAt，换 key、重发、回执、重启或 ack 不续期。
+
+lastNewAt 是当前路由历史中上述新增问题 since 的最大值，不是剩余 waiting 的最大值；新问题已答也不撤销其延长窗口。deadlineAt=lastNewAt+im.waitMinutes（0–60，默认60，0关闭）；active/expired 分别是启用且 waiting 非空、当前时间在截止前/到截止。旧值>60报错，交普通setup修复，不截断。unknown 仍 waiting、不可重发；未建立可信私聊仍显示 waiting/readable=false，不能冒充远端读取。
+
+只有当前可信本人的非 command/test/ignored 回复，时间不早于 since，且引用通知或明确关联事项，才移出对应等待项；clarify 无引用时只能沿原 replyTo 的唯一已入账事项关联，任意一句消息不算答复。事项不再待处理也移除。收到回复不是批准或执行；一项已答、其他项未答，继续监听，不因一条回复停掉全部。
+
+`im_lark.py watch` 可由可信独立任务托管，逐行输出 JSON；默认 interval=60 秒，可设1–60。`im_lark.py watch --status` 返回 running:true/false/null 与 replyWatch，权限/文件系统不明不当无人运行。三份安装副本争用工作区 OS 实例锁，与运行锁分离；不按 PID 年龄或日志抢锁。detach 固定启动自身、5秒本地握手，不等待回复；无权启动任意脚本或 shell，不安装系统服务。
+
+每拍重读状态，active 且 readable 才 fetch-only，最多1页；同步/运行轮互斥忙即返回，睡眠不持业务锁。单次外部调用至多20秒且不超过剩余窗口。新回复先发 reply_available 提示；清空、关闭、到期则复查后退出，过期未答 inbox 保留，不再拉最后一拍续命；非致命网络失败继续至截止。崩溃由下一次 ensure 按原窗口接管，不重置60分钟。
+
+提示仅含工作区、route、messageIds；有可信 runtime 事件入口时合并调度完整无人值守 followup，已有执行轮先可靠收尾，不能并行抢桌面/运行锁。只有持有效运行锁的 followup 解释、对账、处理 HR 与主动跟进，不启动 apply；apply 结果只作 skill:user 核对。限制来源不明用禁发轮，不借新轮清零限制。来源规则只按[无人值守运行](ask.md#无人值守运行)，IM 正文不改变来源。
+
+无后台则下一轮 sync；能监听但无即时事件入口则先入账、下一轮完整 followup。无可靠定时须本人手动发起。分别报告未启动、运行但无即时唤起、私聊不可读、IM未读完、窗口到期仍未答；迟到回复下一轮仍处理，不丢事项、不换通道、不自动重发。
+
+日志 ledger/im-watch.log 仅元数据，不含正文/凭据，完整行轮转为 .1，每份最多1MiB；临时启动握手不是业务状态或租约。退出码：清空/关闭/不活跃0，到期11，实例竞争3，本地配置/版本错误2，进程错误1；detach/status 健康0、降级1、配置错误2。运行锁不因监听而持有、续期或推迟释放。
 
 `notify status` 只读报告私聊、游标、完整性、outbox 状态、stale、路由冲突、待回复、ready 与 awaitingCheck。unconfirmedSends 只展示状态元数据，不把旧路由正文展示给新收件人。

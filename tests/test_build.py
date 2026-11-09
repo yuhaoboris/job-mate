@@ -294,7 +294,7 @@ class BuildTest(unittest.TestCase):
         run_build("--out", str(self.out))
         d = self.out / "job-mate-followup"
         skill = (d / "SKILL.md").read_text(encoding="utf-8")
-        notify_md = (d / "shared" / "notify.md").read_text(encoding="utf-8")
+        notify_md = (d / "shared" / "im-replies.md").read_text(encoding="utf-8")
         # 结论「无需动作」的 ready 收尾：不发 done、不发 summary
         quiet = (d / "shared/decision-exec.md").read_text(encoding="utf-8").split("### 2.3 只收尾 ready", 1)[1].split("## 3.", 1)[0]
         self.assertIn("不发done、不发summary", quiet)
@@ -302,7 +302,7 @@ class BuildTest(unittest.TestCase):
         closing = skill.split("## 10. 等待与收尾汇报", 1)[1]
         self.assertIn("只有本轮实际处理过会话或执行过已决定事项", closing)
         self.assertIn("只补done、消费ready、无需动作不发summary", closing)
-        # shared/notify.md 与技能说的一致
+        # 共用的回复解释与技能说的一致
         self.assertIn("**不发 `done`、不发 `summary`**", notify_md)
         self.assertIn("已 done 只补通知与消费，不重发 HR、不发 summary", notify_md)
 

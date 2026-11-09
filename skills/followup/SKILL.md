@@ -41,7 +41,7 @@ reply 与 nudge 是**独立授权**：
 
 每轮入口对账后、每处理完会话、收尾运行 `im_lark.py sync`，执行[同步IM与读取答复](../../shared/notify.md#同步-im)的完整链，不以本地 poll 代替远端读取。路由、分页、私聊身份、投递与拒收均以协议为准；unknown不重发，handoff无回执不重投。没有IM能力保留inbox/队列/回复状态，不另找通道，不能宣称没有新答复。
 
-查看 `notify replies --state received` 与 `--state ready`：received 含义明确先写inbox/ledger，再 reply-state ready；不明先排队clarify，sync确认sent后才标clarifying。queued、blocked、failed、unknown不冒充送达。ledger_unreadable或incomingRejected按通知协议保持阻断，不任选正文执行。
+筛选条件或混合答复先读[IM 分项与受限事务](../../shared/im-replies.md)：明确组一次生效，由 setup 非访谈阶段提交；本技能不直接改配置、不代跑 apply。查看 `notify replies --state received` 与 `--state ready`：received 含义明确先写inbox/ledger，再 reply-state ready；不明先排队clarify，sync确认sent后才标clarifying。queued、blocked、failed、unknown不冒充送达。ledger_unreadable或incomingRejected按通知协议保持阻断，不任选正文执行。
 
 ### 2.1 对账
 
@@ -147,7 +147,7 @@ tags 恰好带 `nudge:<nudgeSeq>` 和 `intent:<nudgeIntent>`；`nudgeIntent` 为
 
 ## 10. 等待与收尾汇报
 
-全部会话处理后，仅有待本人答复、配置IM且runtime有能力、waitMinutes>0、本轮非IM唤起时，runtime有界等待至waitMinutes（默认60分钟）。核心脚本不等待、不常驻；每10分钟运行 `im_lark.py sync`，先续锁，再按第2节完整同步链处理答复，页面可用且未暂停才复查未读。达到期限、无待办、暂停/未知/环境受阻即结束，不自建后台服务。
+本轮不阻塞等答、不为等答续锁。新增待回复通知尝试投递后，以及释放运行锁后的收尾点，均按[等待本人回复](../../shared/notify.md#等待本人回复)确保独立监听；无后台或即时唤起能力按该节降级，正常汇报结束。
 
 所有停止分支先可靠处理**本轮所有**pending：已有终态不覆盖，业务成功证据优先；读失败也不漏尝试。uncertain按[结果不明事项](../../shared/notify.md#结果不明事项)，沿平台/账号/attemptId保留原决定ID；安全信号全局暂停，纯环境受阻按通知规则分流ready，不承诺自动续发。
 

@@ -79,11 +79,11 @@ description: 在招聘平台搜索职位、读取详情、按求职工作区条�
 
 验证码、安全验证、访问限制、登录失效、账号不符、额度提示按安全规则遇限即停；除额度提示外全局暂停。只写最小证据，不绕过检测、不自动恢复浏览。
 
-需要本人处理时先写 inbox，再 `notify send --kind todo --decision <ID>`；uncertain 按[结果不明事项](../../shared/notify.md#结果不明事项)，按平台、账号、attemptId 查找原决定 ID，不为已有事项重复建ID。通知只排队；入口对账后、处理检查点和收尾运行 `im_lark.py sync`，投递规则见[飞书适配器](../../shared/im/lark.md)。没有IM能力保留本地队列，不另找通道；apply不等待答复。
+需要本人处理时先写 inbox，再 `notify send --kind todo --decision <ID>`；uncertain 按[结果不明事项](../../shared/notify.md#结果不明事项)，按平台、账号、attemptId 查找原决定 ID，不为已有事项重复建ID。通知只排队；入口对账后、处理检查点和收尾运行 `im_lark.py sync`，投递规则见[飞书适配器](../../shared/im/lark.md)。没有IM能力保留本地队列，不另找通道；apply不等待答复。新通知尝试投递后按[等待本人回复](../../shared/notify.md#等待本人回复)确保监听；既有本人答复交完整 followup，不在 apply 解释或消费。
 
 ## 7. 收尾与汇报
 
-任何结束分支先处理**本轮所有**未终结尝试：已有终态不覆盖，业务成功证据优先；读取失败也不能漏 pending。按执行契约及[释放与对账契约](../../shared/ledger.md#释放与对账契约)执行 `ledger lock release --run <runId>`，核对 released、reconciled、最新 unresolved / inbox；释放失败保留锁并如实报告，不再外发。
+任何结束分支先处理**本轮所有**未终结尝试：已有终态不覆盖，业务成功证据优先；读取失败也不能漏 pending。按执行契约及[释放与对账契约](../../shared/ledger.md#释放与对账契约)执行 `ledger lock release --run <runId>`，核对 released、reconciled、最新 unresolved / inbox；释放后再按[等待本人回复](../../shared/notify.md#等待本人回复)确保监听；释放失败保留锁并如实报告，不再外发。
 
 汇报本轮模式、临时条件、详情/合格/待确认/活跃度排除/已联系/成功/不明数量、实际停止原因和未完成目标。职位表含公司、职责、地点、薪资原文、链接与理由；pending/uncertain/历史记录不计本轮成功。用“已发起沟通”，不称已投递简历。
 
