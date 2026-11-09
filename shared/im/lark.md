@@ -4,8 +4,8 @@
 
 ## 前置条件
 
-- 本人按 [官方说明](https://github.com/larksuite/cli/tree/v1.0.96) 配置 lark-cli **1.0.96**；npm 入口需 Node。技能不安装、登录或部署服务。
-- 本人准备机器人及 IM 收发权限；机器人权限不足由本人在开放平台处理，不靠用户登录修复。
+- 选择飞书时，Agent 按[依赖准备](../dependencies.md#3-飞书依赖仅选择飞书时)安装 lark-cli **1.0.96**，不逐项请求同意；复用或隔离安装，不覆盖其他版本。
+- 由本人完成机器人应用授权与 IM 收发权限，不靠用户登录修复机器人权限；不部署服务。
 - `profile.im` 使用 `channel: lark`、本人确认的 `ownerId`、准确的 `larkProfile`；`waitMinutes` 为 0–240，缺省 60。配置变更按 [配置事务](../config-transaction.md) 提交，不直接改真实工作区。
 
 ## 本人身份与配置档

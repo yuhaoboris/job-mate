@@ -8,9 +8,24 @@
 
 证据基线为 **agent-desktop 1.0.2 / JSON 2.5**。本地包元数据为 1.1.0（未运行其二进制），repository/homepage 指向 [官方仓库](https://github.com/vercel-labs/agent-desktop)。于 **2026-11-04** 只读核对其 [README 安装部分](https://github.com/vercel-labs/agent-desktop#install)、[安装说明](https://github.com/vercel-labs/agent-desktop/blob/main/docs/install.md) 与 [JSON 契约](https://github.com/vercel-labs/agent-desktop/blob/main/docs/json-output.md)。官方当前文档已展示 2.6 和多系统支持；这些新字段、命令和行为**没有因此成为本项目已验证能力**，不能把替身参数或当前官网语法当作 1.0.2 的完整接口。
 
-缺工具时只向本人提供官方安装链接，由本人按系统架构准备 CLI 及同版 helper、授予 macOS 权限；Agent 不自动安装、升级、请求权限或部署服务。所需屏幕录制等额外权限按实际只读检查解释，不把辅助功能授权等同于截图能力。
+安装或 setup 时缺工具，按[依赖准备](../dependencies.md)自动补齐 CLI 与同版 helper，不逐项请求安装同意；权限由本人授予。运行中缺失先停止收尾，再由 setup 修复，不边发送边安装或换版本。不把辅助功能授权等同于截图能力。
 
 不满足适用条件时，按 [工具选择顺序](../execution.md#1-加锁前能力自检) 判断其他原生窗口、非 CDP 工具或停止；尊重既定偏好，不静默改配置。选择发生在加锁前，不授权运行中换工具重发。窗口不可访问、动作未知或已出现安全信号时，先按核心停止规则收尾，而不是试另一个工具。
+
+## 加载上游操作 skill
+
+首次使用、上下文中未加载或 CLI 版本变化时，先解析[依赖准备](../dependencies.md)指定的持久入口，再查 PATH；下列命令的 `agent-desktop` 均替换为该绝对路径。**先读取 CLI 内嵌的上游 skill，再操作桌面**：
+
+```sh
+agent-desktop skills get desktop
+agent-desktop skills get platform
+```
+
+按返回内容需要继续读取 `agent-desktop skills get desktop commands-observation`、`commands-interaction` 等引用；首次使用某命令前运行 `agent-desktop <command> --help` 核对参数。内嵌 skill 与二进制同版，不要求另装全局 skill；不能只凭技能名称、记忆或测试替身语法操作。加载失败就停止准备，不用 latest 网页替代已装版本契约。
+
+上游 skill 负责观察、定位、动作与验证的方法；本文负责 job-mate 的额外限制。上游的 retry:safe、换方法或 headed 建议不能放宽本文的重试白名单、前台授权、整轮固定工具与禁止 CDP 规则。有冲突按更严格边界，不绕过保护求成功。
+
+只读自检按该版本帮助使用 `agent-desktop status`、`agent-desktop permissions`、`agent-desktop list-apps`、`agent-desktop list-windows`；版本检查仍按上文区分工具与格式。窗口清单不等于完整页面，安装阶段不抓取招聘页面内容。
 
 ## 原生浏览器与输入
 

@@ -5,7 +5,7 @@ description: 建立、重设、修改或体检 job-mate 求职工作区。用于
 
 # setup：建立、重新设置或修改求职工作区
 
-先读 [工作区格式](../../shared/workspace.md)、[通用执行契约](../../shared/execution.md) 与 [提问与对话](../../shared/ask.md)。加锁前能力自检：能读写工作区、运行核心脚本才继续，缺能力不写记录；纯配置不要求桌面能力。需只读平台时再读 [浏览器入口](../../shared/browser/README.md) 与 [BOSS 页面要点](../../platforms/boss/common.md) 并按执行契约自检，不支持则不操作平台、不回退。待决定或通知时读 [通知契约](../../shared/notify.md)；本技能不在招聘平台外发。
+先读 [工作区格式](../../shared/workspace.md)、[通用执行契约](../../shared/execution.md) 与 [提问与对话](../../shared/ask.md)。首次设置或缺依赖先按[依赖准备](../../shared/dependencies.md)自动补齐软件。加锁前能力自检：能读写工作区、运行脚本；缺能力不写记录。桌面受阻可配置，但须报告运行未就绪。需只读平台时再读[浏览器入口](../../shared/browser/README.md)与[BOSS 页面要点](../../platforms/boss/common.md)，不支持则不操作平台、不回退。待决定或通知时读[通知契约](../../shared/notify.md)；本技能不在招聘平台外发。
 
 下文 `ledger`、`workspace`、`notify`、`im_lark.py` 分别指 `python3 <本文件上两级目录>/scripts/ledger.py`、`.../scripts/workspace.py`、`.../scripts/notify.py`、`.../scripts/im_lark.py`；先解析绝对路径，Windows 用 `py -3`。
 
@@ -109,7 +109,7 @@ description: 建立、重设、修改或体检 job-mate 求职工作区。用于
 1. 新建汇总全部取值，含自动默认与生成的问答；三个授权用中文分别列出及来源（本人选择 / 默认），以本人在汇总卡上「确认保存」为准。重设列逐文件差异，标默认、跳过、未知。卡片问「确认保存 / 改某一屏」，修改用 progress goto。只在所选步骤补默认并告知；不选的字段、文件和授权保持原样。
 2. **本人确认后** ledger lock acquire --skill setup，不抢锁。按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 检查完整 threads 的 unresolved 与 inbox，即使 acquire 的 `reconciled` 为空也对账；不操作平台。重设再 workspace changed --since <备份名>，有并发变化则重读合并、重新确认。
 3. 先读 [配置事务](../../shared/config-transaction.md)。只把本人确认的变更合并到工作区外暂存目录，未选文件不放暂存；同一 profile 内的未选字段、兄弟授权也保留。workspace commit --staging <目录> --run <runId> 一次提交；停止名单用同事务 --stoplist-ops，不提前写。残留日志先按对话规则说明结果，再持锁 workspace commit --recover --run <runId>，恢复前不新提交。读回后 `ledger lock release --run <runId>`，按 [释放与对账契约](../../shared/ledger.md#释放与对账契约) 处理 reconciled 与释放失败。失败保留草稿，内部区分主体与释放结果，对本人给一个可执行办法。
-4. 正式配置提交后，才做经本人另行同意的 IM 全链路测试（第 10 节）；不安装执行器或服务。
+4. 正式配置提交后，才做经本人另行同意的 IM 全链路测试（第 10 节）；不安装后台服务。
 5. workspace progress finish 复用体检、不计草稿存在：退出 0 才删草稿；1 有问题保留草稿，回相关步骤；2 命令或草稿错误先报告。clear 仅用于放弃/重来，不代替完成。再 workspace check 核对数据；配置通过不等于 runtime、真实收发或平台操作通过，不记验收状态。
 
 ## 4. 修改
@@ -176,7 +176,7 @@ salary 合问区间、税前/税后、月薪/年薪及 matchRule；resumes 问�
 先读 [飞书适配器](../../shared/im/lark.md)；需要收发时读 [通知契约](../../shared/notify.md)，按序执行：
 
 1. 新建先给「以后再说（推荐）/ 现在配置 / 不需要」；以后再说或不需要均记 `{"channel":"none"}`。需要则经本人允许，按随包安全入口只读列配置档，以 name 请本人选 larkProfile，不猜 active。再核验同应用 auth 中已验证的本人身份，或按本人提供的姓名/邮箱查 open_id，展示姓名请本人确认 ownerId；多候选让本人选，不取第一项；bot.openId 不能当本人。身份、应用或结果不明就停。最后问 waitMinutes，整数 0–240、默认 60。
-2. 只读入口无法定位时按随包安全说明收集显式 larkCommand 数组，不安装、不 shell 回退。record 的 value 是完整 IM 对象，共用 im_config 校验；kept/default 也传对象，skipped 且无值表示不改，不是选 none。结构通过不证明身份或入口可用。经本人确认，按第 3.3 节暂存并 commit，保留未选字段与授权。
+2. 入口缺失按依赖准备补装；隔离安装由 Agent 解析 larkCommand 数组，不 shell 回退。record 的 value 是完整 IM 对象，共用 im_config 校验；kept/default 也传对象，skipped 且无值表示不改，不是选 none。结构通过不证明身份或入口可用。经本人确认，按第 3.3 节暂存并 commit，保留未选字段与授权。
 3. **事务提交后** `im_lark.py doctor` 读正式工作区配置，验证所选路由的 bot；不填假 ownerId 提前 doctor、不绕事务。none 的 skipped:channel_none 只表示跳过，**不算机器人验证成功**。doctor 通过也不代表已收发；未通过不排队测试。
 4. bot 验证通过且本人**另行同意测试内容**才 `notify test`，只排队（queued）；再 `im_lark.py sync`。sent 无可信时间不能建立读取起点，补查失败不重发；unknown 不重发。私聊可读后请本人**引用测试消息回复「收到」**，再次 `im_lark.py sync`，用 `notify replies --state test` 与 `notify status` 核对测试、私聊、队列及冲突。普通业务答复仍 received；未读完明确报告。能力不足就停，不换通道；测试同意不增加长期授权。
 

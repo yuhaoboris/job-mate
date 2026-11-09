@@ -1,8 +1,10 @@
 # 安装与维护
 
-首次使用见 [README](../README.md)，委托 Agent 安装见 [INSTALL](../INSTALL.md)。
+首次使用见 [README](../README.md)，委托 Agent 安装见 [INSTALL](../INSTALL.md)。请求安装包含必要软件依赖的安装授权，不逐项确认；完整流程见随包[依赖准备](../shared/dependencies.md)，系统授权与登录仍由本人完成。
 
 ## 整套构建与安装
+
+以下命令只安装技能包，不安装 Python、桌面工具或可选飞书依赖。手动安装先按[依赖准备](../shared/dependencies.md)准备环境，构建后完成其就绪检查；只看到 built/installed 不能证明平台可运行。
 
 在源码根目录运行：
 

@@ -12,7 +12,8 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 CORE_RULES = (ROOT / "shared/execution.md", ROOT / "shared/browser/README.md")
-TOOL_DOCUMENTS = (ROOT / "shared/browser/agent-desktop.md", ROOT / "shared/im/lark.md")
+TOOL_DOCUMENTS = (ROOT / "shared/browser/agent-desktop.md", ROOT / "shared/im/lark.md",
+                  ROOT / "shared/dependencies.md")
 TOOL_CALL = re.compile(
     r"lark-cli\b|agent-desktop\s+(?:--[\w-]+|[a-z][\w-]*\b)|desktop\.py|"
     r"launchctl\b|caffeinate\b|npm\s+install|subprocess|"
@@ -166,7 +167,7 @@ class ExecutionRulesTest(unittest.TestCase):
         for path in core_documents():
             with self.subTest(path=path):
                 if path in TOOL_DOCUMENTS:
-                    continue  # 仅这两份随包工具规则可写外部命令。
+                    continue  # 外部命令集中于工具规则与安装依赖指引。
                 self.assertIsNone(TOOL_CALL.search(path.read_text(encoding="utf-8")))
 
     def test_tool_call_detector_accepts_compatibility_literals_only(self):
@@ -178,7 +179,8 @@ class ExecutionRulesTest(unittest.TestCase):
             self.assertIsNotNone(TOOL_CALL.search(call))
 
     def test_core_does_not_link_out_of_package(self):
-        self.assertEqual(set(TOOL_DOCUMENTS), {ROOT / "shared/browser/agent-desktop.md", ROOT / "shared/im/lark.md"})
+        self.assertEqual(set(TOOL_DOCUMENTS), {ROOT / "shared/browser/agent-desktop.md", ROOT / "shared/im/lark.md",
+                                               ROOT / "shared/dependencies.md"})
         self.assertTrue(set(TOOL_DOCUMENTS) <= set(core_documents()))
         for directory in ("skills", "shared", "platforms"):
             for source in (ROOT / directory).rglob("*.md"):
@@ -228,7 +230,7 @@ class ExecutionRulesTest(unittest.TestCase):
 
     def test_new_document_links_and_anchors_resolve(self):
         maintained = (ROOT / name for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md",
-                                                "docs/design.md", "docs/README.md"))
+                                                "docs/design.md", "docs/README.md", "INSTALL.md", "docs/installation.md"))
         for source in (*core_documents(), *maintained):
             for target in LINK.findall(source.read_text(encoding="utf-8")):
                 parsed = urlsplit(target)
