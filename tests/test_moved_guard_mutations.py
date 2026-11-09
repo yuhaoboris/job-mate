@@ -14,13 +14,15 @@ class MovedGuardMutationTest(unittest.TestCase):
     def mutated_result(self, relative, anchor, payload, case_type, method):
         original = Path.read_text
         target = (ROOT / relative).resolve()
+        source = original(target, encoding="utf-8")
+        # 注入前提在守卫 runner 外检查，不能把缺锚点误计为守卫检出。
+        self.assertEqual(source.count(anchor), 1)
+        mutated = source.replace(anchor, anchor + "\n" + payload + "\n", 1)
 
         def read(path, *args, **kwargs):
-            source = original(path, *args, **kwargs)
             if path.resolve() == target:
-                self.assertIn(anchor, source)
-                return source.replace(anchor, anchor + "\n" + payload + "\n", 1)
-            return source
+                return mutated
+            return original(path, *args, **kwargs)
 
         output = io.StringIO()
         with patch.object(Path, "read_text", read):
