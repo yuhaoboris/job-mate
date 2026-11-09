@@ -51,16 +51,7 @@ reply 与 nudge 是**独立授权**：
 
 ### 2.2 执行决定
 
-1. 本人选通知选项就发送其附带原文；本人给原话就原样发送；仅给结论（如接受并改期）则先起草clarify等确认。**本人批准文字不得trim、改写、替换空白或Unicode**。
-2. 结论先写inbox，再登记 `observe/decision`：同一D连续version、steps，每步唯一step及kind/text或resume。只续做effectiveVersion（[决定字段](../../shared/derived.md#决定)）；新决定才增加版本，步骤名跨版本不复用。旧已sent不撤回、不重发；旧未决仍阻断，不能标废止来掩盖。
-3. manual会话不执行旧决定；本地动作在前、外发在后。改资料需本人明确要求、先备份；不要为了让事项完成编一条HR回复。
-4. `ledger decision --id <ID> --step <step>`：sent跳过；superseded不做；pending/uncertain/needs_review只核对原尝试，不建新尝试；failed_no_send本轮不重试。not_started才按第7节，用本人原文与decision/step发送，冻结版本不改绑。
-5. 全部有效动作完成且没有任何版本未决，最后写同D的unpaused；面试另记interview_decided。保存实际结果正文到inbox，再排队该结果版本done、标consumed。相同结果补发复用冻结正文，不拿本人决定原话当执行结果。
-6. 本轮禁发/全局暂停保留ready不消费。暂时环境受阻按执行契约保留；人工接管、uncertain、failed_no_send或needs_review阻断时说明原因后consumed（note），不承诺恢复即自动外发，决定状态仍由ledger保留。
-
-### 2.3 只收尾 ready
-
-已done的决定只补保存的结果通知并consumed，不重发HR、不重做步骤。待处理事项本人已办，可记录已处理、发该结果版本done；结论是先不回/无需动作则记录并consumed，保持暂停，**不发done、不发summary**。只补通知或消费ready不算本轮实际执行动作；全局暂停/本轮禁发仍保留ready。
+有 ready 答复，或本人在对话中对事项作出决定时，先读[执行本人决定](../../shared/decision-exec.md)，按其步骤执行和收尾。
 
 ## 3. 发现待处理消息
 
@@ -120,7 +111,7 @@ Agent **不答应、也不提出任何面试时间**，不追问或提供自己�
 2. observe/paused(D) → inbox待决定（选项附拟发原文，截止仅HR给出时写）→ `notify send --kind decision --decision <ID>`排队；
 3. L2或覆盖本会话reply grant才可prepare一条不含时间、不表示接受的中性reply，带decision:D、step:ack。ack是系统回执，不登记observe/decision版本，也不unpaused；L1无例外只留同事项草稿。restrict、其他暂停、接管、风险、未决仍检查；平台卡片的接受/拒绝按钮不点；
 4. 按第7节guard、发送、记结果，然后 `im_lark.py sync` 通知本人。超时收尾整轮，但先前事项与队列仍在，下轮投递；不因回执失败撤销上报；
-5. 本人批准后按第2节逐字执行；只有明确要求接受具体时间才操作对应卡片。interview_decided及有效决定全部完成后unpaused，发结果通知。
+5. 本人批准后按[执行本人决定](../../shared/decision-exec.md)逐字执行；只有明确要求接受具体时间才操作对应卡片。interview_decided及有效决定全部完成后unpaused，发结果通知。
 
 ## 7. 外发：prepare → 新 guard → 原文 → 结果
 

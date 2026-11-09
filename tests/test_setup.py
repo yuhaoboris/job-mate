@@ -159,6 +159,8 @@ class SetupStepsTest(unittest.TestCase):
 
     def test_dsh_question_contract_and_skip_defaults_match_policy(self):
         ask = (ROOT / "shared/ask.md").read_text(encoding="utf-8")
+        setup = (ROOT / "skills/setup/SKILL.md").read_text(encoding="utf-8")
+        index = 0
         for term in ("ask_user_question", "questions[]", "`id`", "`question`", "`header`",
                      "options[{label, description}]", "`multi_select`", "不限于 Plan Mode",
                      "不在列表里才退回编号纯文本", "卡片空选择 = 跳过本题",
@@ -166,7 +168,9 @@ class SetupStepsTest(unittest.TestCase):
                      "主动打招呼关闭", "有把握的问题直接回答（L2）开启", "对方不回时跟进开启",
                      "首次沟通 apply.send 只能由本人明确同意开启", "本人选择 / 默认",
                      "汇总卡上「确认保存」", "必答项被跳过时说明原因后重问"):
-            self.assertIn(term, ask)
+            # 只改读取对象：setup 专用的六项必须在 setup，其余仍必须在 ask。
+            self.assertIn(term, setup if 11 <= index <= 16 else ask)
+            index += 1
         for placeholder in ("工具名待", "待在 DSH 实测确认", "DeepSeek Harness 的提问卡片工具",
                             "未确认的授权保持待确认", "跳过不等于授权"):
             self.assertNotIn(placeholder, ask)

@@ -296,7 +296,7 @@ class BuildTest(unittest.TestCase):
         skill = (d / "SKILL.md").read_text(encoding="utf-8")
         notify_md = (d / "shared" / "notify.md").read_text(encoding="utf-8")
         # 结论「无需动作」的 ready 收尾：不发 done、不发 summary
-        quiet = skill.split("### 2.3 只收尾 ready", 1)[1].split("## 3.", 1)[0]
+        quiet = (d / "shared/decision-exec.md").read_text(encoding="utf-8").split("### 2.3 只收尾 ready", 1)[1].split("## 3.", 1)[0]
         self.assertIn("不发done、不发summary", quiet)
         self.assertIn("不重发HR、不重做步骤", quiet)
         closing = skill.split("## 10. 等待与收尾汇报", 1)[1]

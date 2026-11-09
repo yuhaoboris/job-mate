@@ -78,7 +78,7 @@ class ReleaseStaticContractTest(unittest.TestCase):
                 self.assertIn("attemptId", content)
                 self.assertIn("uncertain", content)
                 self.assertIn("原决定", content)
-        decided = self.skill("followup").split("### 2.2 执行决定", 1)[1].split("### 2.3", 1)[0]
+        decided = (ROOT / "shared/decision-exec.md").read_text(encoding="utf-8").split("### 2.2 执行决定", 1)[1].split("### 2.3", 1)[0]
         self.assertIn("原尝试", decided)
         self.assertIn("不建新尝试", decided)
 
