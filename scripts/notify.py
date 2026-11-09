@@ -82,7 +82,7 @@ def im_config(profile):
         raise NotifyError("lark 需要非空 ownerId 与 larkProfile")
     wait = im.get("waitMinutes", DEFAULT_WAIT_MINUTES)
     if type(wait) is not int or not 0 <= wait <= 60:
-        raise NotifyError("im.waitMinutes 应为 0–60 的整数；请用 setup 修正旧配置，不自动截断")
+        raise NotifyError("im.waitMinutes 应为 0–60 的整数；请用 job-mate-setup 修正旧配置，不自动截断")
     command = im.get("larkCommand")
     if "larkCommand" in im and (not isinstance(command, list) or not command or not all(nonempty(v) for v in command)):
         raise NotifyError("im.larkCommand 应为非空字符串数组")

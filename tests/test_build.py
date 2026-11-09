@@ -153,8 +153,9 @@ class BuildTest(unittest.TestCase):
         for name in ("apply", "followup"):
             body = (self.out / f"job-mate-{name}/SKILL.md").read_text(encoding="utf-8").split("---", 2)[2]
             self.assertIn("用 job-mate-setup", body)
-        for path in self.out.rglob("*.md"):
-            self.assertNotRegex(path.read_text(encoding="utf-8"), r"用 (setup|apply|followup)([^-]|$)")
+        for path in self.out.rglob("*"):
+            if path.is_file():
+                self.assertNotRegex(path.read_text(encoding="utf-8"), r"用 (setup|apply|followup)([^-]|$)")
         for name, original in sources.items():
             self.assertEqual((ROOT / f"skills/{name}/SKILL.md").read_bytes(), original)
 
