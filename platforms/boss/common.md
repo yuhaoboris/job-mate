@@ -6,7 +6,7 @@
 
 - 从 `https://www.zhipin.com/` 或本人提供、核对过域名的职位链接进入。
 - 不使用 CDP / Playwright、无头浏览器：此前使用 CDP 曾被重定向到 `_security_check` 后页面空白。只用本人日常已登录的可见浏览器，经辅助功能树或桌面 UI 操作；工具选择遵守[浏览器入口](../../shared/browser/README.md)。
-- 账号名在页面右上角头像附近，与 `job-mate.json` 的 `displayName` 核对；登录、扫码和验证由本人完成。
+- 账号名在页面右上角头像附近：有工作区与 `job-mate.json` 的 `displayName` 核对；无工作区临时筛选与本人本轮确认的显示名核对。登录、扫码和验证由本人完成。
 
 ## 职位链接与招聘者写法
 

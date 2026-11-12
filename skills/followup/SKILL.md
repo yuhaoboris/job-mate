@@ -1,6 +1,6 @@
 ---
 name: followup
-description: 首次盘点已有会话并巡检HR消息，按授权代答、发简历和主动跟进；承诺与未知事项交本人决定。用于看看HR回复、处理消息、回复HR、跟进、重新盘点、IM答复或定时巡检。不做首次联系或求职设置，不自行提出或答应面试时间。还没有求职工作区时先用 setup。
+description: 巡检HR消息并逐批盘点已有会话，按授权代答、发简历和主动跟进；承诺与未知事项交本人决定。用于看看HR回复、处理消息、回复HR、跟进、重新盘点、IM答复或定时巡检。不做首次联系或求职设置，不自行提出或答应面试时间。还没有求职工作区时先用 setup。
 ---
 
 # followup：处理消息、本人决定与主动跟进
@@ -41,7 +41,7 @@ reply 与 nudge 是**独立授权**：
 
 每轮入口对账后、每处理完会话、收尾运行 `im_lark.py sync`，执行[同步IM与读取答复](../../shared/notify.md#同步-im)的完整链，不以本地 poll 代替远端读取。路由、分页、私聊身份、投递与拒收均以协议为准；unknown不重发，handoff无回执不重投。没有IM能力保留inbox/队列/回复状态，不另找通道，不能宣称没有新答复。
 
-筛选条件或混合答复先读[IM 分项与受限事务](../../shared/im-replies.md)：明确组一次生效，由 setup 非访谈阶段提交；本技能不直接改配置、不代跑 apply。查看 `notify replies --state received` 与 `--state ready`：received 含义明确先写inbox/ledger，再 reply-state ready；不明先排队clarify，sync确认sent后才标clarifying。queued、blocked、failed、unknown不冒充送达。ledger_unreadable或incomingRejected按通知协议保持阻断，不任选正文执行。
+查看 `notify replies --state received` 与 `--state ready`，按[IM 分项与受限事务](../../shared/im-replies.md)解释普通消息；无候选不忽略。明确条件由 setup 非访谈提交，不直接改配置、不代跑 apply。含糊处先 clarify，sync确认sent后才标clarifying。ledger_unreadable或incomingRejected按通知协议保持阻断，不任选正文执行。
 
 ### 2.1 对账
 
@@ -55,13 +55,14 @@ reply 与 nudge 是**独立授权**：
 
 ## 3. 发现待处理消息
 
-**先盘点**：每账号首次按 [会话盘点](../../shared/inventory.md) 只读「全部」列表到底并接手，不设开关、不改setup。未完记进度续做，真到底才finish；禁发可盘点，全局暂停不浏览。本人说「重新盘点」才restart。
+**逐批盘点**：首次按[会话盘点](../../shared/inventory.md) start/续做，每批登记后先处理下列优先消息，再用剩余预算盘点；不等全部到底。未接手目标先核实并 record，完整读尾部、守历史过滤与全部门禁。真到底才finish，未完记进度；禁发可盘点，全局暂停不浏览。本人要求才restart，不设setup开关。
 
 同一会话去重，按顺序：
-1. `ledger threads` 的 pendingTails（即使无未读，见[尾部与扫描](../../shared/derived.md#尾部与扫描)）；
-2. 平台未读会话；
-3. HR最后发言及 inventoryPending 未打开会话，最久未处理优先，共用 inboundScanPerRun（默认30）预算；后者不限天数。普通列表限 inboundScanDays（默认14天），连续3个非置顶项超龄、到底或风控就停，报告未查范围。
-4. canNudge:true 的待页面核验候选，或本轮明确点名、可能由nudge例外覆盖的目标；候选不是发送授权。
+1. 本人本轮明确点名的会话；
+2. `ledger threads` 的 pendingTails（即使无未读，见[尾部与扫描](../../shared/derived.md#尾部与扫描)）；
+3. 平台未读会话；
+4. HR最后发言及 inventoryPending 未打开会话，最久未处理优先，共用 inboundScanPerRun（默认30）预算；后者不限天数。普通列表限 inboundScanDays（默认14天），连续3个非置顶项超龄、到底或风控就停，报告未查范围。
+5. canNudge:true 或有明确nudge例外的待页面核验目标；候选与点名都不替代发送授权。
 
 能否跳过，拿当前[列表标记（listMark）](../../shared/tails.md#输出与收口)对照 threads 的 `lastHandled`，条件只按[尾部与扫描](../../shared/derived.md#尾部与扫描)判断；不满足就打开，不保证 24 小时内全部发现。
 

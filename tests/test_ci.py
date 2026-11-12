@@ -12,7 +12,7 @@ class CiTest(unittest.TestCase):
         text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertRegex(text, r"(?m)^  push:$")
         self.assertRegex(text, r"(?m)^  pull_request:$")
-        self.assertIn("os: [ubuntu-latest, macos-latest, windows-latest]", text)
+        self.assertIn("os: [ubuntu-24.04, macos-latest, windows-latest]", text)
         self.assertIn("python: ['3.9', '3.12', '3.13']", text)
         self.assertIn("runs-on: ${{ matrix.os }}", text)
         self.assertIn("python-version: ${{ matrix.python }}", text)
@@ -23,6 +23,8 @@ class CiTest(unittest.TestCase):
                                     "python -m unittest discover -s tests",
                                     'python scripts/build.py --out "${{ runner.temp }}/dist"'])
         self.assertLess(text.index("core.autocrlf false"), text.index("actions/checkout@"))
+        checkout = text.split("uses: actions/checkout@", 1)[1].split("- uses:", 1)[0]
+        self.assertRegex(checkout, r"(?m)^          fetch-depth: 0$")
         self.assertIn("actions/setup-node@v4", text)
         self.assertIn("node-version: lts/*", text)
         self.assertLess(text.index("actions/setup-node@"), text.index("name: 全量单测"))

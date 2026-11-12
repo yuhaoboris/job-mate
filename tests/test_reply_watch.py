@@ -354,8 +354,10 @@ class WatchProcessTest(unittest.TestCase):
         with I_lock(self.f.state):
             self.f.add_messages(first)
         self.wait_for(lambda: len(self.f.rows()["in"]) == 1, child)
-        ctx = N.context(self.f.ws)
-        state = N.reply_watch(self.f.ws, ctx, self.module.im_lark.fsutil.now(ctx["tz"]))
+        # in 已可见时，后台仍可能在追加 cursor/ack/checkpoint；只在稳定快照上作断言。
+        with self.module.ledger.mutation_mutex(self.f.ws):
+            ctx = N.context(self.f.ws)
+            state = N.reply_watch(self.f.ws, ctx, self.module.im_lark.fsutil.now(ctx["tz"]))
         self.assertEqual([r["decision"] for r in state["waiting"]], [other])
         self.assertIsNone(child.poll())
         second = self.f.message(n=21, created=notified + 9501)

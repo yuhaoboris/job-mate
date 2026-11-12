@@ -557,7 +557,7 @@ class NotifyTest(unittest.TestCase):
         self.event(attempt="second", decision=D2, status="sent", skill="user")
         self.assertEqual(notify.candidates(self.ws), ([], None))
         self.im.user_says("已发出")
-        self.assertEqual(self.sync()[1]["new"][0]["state"], "ignored")
+        self.assertEqual(self.sync()[1]["new"][0]["state"], "received")
 
     def test_corrupt_ledger_does_not_block_pause_or_swallow_reply(self):
         self.inbox((D1, "待决定"))
@@ -740,15 +740,20 @@ class NotifyTest(unittest.TestCase):
         self.assertIsNone(hints["接受"][0])
         self.assertEqual(len(hints["接受"][1]), 2)
 
-    def test_message_without_open_items_is_ignored_with_help(self):
+    def test_message_without_open_items_remains_pending_for_interpretation(self):
         self.inbox(("D-20261030-01", "待决定"))
         self.decide()
         self.inbox(("D-20261030-01", "已决定"))
         mid = self.im.user_says("在吗")
         _, out = self.sync()
-        self.assertEqual(out["replies"], [])
-        self.assertIn("暂停、恢复", self.im.sent[-1]["text"])
-        self.assertEqual(self.run_cmd("replies", "--state", "ignored")[1]["replies"][0]["messageId"], mid)
+        self.assertEqual([(r["messageId"], r["state"]) for r in out["replies"]], [(mid, "received")])
+        self.assertIsNone(out["replies"][0]["decisionHint"])
+        self.assertEqual(out["replies"][0]["decisionCandidates"], [])
+        self.assertEqual(self.im.sent[-1]["text"], "【职伴】已收到，等待处理。")
+        self.assertEqual(self.run_cmd("replies", "--state", "ignored")[1]["replies"], [])
+        # 只有后续解释确认无需处理，才显式退出待解释队列。
+        self.assertEqual(self.run_cmd("reply-state", "--message", mid, "--state", "ignored", "--note", "无需处理")[0], 0)
+        self.assertEqual(self.run_cmd("poll")[1]["replies"], [])
 
     def test_pause_and_resume_commands_drive_ledger(self):
         self.inbox(("D-20261030-01", "待决定"))
@@ -769,7 +774,7 @@ class NotifyTest(unittest.TestCase):
     def test_test_message_roundtrip(self):
         code, out = self.queue_test()
         self.assertEqual(code, 0)
-        self.im.user_says("收到")
+        self.im.user_says("收到", parent=out["messageId"])
         _, out = self.sync()
         self.assertEqual(out["replies"], [])
         self.assertIn("测试成功", self.im.sent[-1]["text"])
@@ -783,23 +788,25 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual([r["messageId"] for r in out["replies"]], mids)
         self.assertTrue(all(len(r["decisionCandidates"]) == 2 for r in out["replies"]))
 
-    def test_test_without_items_only_confirms_once_per_batch_and_across_polls(self):
+    def test_unquoted_reply_stays_pending_and_quoted_test_confirms_once(self):
         _, test = self.queue_test()
         first = self.im.user_says("收到")
-        second = self.im.user_says("接受", parent=test["messageId"])
+        second = self.im.user_says("收到", parent=test["messageId"])
         # 相同服务端秒 / 游标边界的重复拉取仍须按 messageId 幂等。
         for m in self.im.messages:
             if m["messageId"] in (first, second):
                 m["createTime"] = self.im.clock
         _, out = self.sync()
         self.assertEqual([(r["messageId"], r["state"]) for r in out["new"]],
-                         [(first, "test"), (second, "ignored")])
-        self.assertEqual(out["replies"], [])
+                         [(first, "received"), (second, "test")])
+        self.assertEqual([r["messageId"] for r in out["replies"]], [first])
         sent = len(self.im.sent)
         self.assertEqual(self.sync()[1]["new"], [])
         self.assertEqual(len(self.im.sent), sent)
-        self.im.user_says("再次收到", parent=test["messageId"])
-        self.assertEqual(self.sync()[1]["new"][0]["state"], "ignored")
+        later = self.im.user_says("再次收到", parent=test["messageId"])
+        _, out = self.sync()
+        self.assertEqual(out["new"][0]["state"], "received")
+        self.assertEqual([r["messageId"] for r in out["replies"]], [first, later])
         self.assertEqual(sum("测试成功" in m["text"] for m in self.im.sent), 1)
 
     def test_quoted_test_completes_once_and_later_replies_remain_received(self):
@@ -856,7 +863,7 @@ class NotifyTest(unittest.TestCase):
         self.im.user_says("01 接受")
         self.im.user_says("收到", parent=test["messageId"])
         _, out = self.sync()
-        self.assertEqual([r["state"] for r in out["new"]], ["received", "ignored", "test"])
+        self.assertEqual([r["state"] for r in out["new"]], ["received", "received", "test"])
         self.assertEqual(out["replies"][0]["decisionHint"], "D-20261030-01")
 
     def test_numeric_tokens_only_match_standalone_sequence(self):
@@ -876,12 +883,14 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(rows["99 接受"]["state"], "received")
         self.assertIsNone(rows["99 接受"]["decisionHint"])
         self.assertEqual(rows["99 接受"]["decisionCandidates"], [])
-        # 没有可答事项时才 ignored
+        # 没有可答事项也保留给 followup 解释，不猜它已无业务意义。
         self.inbox(("D-20261030-01", "已决定"))
-        self.replies_after("98 接受")
-        ignored = self.run_cmd("replies", "--state", "ignored")[1]["replies"]
-        self.assertEqual([r["text"] for r in ignored], ["98 接受"])
-        self.assertIn("暂停、恢复", self.im.sent[-1]["text"])
+        rows = self.replies_after("98 接受")
+        self.assertEqual(rows["98 接受"]["state"], "received")
+        self.assertIsNone(rows["98 接受"]["decisionHint"])
+        self.assertEqual(rows["98 接受"]["decisionCandidates"], [])
+        self.assertEqual(self.run_cmd("replies", "--state", "ignored")[1]["replies"], [])
+        self.assertEqual(self.im.sent[-1]["text"], "【职伴】已收到，等待处理。")
 
     def test_multiple_open_items_with_plain_numbers_stay_received(self):
         self.inbox(("D-20261030-01", "待决定"), ("D-20261030-02", "待决定"))

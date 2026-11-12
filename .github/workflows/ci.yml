@@ -13,7 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Python 3.9 的官方构建覆盖 Ubuntu 24.04，不覆盖 ubuntu-latest 的 26.04。
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         python: ['3.9', '3.12', '3.13']
     env:
       PYTHONDONTWRITEBYTECODE: '1'
@@ -23,6 +24,9 @@ jobs:
       - name: 保留仓库原始换行
         run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
+        with:
+          # 崩溃矩阵保护测试需要读取仓库中的历史基线。
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}

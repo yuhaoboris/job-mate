@@ -39,16 +39,16 @@ def run_build(*argv):
 
 # 已完整改写的文档进入体量预算；其余在对应任务重写时加入。
 TEXT_BUDGETS = {p.relative_to(ROOT).as_posix(): 16000 for p in (ROOT / "shared").rglob("*.md")}
-# 基线最大 19,994 B；实际 setup/apply/followup：19,411 / 11,915 / 18,843 B；第二批须降到基线以下。
+# 基线最大 19,994 B；实际 setup/apply/followup：19,523 / 12,347 / 18,837 B；第二批须降到基线以下。
 TEXT_BUDGETS.update({f"skills/{name}/SKILL.md": 20500 for name in build.SKILL_NAMES})
 TEXT_BUDGETS.update({"shared/browser/agent-desktop.md": 12000, "shared/im/lark.md": 8000})
 READING_BUDGETS = {
-    # 基线 54,993 B；实际 54,549 B；第二批须降到基线以下。
+    # 基线 54,993 B；实际 54,587 B；第二批须降到基线以下。
     "setup": (55000, ("skills/setup/SKILL.md", "shared/workspace.md", "shared/execution.md", "shared/ask.md")),
-    # 基线 54,982 B；实际 55,525 B；第二批须降到基线以下。
+    # 基线 54,982 B；实际 56,078 B；第二批须降到基线以下。
     "apply": (56500, ("skills/apply/SKILL.md", "shared/workspace.md", "shared/execution.md", "shared/safety.md",
                       "platforms/boss/common.md", "platforms/boss/apply.md", "shared/ask.md")),
-    # 基线 73,488 B；实际 72,232 B；第二批须降到基线以下。
+    # 基线 73,488 B；实际 72,478 B；第二批须降到基线以下。
     "followup": (75000, ("skills/followup/SKILL.md", "shared/workspace.md", "shared/execution.md", "shared/safety.md",
                          "shared/tails.md", "platforms/boss/common.md", "platforms/boss/followup.md", "shared/ask.md")),
 }
@@ -153,6 +153,9 @@ class BuildTest(unittest.TestCase):
         for name in ("apply", "followup"):
             body = (self.out / f"job-mate-{name}/SKILL.md").read_text(encoding="utf-8").split("---", 2)[2]
             self.assertIn("用 job-mate-setup", body)
+        for name, target in (("setup", "apply"), ("apply", "followup")):
+            body = (self.out / f"job-mate-{name}/SKILL.md").read_text(encoding="utf-8").split("---", 2)[2]
+            self.assertIn(f"用 job-mate-{target}", body)
         for path in self.out.rglob("*"):
             if path.is_file():
                 self.assertNotRegex(path.read_text(encoding="utf-8"), r"用 (setup|apply|followup)([^-]|$)")
