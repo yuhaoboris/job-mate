@@ -332,7 +332,8 @@ class BuildTest(unittest.TestCase):
 class BuildSafetyTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.base = Path(self.tmp.name)
+        # macOS 的临时目录可能经 /var 别名；故障注入须匹配构建器规范化后的路径。
+        self.base = Path(self.tmp.name).resolve()
         self.source = self.base / "source"
         for skill in ("apply", "followup", "setup"):
             d = self.source / "skills" / skill
