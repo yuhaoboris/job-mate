@@ -26,3 +26,6 @@ inbox/
 backups/
 /workspace*/
 lark-im-resources/
+job-mate.sqlite3
+job-mate.sqlite3-*
+legacy/
