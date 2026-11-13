@@ -343,6 +343,8 @@ def dispatch(state, req, root):
         history = [e for e in state['events'] if same(e, target)]
         require(not any(e['kind'] == 'observe' and e.get('observed') in TERMINAL for e in history), 'THREAD_CLOSED', '会话已结束或被拒绝')
         if kind == 'greet':
+            max_chars = integer(req.get('maxChars', 100), 1, 10000, '招呼字数上限')
+            require(len(content) <= max_chars, 'GREETING_TOO_LONG', '招呼超过字数上限，请精简草稿或核对本人指定的上限')
             screens = [e for e in history if e['kind'] == 'screen' and e.get('runId') == run['id']]
             require(screens and screens[-1]['result'] == 'qualified', 'SCREEN_REQUIRED', '本轮需先确认职位合格并记录依据')
             already_contacted = any(contacted(state, e) and e.get('account') == target['account'] and e.get('company', '').strip().casefold() == target['company'].strip().casefold() for e in state['events'])
@@ -368,6 +370,8 @@ def dispatch(state, req, root):
             require(d and d['status'] == 'answered' and same(d['target'], target) and d.get('approvedText') == content, 'DECISION_REQUIRED', '需要本人对该目标批准的逐字原文')
         a = {'id': uid('attempt'), 'ts': now(), 'at': stamp(), 'runId': run['id'], 'target': target,
              'kind': kind, 'text': content, 'status': 'prepared', 'decisionId': did, 'decisionRevision': d.get('revision') if did else None, 'guarded': False}
+        if kind == 'greet':
+            a['maxChars'] = max_chars
         attempts.append(a)
         return a
     if op in ('guard', 'finish'):
