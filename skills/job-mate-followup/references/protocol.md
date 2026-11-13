@@ -6,7 +6,7 @@ Agent 负责调用。技能根目录内：
 python3 scripts/job_mate.py --request /absolute/path/request.json
 ```
 
-也可将 JSON 送到标准输入。使用工具的结构化参数或文件，避免把简历/消息插值进 shell。`--workspace` 可覆盖 `JOB_MATE_HOME` 和默认 `~/.job-mate`。Harness 的 `job_mate` 工具接受 `request` 对象，调用同一核心。返回 `ok:false` 时先处理错误；不能盲目重试外发。
+也可将 JSON 送到标准输入。使用工具的结构化参数或文件，避免把简历/消息插值进 shell。数据目录优先级为 `--workspace` → `JOB_MATE_HOME` → `--project-dir` 指定的项目下的 `job-mate/` → `~/.job-mate/`。`--project-dir` 由 Agent 从聊天上下文获取，必须是已存在的绝对路径；未传入时不根据命令 cwd 推测项目。首次按 [就绪流程](onboarding.md) 选择目录，后续调用使用快照返回的 `workspace` 作为 `--workspace`。Harness 的 `job_mate` 工具接受 `request` 对象，使用工作台已选定的数据目录调用同一核心。返回 `ok:false` 时先处理错误；不能盲目重试外发。
 
 ## 准备资料
 

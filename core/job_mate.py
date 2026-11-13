@@ -445,18 +445,30 @@ def execute(root, req):
         connection.close()
 
 
+def resolve_workspace(workspace=None, project_dir=None):
+    explicit = workspace or os.environ.get('JOB_MATE_HOME')
+    if explicit:
+        return Path(explicit).expanduser().absolute()
+    if project_dir:
+        project = Path(project_dir).expanduser()
+        require(project.is_absolute() and project.is_dir(), 'INVALID_PROJECT', '项目目录必须是已存在的绝对路径')
+        return project / 'job-mate'
+    return Path.home() / '.job-mate'
+
+
 def main():
     sys.stdin.reconfigure(encoding='utf-8')
     sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--workspace', default=os.environ.get('JOB_MATE_HOME', str(Path.home() / '.job-mate')))
+    parser.add_argument('--workspace', help='Explicit data workspace; overrides JOB_MATE_HOME and project default')
+    parser.add_argument('--project-dir', help='Chat project root (absolute path); defaults data to <project>/job-mate')
     parser.add_argument('--request', help='JSON request file; otherwise read stdin')
     args = parser.parse_args()
     try:
         raw = Path(args.request).read_text(encoding='utf-8') if args.request else sys.stdin.read(2 * 1024 * 1024 + 1)
         require(len(raw) <= 2 * 1024 * 1024, 'REQUEST_TOO_LARGE', '请求过大')
         req = json.loads(raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError('non-finite JSON')))
-        result = {'ok': True, **execute(args.workspace, req)}
+        result = {'ok': True, **execute(resolve_workspace(args.workspace, args.project_dir), req)}
     except Problem as e:
         result = {'ok': False, 'error': {'code': e.code, 'message': str(e)}}
     except (OSError, sqlite3.Error, ValueError, KeyError, TypeError) as e:
