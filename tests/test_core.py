@@ -165,6 +165,50 @@ class Workspace(unittest.TestCase):
         self.assertEqual(e['text'], 'Platform default greeting')
         self.assertEqual(e['plannedText'], 'Synthetic greeting')
 
+    def test_empty_conversation_continues_same_attempt_with_fresh_guard(self):
+        self.begin(maxActions=1); self.screen(); attempt = self.prepare()
+        # Substitute for an entry click that creates a conversation without sending.
+        self.call('guard', runId=self.run, attemptId=attempt, target=self.target, text='Synthetic greeting')
+        self.call('record', runId=self.run, kind='observe', target=self.target, observed='info',
+                  note='Synthetic page: history loaded, editable empty composer, repeated checks show no sent message')
+        self.call('pause', paused=True)
+        self.assertProblem('PAUSED', 'guard', runId=self.run, attemptId=attempt, target=self.target, text='Synthetic greeting')
+        self.call('pause', paused=False)
+        self.call('guard', runId=self.run, attemptId=attempt, target=self.target, text='Synthetic greeting')
+        self.call('finish', runId=self.run, attemptId=attempt, status='sent', evidence='Synthetic manual message delivered')
+        self.call('end', runId=self.run)
+        s = self.call('snapshot')
+        self.assertEqual(len(s['attempts']), 1)
+        self.assertEqual(s['attempts'][0]['status'], 'sent')
+        self.assertEqual(s['counts']['waiting'], 1)
+        self.assertEqual(s['counts']['uncertain'], 0)
+
+    def test_finished_entry_attempt_cannot_be_reused_for_manual_greeting(self):
+        self.begin(); self.screen(); attempt = self.prepare()
+        self.call('guard', runId=self.run, attemptId=attempt, target=self.target, text='Synthetic greeting')
+        self.call('finish', runId=self.run, attemptId=attempt, status='uncertain', evidence='Synthetic entry timed out')
+        self.assertProblem('ATTEMPT_CLOSED', 'guard', runId=self.run, attemptId=attempt, target=self.target, text='Synthetic greeting')
+        self.assertProblem('UNRESOLVED_SEND', 'prepare', runId=self.run, target=self.target, kind='greet', text='retry')
+
+    def test_greeting_length_default_boundary_and_explicit_override(self):
+        self.begin(); self.screen()
+        message = '你好，' + 'A' * 97
+        self.assertProblem('GREETING_TOO_LONG', 'prepare', runId=self.run, target=self.target, kind='greet', text=message + '！')
+        self.assertEqual(self.call('snapshot')['attempts'], [])
+        for invalid in (0, -1, True, 1.5, 10001):
+            self.assertProblem('INVALID_INPUT', 'prepare', runId=self.run, target=self.target, kind='greet', text=message, maxChars=invalid)
+        attempt = self.prepare(text=message)
+        self.assertEqual(self.call('snapshot')['attempts'][0]['maxChars'], 100)
+        self.call('finish', runId=self.run, attemptId=attempt, status='failed_no_send', evidence='Synthetic cancellation before click')
+        self.time.return_value += 61
+        attempt = self.prepare(text=message + '！', maxChars=101)
+        self.call('guard', runId=self.run, attemptId=attempt, target=self.target, text=message + '！')
+        # Actual platform text is evidence, not a draft to truncate or reject.
+        actual = '平台自动招呼' * 30
+        self.call('finish', runId=self.run, attemptId=attempt, status='sent', evidence='Synthetic auto message delivered', actualText=actual)
+        self.assertEqual(self.call('snapshot')['attempts'][-1]['actualText'], actual)
+        self.assertProblem('ATTEMPT_CLOSED', 'guard', runId=self.run, attemptId=attempt, target=self.target, text=message + '！')
+
     def test_reconcile_preserves_actual_text_and_consumes_decision(self):
         self.begin(skill='followup', actions=['reply'])
         self.call('record', runId=self.run, kind='inbound', target=self.target, text='Interview?')

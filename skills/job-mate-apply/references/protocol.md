@@ -18,7 +18,13 @@ python3 scripts/job_mate.py --request /absolute/path/request.json
 {"op":"configure","revision":1,"profile":{"candidateFacts":"来源 resume.pdf：某项目中负责前端页面。","targetRoles":["前端工程师"],"locations":["上海"],"salary":null,"requirements":[],"exclusions":["外包"],"authorization":[],"confirmation":"用户确认了上述事实和偏好，暂时只筛选。"}}
 ```
 
-salary 非空时为 `{"min":15000,"max":25000,"currency":"CNY","period":"month","basis":"gross"}`。basis 可 gross/net/unspecified；period 可 month/year；币种 CNY/HKD/USD。未提薪资不能擅自当作“不设门槛”，先问本人。authorization 为 greet/reply/nudge/resume 的明确长期许可列表，默认空。
+salary 非空时为 `{"min":15000,"max":25000,"currency":"CNY","period":"month","basis":"gross"}`。basis 可 gross/net/unspecified；period 可 month/year；币种 CNY/HKD/USD。新资料未提薪资时默认不限，在摘要中明示并经本人确认后保存 null，不必专门追问金额；已有明确期望或底线不被默认值清除。authorization 为 greet/reply/nudge/resume 的明确长期许可列表，默认空。
+
+Agent 对未说明的薪资口径分别采用 currency:CNY、period:month、basis:gross，在摘要中明示并经本人确认后保存；不覆盖本人已明确的口径，也不默认薪资金额。salary 保存期望区间，默认仅作排序参考；null 表示本人确认不设期望区间，不代表撤销其他明确条件。
+
+locations 按本人确认的城市先后顺序保存，保留优先级；默认当前城市，不将附近建议城市自动加入。其余偏好沿用 requirements/exclusions 的文字列表，不增加 profile 字段。requirements 同时可记录筛选规则、软偏好及招呼设置，必须写清含义，不能把每条都当硬门槛：例如“工作方式：不限”“用工类型：全职”“薪资筛选：不限”“学历：不限；经验按职责能力匹配，差距如实说明”“招聘者活跃度：14 天内，未知不自动联系”“招呼模式：动态撰写；字数上限：100”。本人另设的薪资硬底线要注明金额、币种、周期、税务口径及明确允许的浮动；不由 salary.min/max 自动推导。软偏好标为“优先”，排除条件写 exclusions；已确认的不限项可省略，但不能因此丢失本人对旧限制的明确撤销。
+
+旧资料缺少上述语义时，先核对已有对话和 confirmation；仍不明确就询问并在本人确认后更新，不能静默把旧硬门槛改为不限或软参考，也不新增全职限制。核心校验数据结构与招呼长度，筛选解释和消息事实核对由 Agent 执行。
 
 ## 一轮任务
 
@@ -38,12 +44,16 @@ salary 非空时为 `{"min":15000,"max":25000,"currency":"CNY","period":"month",
 | record | target, kind:inbound, text, messageKey | 来信摘要，先读取实际会话 |
 | record | target, kind:observe, observed, note | 观察；interview_invited/interview_decided/rejected/job_closed/declined/silent/replied/info |
 | decide | target, question, 可选 key | 创建待本人决定事项；稳定 key 用于防重复 |
-| prepare | target, kind, text, 可选 commitment:true/decisionId | 固定一次外发，返回 result.id 作为 attemptId |
+| prepare | target, kind, text, greet 可选 maxChars，可选 commitment:true/decisionId | 固定一次外发，返回 result.id 作为 attemptId |
 | guard | attemptId, target, text | 核对当前页面与原文，返回 allowed |
 | finish | attemptId, status, evidence, 可选 actualText | status: sent/failed_no_send/uncertain；evidence 为实际页面结果依据 |
 | end | 无 | 收尾；未完成准备转不明，释放运行 |
 
 平台自动招呼与计划文字不同，finish 的 actualText 填实际原文；保留 plannedText 供核对，不能把自己的计划当作已发送内容。
+
+greet 的 maxChars 默认 100，允许 1–10000 的整数，由已确认的招呼设置提供；超长返回 GREETING_TOO_LONG，不产生 attempt。按最终原文的 Python len 计数；不得为绕过检查擅自提高上限。旧调用方需要将超过 100 字的草稿缩短，或在本人确已设置更高上限时显式传 maxChars。此校验不限制 reply/nudge，也不截断或拒绝 finish 中实际观察到的平台自动招呼。已准备的旧 attempt 原文保持不变。
+
+点击立即沟通与随后确认未发后的手动发送共用一次 prepare 和同一 attemptId；每次可能外发的页面动作前分别 guard，最后只 finish 一次。重复 guard 不额外占用尝试次数，但仍检查暂停、内容、目标及有效期；这不允许重发已结束或结果不明的尝试。页面证据与是否可以继续由 Agent 按 [页面规则](boss.md#首次沟通入口后的分支) 核验，guard 不能代替页面判断。
 
 仅查看消息时，未完成偏好配置也可 begin followup/noSend:true；不允许据此发送。
 
