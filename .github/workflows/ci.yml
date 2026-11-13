@@ -2,10 +2,16 @@ name: CI
 
 on:
   push:
+    branches: [master]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -15,7 +21,11 @@ jobs:
       matrix:
         # Python 3.9 的官方构建覆盖 Ubuntu 24.04，不覆盖 ubuntu-latest 的 26.04。
         os: [ubuntu-24.04, macos-latest, windows-latest]
-        python: ['3.9', '3.12', '3.13']
+        # 日常覆盖三系统最低版本和一个新版；手动运行完整九组合。
+        python: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["3.9", "3.12", "3.13"]' || '["3.9"]') }}
+        include:
+          - os: ubuntu-24.04
+            python: '3.13'
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONUTF8: '1'
@@ -24,9 +34,6 @@ jobs:
       - name: 保留仓库原始换行
         run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
-        with:
-          # 崩溃矩阵保护测试需要读取仓库中的历史基线。
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
