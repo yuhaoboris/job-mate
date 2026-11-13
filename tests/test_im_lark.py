@@ -59,7 +59,8 @@ class ImLarkTest(unittest.TestCase):
         im.update(changes)
         if im["channel"] == "none":
             im = {"channel": "none"}
-        (self.ws / "profile.json").write_text(json.dumps({"schemaVersion": 1, "im": im}, ensure_ascii=False), encoding="utf-8")
+        with ledger.mutation_mutex(self.ws):
+            im_lark.fsutil.write_text_atomic(self.ws / "profile.json", json.dumps({"schemaVersion": 1, "im": im}, ensure_ascii=False))
 
     def write_state(self, value):
         self.state.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")

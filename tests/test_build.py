@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -352,6 +353,114 @@ class BuildSafetyTest(unittest.TestCase):
     def tearDown(self):
         self.root_patch.stop()
         self.tmp.cleanup()
+
+    def test_build_install_and_cleanup_without_path_is_mount(self):
+        target = self.base / "installed"
+        unsupported = NotImplementedError("Path.is_mount() is unsupported on this system")
+        with patch.object(Path, "is_mount", side_effect=unsupported):
+            for _ in range(2):
+                code, result = run_build("--out", str(self.out), "--install", str(target))
+                self.assertEqual(code, 0, result)
+                self.assertEqual(len(result["built"]), 3)
+                self.assertEqual(len(result["installed"]), 3)
+                self.assertFalse(result.get("warnings"), result)
+            before = {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()}
+            copytree = build.shutil.copytree
+            def fail_copy(source, dest, *args, **kwargs):
+                dest = Path(dest)
+                if dest.name == "job-mate-followup" and target.resolve() in dest.parents:
+                    dest.mkdir()
+                    (dest / "SKILL.md").write_bytes(b"partial copy")
+                    raise OSError("synthetic partial copy")
+                return copytree(source, dest, *args, **kwargs)
+            with patch.object(build.shutil, "copytree", fail_copy):
+                code, result = run_build("--out", str(self.out), "--install", str(target))
+            self.assertEqual(code, 2, result)
+            self.assertIn("synthetic partial copy", result["error"])
+            self.assertNotIn("保留", result["error"])
+        self.assertEqual({p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()}, before)
+        self.assertFalse(list(self.base.rglob(".job-mate-transaction-*")))
+
+    def test_generated_markdown_and_manifest_use_utf8_lf_with_windows_defaults(self):
+        # 仅模拟文本写入的系统默认换行；不替换构建、清单或发布行为。
+        real_open = io.open
+        def windows_open(file, mode="r", buffering=-1, encoding=None, errors=None,
+                         newline=None, closefd=True, opener=None):
+            if "b" not in mode and any(flag in mode for flag in "wax") and newline is None:
+                newline = "\r\n"
+            return real_open(file, mode, buffering, encoding, errors, newline, closefd, opener)
+        before = {p.relative_to(self.source): p.read_bytes() for p in self.source.rglob("*") if p.is_file()}
+        with patch.object(io, "open", windows_open):
+            code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        generated = [p for p in self.out.rglob("*") if p.is_file() and (p.suffix == ".md" or p.name == "BUILD.json")]
+        self.assertEqual(sum(p.name == "BUILD.json" for p in generated), 3)
+        self.assertEqual([str(p.relative_to(self.out)) for p in generated if b"\r" in p.read_bytes()], [])
+        for package in map(Path, result["built"]):
+            self.assertEqual((package / "shared/rules.md").read_bytes(), "规则\n".encode("utf-8"))
+            manifest = json.loads((package / "BUILD.json").read_bytes())
+            self.assertEqual(manifest["files"]["shared/rules.md"], hashlib.sha256("规则\n".encode("utf-8")).hexdigest())
+        self.assertEqual({p.relative_to(self.source): p.read_bytes() for p in self.source.rglob("*") if p.is_file()}, before)
+
+    def test_reparse_source_and_existing_packages_are_rejected_before_publication(self):
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        before = {p.relative_to(self.out): p.read_bytes() for p in self.out.rglob("*") if p.is_file()}
+        original = Path.lstat
+        candidates = (self.source / "shared/rules.md", self.out / "job-mate-followup",
+                      self.out / "job-mate-followup/shared")
+        for suspect in candidates:
+            with self.subTest(path=suspect.relative_to(self.base)):
+                def reparse(path):
+                    value = original(path)
+                    if path == suspect:
+                        return SimpleNamespace(st_mode=value.st_mode, st_file_attributes=0x400)
+                    return value
+                with patch.object(Path, "lstat", reparse):
+                    code, result = run_build("--out", str(self.out))
+                self.assertEqual(code, 2, result)
+                self.assertIn("重解析点", result["error"])
+                self.assertEqual({p.relative_to(self.out): p.read_bytes() for p in self.out.rglob("*") if p.is_file()}, before)
+                self.assertFalse(list(self.base.rglob(".job-mate-transaction-*")))
+
+    def test_mountpoints_and_failed_path_inspection_still_block_publication(self):
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        before = {p.relative_to(self.out): p.read_bytes() for p in self.out.rglob("*") if p.is_file()}
+        original = os.path.ismount
+        for suspect in (self.out / "job-mate-followup", self.out / "job-mate-followup/shared"):
+            for failure in (False, True):
+                with self.subTest(path=suspect.relative_to(self.base), inspection_error=failure):
+                    def mount(path):
+                        if Path(path) == suspect:
+                            if failure:
+                                raise PermissionError("synthetic mount inspection failure")
+                            return True
+                        return original(path)
+                    with patch.object(build.os.path, "ismount", mount):
+                        code, result = run_build("--out", str(self.out))
+                    self.assertEqual(code, 2, result)
+                    self.assertEqual({p.relative_to(self.out): p.read_bytes() for p in self.out.rglob("*") if p.is_file()}, before)
+                    self.assertFalse(list(self.base.rglob(".job-mate-transaction-*")))
+
+    @unittest.skipUnless(os.name == "nt", "需要原生 Windows 目录 junction")
+    def test_windows_junction_cannot_claim_managed_package(self):
+        code, result = run_build("--out", str(self.out))
+        self.assertEqual(code, 0, result)
+        package = self.out / "job-mate-followup"
+        outside = self.base / "outside-package"
+        package.rename(outside)
+        original = {p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}
+        created = subprocess.run(["cmd", "/d", "/c", "mklink", "/J", str(package), str(outside)],
+                                 capture_output=True, timeout=10)
+        self.assertEqual(created.returncode, 0, created.stdout + created.stderr)
+        try:
+            code, result = run_build("--out", str(self.out))
+            self.assertEqual(code, 2, result)
+            self.assertIn("重解析点", result["error"])
+            self.assertEqual({p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}, original)
+        finally:
+            os.rmdir(package)
 
     def test_all_skill_arguments_validated_before_any_side_effect(self):
         victim = self.base / "victim"
