@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, main]
   pull_request:
   workflow_dispatch:
 
@@ -42,5 +42,7 @@ jobs:
           node-version: lts/*
       - name: 全量单测
         run: python -m unittest discover -s tests
+      - name: 检查独立技能资源一致
+        run: python scripts/build.py --check
       - name: 临时目录构建
         run: python scripts/build.py --out "${{ runner.temp }}/dist"
