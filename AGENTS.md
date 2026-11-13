@@ -1,6 +1,6 @@
 # job-mate 2.0
 
-这是面向任意具备本地文件、Python 3.9+ 与可见桌面操作能力的 AI Agent 的 BOSS 直聘求职技能。用户当前的 2.0 要求取代 1.0 的整套安装、独立 setup、多平台预留与 IM 设计。
+这是面向任意具备本地文件、Python 3.9+ 与可见桌面操作能力的 AI Agent 的 BOSS 直聘求职技能。
 
 - 产品依据是 `docs/design.md`。工作流只在本仓库维护；Harness 插件使用原版发布快照。
 - 两个 skill 可单独安装。入口手写；共享资源由 `scripts/build.py` 从 `core/`、`references/` 同步并提交，保证直接 `npx skills add` 可用。禁止手改生成副本。
@@ -10,3 +10,4 @@
 - 运行 `python3 -m unittest discover -s tests`、`python3 scripts/build.py --check`。单测不等于真实平台或模型验证。
 - 求职资料、简历、凭据、内部开发材料不得提交。内部材料放 `.private/`；开源架构、数据契约与贡献文档可提交。
 - 公开前检查当前文件和全部可达 Git 历史；不得为清理历史擅自 force push。保留 Apache-2.0 许可证。
+- 公开文档说明当前安装与使用，不写内部试验版本历史。首次公开版本之后的 breaking change 必须说明影响和用户需要采取的操作。

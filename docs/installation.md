@@ -6,6 +6,6 @@
 
 安装器复制完整技能目录。共享资源虽然随每个技能各带一份，但它们来自唯一源码，构建检查保证逐字一致；用户只安装一个仍可完成资料准备与自己的任务。
 
-更新：`npx skills update`；新会话中使用更新后的技能。1.0 工作区不会自动修改，请按 [迁移说明](../references/migration.md) 显式导入。不要覆盖正在运行的 Agent 所加载的技能；先结束任务再更新。
+更新：`npx skills update`；先结束正在运行的任务，再在新会话中使用更新后的技能。求职资料保存在独立工作区。
 
 官方依据：[skills CLI](https://github.com/vercel-labs/skills)、[创建与分享技能](https://github.com/vercel-labs/skills/blob/main/docs/creating-skills.md)，核对日期 2026-11-13。

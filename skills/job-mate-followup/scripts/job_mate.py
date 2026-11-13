@@ -406,7 +406,7 @@ def execute(root, req):
     require(not root.is_symlink() and not dbfile.is_symlink(), 'UNSAFE_PATH', '工作区或数据库不能是符号链接')
     if not dbfile.exists():
         legacy = [name for name in ('job-mate.json', 'profile.json', 'ledger.jsonl') if (root / name).exists()]
-        require(not legacy, 'LEGACY_WORKSPACE', '检测到 1.0 工作区，保持原样；请先按迁移指引导入到新目录')
+        require(not legacy, 'LEGACY_WORKSPACE', '检测到不支持的工作区格式，已保留原文件；请停止任务并核对数据来源，不要覆盖或换目录绕开历史记录')
         if req['op'] == 'snapshot':
             return summary(fresh(), root)
         require(req['op'] == 'stage_resume', 'ONBOARDING_REQUIRED', '请先提供简历')

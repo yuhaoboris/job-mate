@@ -48,8 +48,6 @@ Agent 会读取简历，只问缺少的偏好，把资料保存在 `~/.job-mate`
 
 没有 IM 通知或后台服务。待办显示在当前对话；使用 [DeepSeek Harness 工作台](https://github.com/yuhaoboris/dsh-job-mate) 可看到同一份资料和进展。插件携带本仓库的原版技能，不另写求职规则。
 
-升级 1.0 请先读 [迁移说明](references/migration.md)：保留旧目录、显式导入到新目录、核对资料与历史，旧授权不会自动沿用。
-
 ## 开发
 
 ```sh
