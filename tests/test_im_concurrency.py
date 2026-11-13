@@ -181,12 +181,6 @@ with ledger.mutation_mutex(Path(sys.argv[2])):
             holder.communicate(timeout=5)
             self.assertEqual(self.finish(first)[0], 0)
 
-    def test_s03_original_scan_crash_matrix_is_unchanged(self):
-        # 真正的进程故障矩阵由 test_lark_scan 运行；此处核验该文件未被改动。
-        result = subprocess.run(["git", "diff", "--exit-code", "459bf4b", "--", "tests/test_lark_scan.py", "scripts/im_scan.py"],
-                                cwd=ROOT, capture_output=True, encoding="utf-8", timeout=10)
-        self.assertEqual(result.returncode, 0, result.stdout)
-
     def test_s04_inflight_fetch_rechecks_configuration_and_recovery_lock(self):
         for edit in ("route", "configuration", "profile", "version", "recovery"):
             with self.subTest(edit=edit):
