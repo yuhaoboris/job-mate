@@ -320,6 +320,22 @@ class InventoryTest(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertTrue(out["allowed"])
 
+    def test_partial_inventory_allows_verified_recent_reply_without_finishing_scan(self):
+        self.inv_ok("start")
+        self.inv_ok("record", self.row(lastActivityLabel="2026-11-04 11:00"))
+        self.inv_ok("progress", None, "--reason", "先处理当前新回复，历史列表尚未到底")
+        tail = self.read_tail([("当前待回答的问题", "2026-11-04 11:00")],
+                              anchor_label="2026-11-04 10:00")
+        self.assertEqual(self.append("replied", tailId=tail["tailId"])[0], 0)
+        pending = self.ok("prepare", "--run", self.run_id,
+                          "--json", json.dumps(self.reply_intent()))
+        result = self.ok("guard", "--run", self.run_id, "--attempt", pending["attemptId"])
+        self.assertTrue(result["allowed"])
+        inventory = self.ok("threads")["inventories"][0]
+        self.assertEqual(inventory["status"], "in_progress")
+        self.assertFalse(inventory["reachedEnd"])
+        self.assertEqual(inventory["registeredCount"], 1)
+
     def test_mixed_overage_tail_filters_history_and_requires_new_hr_proof(self):
         self.inv_ok("start")
         self.inv_ok("record", self.row(lastActivityLabel="2026-09-21 10:00"))
@@ -462,9 +478,12 @@ class InventoryTest(unittest.TestCase):
     def test_skill_contract_requires_inventory_without_setup_switch(self):
         skill = (ROOT / "skills/followup/SKILL.md").read_text(encoding="utf-8")
         recipe = (ROOT / "shared/inventory.md").read_text(encoding="utf-8")
-        for term in ("每账号首次", "../../shared/inventory.md", "不设开关", "盘点状态", "尚未打开数"):
+        for term in ("../../shared/inventory.md", "每批登记后先处理", "不等全部到底", "盘点状态", "尚未打开数"):
             self.assertIn(term, skill)
-        for term in ("不逐个打开会话", "不受 inboundScanDays", "真实滚到底后", "不按当前求职条件淘汰",
+        self.assertRegex(skill, r"不设\s*setup\s*开关")
+        for term in ("每个平台账号首次运行", "not_started / in_progress 都要做", "不在 setup 提问、不设开关",
+                     "in_progress 不阻塞已核实会话", "处理后用剩余预算继续盘点", "从顶部重新核对、跳过已登记项",
+                     "不逐个打开会话", "不受 inboundScanDays", "真实滚到底后", "不按当前求职条件淘汰",
                      "全局暂停不浏览平台", "最久未处理优先", "不因当前条件不符就 declined", "已有 adopted 返回 duplicate",
                      "不代答、不进入回复分诊", "未超龄的会话", "historicalIndices", "newIndices", "inventory_history"):
             self.assertIn(term, recipe)

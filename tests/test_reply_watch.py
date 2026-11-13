@@ -354,8 +354,10 @@ class WatchProcessTest(unittest.TestCase):
         with I_lock(self.f.state):
             self.f.add_messages(first)
         self.wait_for(lambda: len(self.f.rows()["in"]) == 1, child)
-        ctx = N.context(self.f.ws)
-        state = N.reply_watch(self.f.ws, ctx, self.module.im_lark.fsutil.now(ctx["tz"]))
+        # in 已可见时，后台仍可能在追加 cursor/ack/checkpoint；只在稳定快照上作断言。
+        with self.module.ledger.mutation_mutex(self.f.ws):
+            ctx = N.context(self.f.ws)
+            state = N.reply_watch(self.f.ws, ctx, self.module.im_lark.fsutil.now(ctx["tz"]))
         self.assertEqual([r["decision"] for r in state["waiting"]], [other])
         self.assertIsNone(child.poll())
         second = self.f.message(n=21, created=notified + 9501)
@@ -453,6 +455,7 @@ class WatchProcessTest(unittest.TestCase):
                                 I.fsutil.now(N.context(self.f.ws)["tz"]))["deadlineAt"]
         sleeps = []
         def advance(seconds):
+            self.assertFalse(I.ledger.mutation_held(self.f.ws), "sleep holds mutation lock")
             sleeps.append(seconds)
             os.environ["JOB_MATE_NOW"] = deadline
         with patch.object(I.time, "sleep", side_effect=advance), contextlib.redirect_stdout(io.StringIO()):
@@ -460,22 +463,29 @@ class WatchProcessTest(unittest.TestCase):
         self.assertEqual((code, result["reason"]), (11, "expired"))
         self.assertEqual(sleeps, [60])
         self.assertEqual(N.open_items(self.f.ws), [self.decision])
-        # 退出竞态：第一次无锁快照过期后插入真实新通知，最终临界区必须复查并继续。
+        # 退出竞态：读快照的临界区结束后插入真实新通知，退出临界区必须复查并继续。
         case = WatchProcessTest(); case.setUp()
         try:
             other = "D-20400102-02"
             (case.f.ws / "inbox/decisions.md").write_text(f"## {case.decision} 待决定\n\n## {other} 待处理\n", encoding="utf-8")
             I = case.module.im_lark
-            original_watch, original_lock = N.reply_watch, I.fsutil.try_locked
+            original_watch, original_lock, original_gate = N.reply_watch, I.fsutil.try_locked, I.ledger.gated
             ctx = N.context(case.f.ws)
             first_deadline = original_watch(case.f.ws, ctx, I.fsutil.now(ctx["tz"]))["deadlineAt"]
             injected, unlocked, sleeps = [], [], []
+            expired_snapshot = [False]
             def observed(ws, context, now):
                 state = original_watch(ws, context, now)
-                if state["expired"] and not I.ledger.mutation_held(ws) and not injected:
-                    case.f.invoke(N, "send", "--kind", "todo", "--decision", other, "--text", "new independent question")
-                    injected.append(True)
+                if state["expired"] and not injected:
+                    expired_snapshot[0] = True
                 return state
+            @contextlib.contextmanager
+            def gated(ws, mode, allow_create=False):
+                with original_gate(ws, mode, allow_create=allow_create):
+                    yield
+                if expired_snapshot[0] and not injected and not I.ledger.mutation_held(ws):
+                    injected.append(True)
+                    case.f.invoke(N, "send", "--kind", "todo", "--decision", other, "--text", "new independent question")
             @contextlib.contextmanager
             def locked(path, create=True):
                 with original_lock(path, create=create) as acquired:
@@ -492,6 +502,7 @@ class WatchProcessTest(unittest.TestCase):
                     case.f.configure(waitMinutes=0)
             args = I.build_parser().parse_args(["watch", "--interval", "60"])
             with patch.object(N, "reply_watch", side_effect=observed), patch.object(I.fsutil, "try_locked", side_effect=locked), \
+                    patch.object(I.ledger, "gated", side_effect=gated), \
                     patch.object(I.time, "sleep", side_effect=tick), contextlib.redirect_stdout(io.StringIO()):
                 result, code = I.watch_loop(case.f.ws, args)
             self.assertEqual((code, result["reason"]), (0, "disabled"))
@@ -520,8 +531,12 @@ class WatchProcessTest(unittest.TestCase):
 
     def test_w30_logs_rotate_and_are_not_business_truth(self):
         log = self.f.ws / "ledger/im-watch.log"
-        line = '{"event":"synthetic"}\n'
-        log.write_text(line * ((1024 * 1024) // len(line)), encoding="utf-8")
+        line = b'{"event":"synthetic"}\n'
+        initial = line * ((1024 * 1024) // len(line))
+        log.write_bytes(initial)
+        self.assertEqual(log.stat().st_size, len(initial))
+        self.assertLessEqual(len(initial), 1024 * 1024)
+        self.assertLess((1024 * 1024) - len(initial), len(line))
         self.control("--max-ticks", "1")
         self.assertLessEqual(log.stat().st_size, 1024 * 1024)
         self.assertLessEqual(log.with_name(log.name + ".1").stat().st_size, 1024 * 1024)

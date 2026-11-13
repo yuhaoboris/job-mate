@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,16 @@ def git_info():
     return (commit, bool(status)) if commit and status is not None else (None, None)
 
 
+def is_link_or_reparse(path):
+    """lstat 不跟随链接；也拒绝旧版 pathlib 未识别为符号链接的 Windows junction。"""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
 def checked_path(path, aliases=False):
     """技能和源码路径不跟随链接；只有显式分发根允许解析祖先别名。"""
     path = Path(path).expanduser()
@@ -59,8 +70,8 @@ def checked_path(path, aliases=False):
     for part in (*reversed(path.parents), path):
         # macOS 的系统别名不是用户安装目录中的符号链接。
         system_alias = sys.platform == "darwin" and str(part) in ("/tmp", "/var", "/etc")
-        if part.is_symlink() and not system_alias:
-            raise BuildError(f"路径包含符号链接，不覆盖：{part}")
+        if is_link_or_reparse(part) and not system_alias:
+            raise BuildError(f"路径包含符号链接或重解析点，不覆盖：{part}")
     return path.resolve()
 
 
@@ -101,8 +112,8 @@ def inventory(directory):
     """先拒绝链接/特殊文件；普通 Python 缓存及 Finder 元数据不作归属证据。"""
     files, dirs = {}, set()
     for path in directory.rglob("*"):
-        if path.is_symlink() or path.is_mount():
-            raise BuildError(f"产物含符号链接或挂载点，不覆盖：{path}")
+        if is_link_or_reparse(path) or os.path.ismount(path):
+            raise BuildError(f"产物含符号链接、重解析点或挂载点，不覆盖：{path}")
         rel = path.relative_to(directory).as_posix()
         if path.is_dir():
             if path.name != "__pycache__":
@@ -119,7 +130,7 @@ def inventory(directory):
 def managed(directory, name):
     """旧格式清单、手工修改或未知额外文件均拒绝自动覆盖，请先人工迁出。"""
     checked_path(directory)
-    if not directory.is_dir() or directory.is_mount():
+    if not directory.is_dir() or os.path.ismount(directory):
         raise BuildError(f"{directory} 不是普通、非挂载的技能目录，不覆盖")
     files, dirs = inventory(directory)
     try:
@@ -177,8 +188,8 @@ def rewrite_markdown(text, src, dest, skill, skill_dir, pending):
         # 相对链接允许 ../；在 resolve 前逐级核对链接，防止源内容外泄。
         linked = src.parent / link
         for part in (linked, *linked.parents):
-            if part.is_symlink():
-                raise BuildError(f"源引用包含符号链接：{linked}")
+            if is_link_or_reparse(part):
+                raise BuildError(f"源引用包含符号链接或重解析点：{linked}")
         target_src = source_path(linked.resolve())
         if not target_src.exists():
             raise BuildError(f"{src.relative_to(ROOT.resolve())} 中的链接不存在：{link}")
@@ -223,7 +234,7 @@ def build_skill(skill, out, info):
         raise BuildError(f"未知技能名：{skill!r}")
     src_dir = ROOT.resolve() / "skills" / skill
     skill_dir = out / f"{PREFIX}{skill}"
-    if skill_dir.exists() or skill_dir.is_symlink():
+    if skill_dir.exists() or is_link_or_reparse(skill_dir):
         raise BuildError(f"构建暂存目录已存在，不覆盖：{skill_dir}")
     done, pending = set(), []
     for src in sorted(src_dir.rglob("*.md")):
@@ -251,7 +262,8 @@ def build_skill(skill, out, info):
         elif src.parent == ROOT.resolve() / "shared":
             text = rewrite_shared_md(text)
         text = rewrite_markdown(text, src, dest, skill, skill_dir, pending)
-        dest.write_text(text, encoding="utf-8")
+        # 固定 UTF-8/LF，避免 Windows 默认换行改变产物大小和清单摘要。
+        dest.write_bytes(text.encode("utf-8"))
     scripts = skill_dir / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     for py in sorted((ROOT / "scripts").glob("*.py")):
@@ -259,10 +271,10 @@ def build_skill(skill, out, info):
             shutil.copy2(source_path(py), scripts / py.name)
     verify(skill_dir)
     files, dirs = inventory(skill_dir)
-    (skill_dir / "BUILD.json").write_text(json.dumps(dict(info, source="job-mate", format=1,
-                                                       skill=f"{PREFIX}{skill}", files=files,
-                                                       directories=sorted(dirs)),
-                                                     ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manifest = json.dumps(dict(info, source="job-mate", format=1,
+                               skill=f"{PREFIX}{skill}", files=files,
+                               directories=sorted(dirs)), ensure_ascii=False, indent=2) + "\n"
+    (skill_dir / "BUILD.json").write_bytes(manifest.encode("utf-8"))
     return skill_dir
 
 
@@ -286,15 +298,15 @@ def verify(skill_dir):
 def remove_package(directory, name, partial_source=None):
     """仅清理本事务持有的包；不递归删除未知文件或跟随链接。"""
     checked_path(directory)
-    entries = sorted(directory.rglob("*"), key=lambda p: len(p.parts), reverse=True)
     if partial_source is None:
         managed(directory, name)
     else:
         # copytree 中途失败也可清理，但只允许源包已知路径；不要求半写文件摘要相等。
         files, dirs = inventory(directory)
         allowed_files, allowed_dirs = inventory(partial_source)
-        if directory.is_mount() or set(files) - set(allowed_files) or dirs - allowed_dirs:
+        if os.path.ismount(directory) or set(files) - set(allowed_files) or dirs - allowed_dirs:
             raise BuildError(f"暂存包含未知数据，保留供人工处理：{directory}")
+    entries = sorted(directory.rglob("*"), key=lambda p: len(p.parts), reverse=True)
     for entry in entries:
         checked_path(entry)
         if entry.is_dir():
@@ -309,7 +321,7 @@ def cleanup_transaction(stages, records):
     for record in records:
         for key in ("new", "backup"):
             path = record[key]
-            if path.exists() or path.is_symlink():
+            if path.exists() or is_link_or_reparse(path):
                 try:
                     remove_package(path, record["name"], record["source"] if key == "new" else None)
                 except (BuildError, OSError, ValueError) as e:
@@ -381,7 +393,7 @@ def publish(built, targets):
                     record["new_moved"] = False
                 if record["old_moved"]:
                     managed(record["backup"], record["name"])
-                    if record["dest"].exists() or record["dest"].is_symlink():
+                    if record["dest"].exists() or is_link_or_reparse(record["dest"]):
                         raise BuildError(f"恢复目标被占用：{record['dest']}")
                     fsutil.replace_atomic(record["backup"], record["dest"])
                     record["old_moved"] = False

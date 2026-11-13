@@ -19,7 +19,7 @@ python3 <技能目录>/scripts/workspace.py --workspace <工作区> commit --sta
 
 ### IM 筛选条件受限入口
 
-`workspace commit --im-reply <messageId> --im-part <partId> --staging <目录> --run <setupRun>` 只在普通 setup 非访谈阶段接受外部暂存的 profile.json。校验当前锁/runId、可信本人原消息与计划版本、白名单、配置基线及完整差异；前置失败退出2，不建备份/日志、不标 applied，不退回直接写文件。
+`workspace commit --im-reply <messageId> --im-part <partId> --run <setupRun>` 仅用于普通 setup 非访谈阶段。不传 staging 时，由脚本在事务锁内从已保存计划生成并冻结 profile 字节；Agent 不手写暂存。校验锁/runId、可信本人原消息与计划版本、白名单、依赖、配置基线及完整差异；前置失败退出2，不建备份/日志、不标 applied，不直接改文件。兼容显式 `--staging <目录>`，仅接受同计划的 profile.json；普通非 IM 提交仍须 staging。两条 IM 路径共用事务和审计。
 
 可选 imChange 关联原 im.jsonl 计划。成功配置读回后先写 applied 审计、再删事务日志；日志存在时只报 pending。recover 按原协议回滚并写 rolled_back 后删日志；abandon 记 needs_review。未知/损坏关联拒绝恢复并保留证据；旧日志无此字段照旧恢复。删日志后中断只凭可验证审计补分项，不重复提交。完整输入与审计查询见[IM 条件事务](im-replies.md)。
 

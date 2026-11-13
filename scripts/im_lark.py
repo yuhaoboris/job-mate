@@ -465,9 +465,22 @@ def watch_event(ws, ctx, state, event, reason=None, message_ids=None):
         pass  # 日志仍可供无即时事件入口的 runtime 查询。
 
 
+def watch_start_clock():
+    """启动期限跨进程比较；macOS 3.9 的 monotonic 原点仍属于各进程。"""
+    if sys.platform == "darwin":
+        clock = getattr(time, "clock_gettime", None)
+        clock_id = getattr(time, "CLOCK_MONOTONIC", None)
+        require(callable(clock) and clock_id is not None, "watch_clock_unavailable")
+        try:
+            return clock(clock_id)
+        except (OSError, ValueError):
+            raise LarkError("watch_clock_unavailable") from None
+    return time.monotonic()
+
+
 def start_ack(ws, args, reason):
     if (args.child_token is not None and not getattr(args, "acknowledged", False)
-            and args.child_deadline is not None and time.monotonic() < args.child_deadline):
+            and args.child_deadline is not None and watch_start_clock() < args.child_deadline):
         path = ws / "ledger" / (".im-watch-start-" + args.child_token + ".json")
         fsutil.write_text_atomic(path, notify.canonical({"pid": os.getpid(), "token": args.child_token, "reason": reason}))
         args.acknowledged = True
@@ -481,12 +494,12 @@ def watch_loop(ws, args):
         require(isinstance(args.child_token, str) and re.fullmatch(r"[0-9a-f]{32}", args.child_token) is not None
                 and os.environ.get("JOB_MATE_WATCH_CHILD_TOKEN") == args.child_token
                 and isinstance(args.child_deadline, float) and math.isfinite(args.child_deadline)
-                and 0 < args.child_deadline <= time.monotonic() + 5, "watch_child_arguments_invalid")
+                and 0 < args.child_deadline <= watch_start_clock() + 5, "watch_child_arguments_invalid")
         if os.environ.get("JOB_MATE_TESTING") == "1":
             delay = float(os.environ.get("JOB_MATE_WATCH_START_DELAY", "0"))
             require(0 <= delay <= 10, "watch_test_delay_invalid")
             time.sleep(delay)
-        if time.monotonic() >= args.child_deadline:
+        if watch_start_clock() >= args.child_deadline:
             return {"reason": "watch_start_expired"}, 1
     # 无待回复项也先检查写入版本准入；无效版本不得创建控制文件。
     with ledger.gated(ws, "write"):
@@ -506,14 +519,17 @@ def watch_loop(ws, args):
                     start_ack(ws, args, "inactive")
                     lifetime.close()
                     return {"reason": "expired" if state["expired"] else "inactive"}, 11 if state["expired"] else 0
-                if args.child_deadline is not None and time.monotonic() >= args.child_deadline:
+                if args.child_deadline is not None and watch_start_clock() >= args.child_deadline:
                     return {"reason": "watch_start_expired"}, 1
                 start_ack(ws, args, "started")
             watch_event(ws, ctx, state, "watch_started")
             seen, ticks = set(), 0
             while True:
-                ctx, state = watch_state(ws)
-                replies = notify.pending_replies(notify.sync_view(ws, ctx["cfg"]))
+                # 本地状态、回复与读取资格来自同一快照；网络和睡眠不占协调锁。
+                with ledger.gated(ws, "write"):
+                    ctx, state = watch_state(ws)
+                    replies = notify.pending_replies(notify.sync_view(ws, ctx["cfg"]))
+                    readable = state["active"] and notify.poll(ws, ctx)["readable"]
                 ids = sorted(r["messageId"] for r in replies if r["messageId"] not in seen)
                 for offset in range(0, len(ids), 100):
                     watch_event(ws, ctx, state, "reply_available", message_ids=ids[offset:offset + 100])
@@ -532,19 +548,20 @@ def watch_loop(ws, args):
                 remaining = max(0, (datetime_deadline(state) - fsutil.now(ctx["tz"])).total_seconds())
                 token = CALL_DEADLINE.set(time.monotonic() + remaining)
                 try:
-                    if notify.poll(ws, ctx)["readable"]:
+                    if readable:
                         result = sync(ws, fetch_only=True, max_pages=1)
                         reason = "sync_busy" if result.get("busy") else ("im_incomplete" if result.get("incomplete") else "synced")
                     else:
                         reason = "not_readable"
                 finally:
                     CALL_DEADLINE.reset(token)
-                ctx, state = watch_state(ws)
+                with ledger.gated(ws, "write"):
+                    ctx, state = watch_state(ws)
+                    replies = notify.pending_replies(notify.sync_view(ws, ctx["cfg"]))
                 watch_event(ws, ctx, state, "watch_tick", reason)
                 ticks += 1
                 # 下一拍首先提示刚落盘的回复，即便集合已清空；不在这里提前退出。
                 if args.max_ticks is not None and ticks >= args.max_ticks:
-                    replies = notify.pending_replies(notify.sync_view(ws, ctx["cfg"]))
                     ids = sorted(r["messageId"] for r in replies if r["messageId"] not in seen)
                     for offset in range(0, len(ids), 100):
                         watch_event(ws, ctx, state, "reply_available", message_ids=ids[offset:offset + 100])
@@ -592,14 +609,14 @@ def detach_watch(ws, args):
             return {"started": False, "alreadyRunning": running is True, "reason": reason, "pid": None}, 0 if running else 1
         if not state["active"]:
             return {"started": False, "alreadyRunning": False, "reason": "inactive", "pid": None}, 0
-    token, deadline = uuid.uuid4().hex, time.monotonic() + 5
+    token, deadline = uuid.uuid4().hex, watch_start_clock() + 5
     path = ws / "ledger" / (".im-watch-start-" + token + ".json")
     try:
         child = spawn_watch(ws, args.interval, token, deadline, args.max_ticks)
     except (OSError, ValueError):
         return {"started": False, "alreadyRunning": False, "reason": "watch_spawn_failed", "pid": None}, 1
     try:
-        while time.monotonic() < deadline:
+        while watch_start_clock() < deadline:
             if path.exists():
                 ack = strict_json(path.read_text(encoding="utf-8"))
                 require(ack.get("token") == token and ack.get("pid") == child.pid, "watch_handshake_invalid")

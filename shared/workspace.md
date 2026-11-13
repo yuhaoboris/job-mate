@@ -30,7 +30,7 @@
 |---|---|---|
 | `job-mate.json` | 标记与元数据：`schemaVersion`、`suiteVersion`、`accounts`、`createdAt` | `setup` |
 | `setup-progress.json` | setup 的模式、步骤计划、当前步骤、回答与复核来源，含私人信息 | 只经 `workspace.py progress` 读写 |
-| `profile.json` | 筛选条件、限额、授权、招呼语方式 | `setup`；本人说「以后……」时由当前技能更新 |
+| `profile.json` | 筛选条件、限额、授权、招呼语方式 | 仅 `setup` 配置事务；其他技能转交明确变更 |
 | `stoplist.yaml` | 停止名单 | 本人手工；技能经 `ledger.py stoplist add` |
 | `candidate.md` | 个人事实，沟通和代答的唯一依据 | `setup`、本人 |
 | `qa.yaml` | HR 常见问题与回答口径，每条注明 `candidate.md` 中的依据 | `setup`、本人确认后由 `followup` 追加 |
@@ -145,7 +145,7 @@ init 用 `--account platform:accountKey:displayName`，不同平台可重复，�
 - `schedule.activeHours` 约束 `apply` 和主动跟进；回复 HR 不受限。
 - `im` 见 [notify.md](notify.md)：channel 为 none（只写 inbox，缺省）或 lark。waitMinutes 是后台监听空闲窗口，整数 0–60（非布尔），缺省 60；0 关闭监听。
 - 飞书需要非空 ownerId 与 larkProfile；可选 larkCommand 为非空字符串数组。体检与 notify 共用校验，不按 ID 前缀猜身份。无需通知写 `{"channel":"none"}`，缺少 im 等同 none。
-- `progress` 仅保存访谈答案，不把答案自动应用到 profile。部分重新设置只合并所选领域的本人确认变更；未选字段与授权均保留。IM 与定时运行不能新增授权或修改求职条件。
+- `progress` 仅保存访谈答案，不自动应用到 profile。部分重设只合并所选变更。IM 明确筛选条件仅按[IM 条件事务](im-replies.md)由 setup 提交；定时轮不能自行改条件，两者都不能新增授权。
 
 setup 更新流程：读取 → 仅合并本人明确要求长期保存的变更到暂存 → 持锁 commit → 读回核对。「这次」的修改只用于本轮，不写回。文件损坏或版本不识别时停止并请本人处理，不用空文件覆盖。
 
@@ -169,7 +169,7 @@ setup 更新流程：读取 → 仅合并本人明确要求长期保存的变更
 
 ## qa.yaml
 
-HR 常见问题的回答口径。`followup` 只在这里有依据时直接回答；每条都要指向 `candidate.md` 的出处。
+HR 常见问题的回答口径，每条注明 `candidate.md` 出处。`followup` 可依据这里或 `candidate.md` 的明确事实回答；冲突先澄清，承诺仍交本人。
 
 ```yaml
 - id: experience

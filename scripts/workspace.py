@@ -440,6 +440,20 @@ def stoplist_ops(ws, filename):
     return text.encode("utf-8")
 
 
+def im_plan_staging(ws, message_id, part_id):
+    """只装配内存候选字节；来源、差异及幂等性仍交给 im_commit_plan 校验。"""
+    state = notify.load_state(ws)
+    plan = state["plans"].get(message_id)
+    part = next((p for p in (plan or {}).get("parts", []) if p["partId"] == part_id), None)
+    if part is None or part["kind"] != "preference":
+        notify.change_error("im_change_source_invalid")
+    # 已有事务审计时，由原入口判定重复或拒绝；不能用后来的配置重建旧目标。
+    if any(record["operationId"] == part["operationId"] for record in state["changes"].values()):
+        return {}
+    profile = ledger.load_profile(ws)
+    return {"profile.json": notify.preference_target(profile, part)}
+
+
 def cmd_commit(args):
     ws = ledger.find_workspace(args.workspace)
     if args.im_reply is not None or args.im_part is not None:
@@ -450,11 +464,14 @@ def cmd_commit(args):
             notify.change_error("im_change_fields_forbidden")
         notify.reply_phase(ws, args.run, "setup")
         config_txn.refuse_pending(ws)
+        if args.staging is not None:
+            try:
+                staged = config_txn.stage_files(ws, args.staging)
+            except (ValueError, OSError, ledger.LedgerError):
+                notify.change_error("im_change_fields_forbidden")
         try:
-            staged = config_txn.stage_files(ws, args.staging)
-        except (ValueError, OSError, ledger.LedgerError):
-            notify.change_error("im_change_fields_forbidden")
-        try:
+            if args.staging is None:
+                staged = im_plan_staging(ws, args.im_reply, args.im_part)
             meta, duplicate = notify.im_commit_plan(ws, args.im_reply, args.im_part, staged)
         except (notify.NotifyError, KeyError, TypeError, ValueError):
             notify.change_error("im_change_source_invalid")
@@ -714,8 +731,8 @@ def build_parser():
     r.add_argument("--stoplist-from-backup", action="store_true", help="本人确认后只使用备份停止名单，保存损坏原字节")
     commit = sub.add_parser("commit", help="setup 配置事务：校验、备份、提交或恢复残留事务")
     commit.add_argument("--run", required=True)
-    source = commit.add_mutually_exclusive_group(required=True)
-    source.add_argument("--staging")
+    source = commit.add_mutually_exclusive_group()
+    source.add_argument("--staging", help="暂存目录；IM 提交省略时从已保存计划生成配置")
     source.add_argument("--recover", action="store_true")
     commit.add_argument("--im-reply")
     commit.add_argument("--im-part")
@@ -760,7 +777,11 @@ def entry_mode(args):
 
 def main(argv=None):
     fsutil.utf8_stdio()
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if (args.cmd == "commit" and args.staging is None and not args.recover
+            and args.im_reply is None and args.im_part is None):
+        parser.error("普通 commit 必须指定 --staging 或 --recover；IM 提交须同时指定 --im-reply 和 --im-part")
     try:
         if args.cmd == "init":
             parse_accounts(args.account)

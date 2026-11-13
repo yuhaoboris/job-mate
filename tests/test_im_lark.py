@@ -59,7 +59,8 @@ class ImLarkTest(unittest.TestCase):
         im.update(changes)
         if im["channel"] == "none":
             im = {"channel": "none"}
-        (self.ws / "profile.json").write_text(json.dumps({"schemaVersion": 1, "im": im}, ensure_ascii=False), encoding="utf-8")
+        with ledger.mutation_mutex(self.ws):
+            im_lark.fsutil.write_text_atomic(self.ws / "profile.json", json.dumps({"schemaVersion": 1, "im": im}, ensure_ascii=False))
 
     def write_state(self, value):
         self.state.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
@@ -578,9 +579,12 @@ class ImLarkTest(unittest.TestCase):
                 cli("workspace.py", "init", str(self.ws), "--account", "boss:synthetic:合成账号")
                 self.configure(larkCommand=[sys.executable, str(tool)])
                 self.assertTrue(cli("im_lark.py", "--workspace", str(self.ws), "doctor")["ok"])
-                self.assertEqual(cli("notify.py", "--workspace", str(self.ws), "test")["status"], "queued")
+                test = cli("notify.py", "--workspace", str(self.ws), "test")
+                self.assertEqual(test["status"], "queued")
                 self.assertEqual(cli("im_lark.py", "--workspace", str(self.ws), "sync", "--send-only")["sent"], 1)
-                self.add_messages(self.message(42, "收到"))
+                quoted = self.message(42, "收到")
+                quoted["parent_id"] = self.rows()["out"][test["key"]]["messageId"]
+                self.add_messages(quoted)
                 out = cli("im_lark.py", "--workspace", str(self.ws), "sync", "--fetch-only")
                 self.assertEqual(out["incoming"]["new"][0]["state"], "test")
                 self.assertEqual(cli("im_lark.py", "--workspace", str(self.ws), "sync", "--send-only")["sent"], 1)

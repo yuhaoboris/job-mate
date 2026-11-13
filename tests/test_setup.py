@@ -148,9 +148,9 @@ class SetupStepsTest(unittest.TestCase):
         self.assertIn("../../shared/ask.md", skill)
         self.assertIn("本轮主动提供的文件", skill)
         ask = (ROOT / "shared/ask.md").read_text(encoding="utf-8")
-        for term in ("AskUserQuestion", "AskQuestion", "request_user_input", "仅 Plan Mode",
+        for term in ("AskUserQuestion", "AskQuestion", "request_user_input", "工具已暴露",
                      "ask_user_question", "先查找一次", "最多 4 题", "2–4",
-                     "不另加「其他」", "先读", "只说结果", "不出现字段名"):
+                     "不另加「其他」", "先读", "业务进展与结果", "不出现字段名"):
             self.assertIn(term, ask)
         for name in ("apply", "followup"):
             self.assertIn("../../shared/ask.md", (ROOT / f"skills/{name}/SKILL.md").read_text(encoding="utf-8"))
@@ -163,8 +163,8 @@ class SetupStepsTest(unittest.TestCase):
         setup = (ROOT / "skills/setup/SKILL.md").read_text(encoding="utf-8")
         index = 0
         for term in ("ask_user_question", "questions[]", "`id`", "`question`", "`header`",
-                     "options[{label, description}]", "`multi_select`", "不限于 Plan Mode",
-                     "不在列表里才退回编号纯文本", "卡片空选择 = 跳过本题",
+                     "options[{label, description}]", "`multi_select`", "本轮工具说明",
+                     "否则退回编号纯文本", "卡片空选择 = 跳过本题",
                      "不能当作对平台操作或 Agent 审批请求的批准",
                      "主动打招呼关闭", "有把握的问题直接回答（L2）开启", "对方不回时跟进开启",
                      "首次沟通 apply.send 只能由本人明确同意开启", "本人选择 / 默认",

@@ -697,7 +697,7 @@ def incoming(ws, ctx, batch, _scan_proof=None):
             for reason, mid in sorted(rejected_ids):
                 if mid not in st["incomingRejected"].get(reason, set()):
                     append_record(ws, {"type": "rejected", "route": cfg["route"], "reason": reason, "messageId": mid}, tz)
-            opened, ledger_error = candidates(ws)
+            _, ledger_error = candidates(ws)
             test = active_test(st, tz, cfg["route"])
             new = []
             for m in accepted:
@@ -715,14 +715,12 @@ def incoming(ws, ctx, batch, _scan_proof=None):
                     explicit = re.search(r"D-\d{8}-\d+", m["text"]) or re.match(r"^\s*\d{1,3}(?=\s|$)", unicodedata.normalize("NFKC", m["text"]))
                     if ledger_error:
                         rec.update(state="received", note="ledger_unreadable")
-                    elif test and not explicit and not (m["parentId"] in st["outByMessage"] and st["outByMessage"][m["parentId"]].get("decision")) and (
-                        m["parentId"] == test.get("messageId") or (m["parentId"] is None and not opened and not cands)
-                    ):
+                    elif (test and not explicit and m["parentId"] == test.get("messageId")
+                          and not (m["parentId"] in st["outByMessage"] and st["outByMessage"][m["parentId"]].get("decision"))):
                         rec.update(state="test", testKey=test["key"])
                         test = None
-                    elif not opened and not cands:
-                        rec.update(state="ignored", note="没有待答复的事项")
                     else:
+                        # 没有待答事项也可能是在修改偏好；由 followup 解释，不在入站时猜意图。
                         rec["state"] = "received"
                 if _scan_proof is not None:
                     rec["scanMessage"] = {"scanId": _scan_proof["scanId"], "revision": _scan_proof["revision"],
@@ -753,8 +751,7 @@ def incoming(ws, ctx, batch, _scan_proof=None):
                     deliver(ws, ctx, f"cmd:{mid}", compose("ack", result["text"]), "ack", reply_to=mid)
             else:
                 text = "测试成功：消息收发都正常。" if rec["state"] == "test" else (
-                    "目前没有等你答复的事项。支持的指令：暂停、恢复。" if rec["state"] == "ignored" else (
-                        "已收到。当前处于暂停状态，回「恢复」后执行。" if ledger.read_pause(ws) else "已收到，正在处理。"))
+                    "已收到。当前处于暂停状态，回「恢复」后执行。" if ledger.read_pause(ws) else "已收到，等待处理。")
                 deliver(ws, ctx, f"ack:{mid}", compose("ack", text), "ack", reply_to=mid)
         return {"new": [public_reply(r) for r in new], "commands": commands, "rejected": dict(rejects), **poll(ws, ctx)}
 

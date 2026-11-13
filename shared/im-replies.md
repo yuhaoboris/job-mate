@@ -4,7 +4,7 @@ followup 解释普通答复、收到条件修改或混合答复，以及 setup �
 
 ### 解释回复（技能）
 
-1. `notify replies --state received` 与 `--state ready`，按时间处理。
+1. `notify replies --state received` 与 `--state ready`，按时间处理；没有候选事项不代表无需处理，语义确认无关后才标 ignored。
 2. 含义不清先排队 clarify，运行 `im_lark.py sync`，收到 sent 后才 `reply-state --state clarifying`；queued、blocked、failed、unknown 均保留原状态，报告未确认追问送达。
 3. 明确结论写 inbox / ledger 后，`notify reply-state --message <消息ID> --state ready --decision <ID>`。
 4. 执行 followup 的决定或只收尾 ready 分支。全局暂停或本轮禁发保留 ready，不执行、不消费。
@@ -28,7 +28,7 @@ followup 解释普通答复、收到条件修改或混合答复，以及 setup �
 
 ## followup 生成技术计划
 
-1. 持普通有效 followup 锁，读 `notify replies`。received/ready 按原流程；ignored 只表示入账时没有待答事项，若其本人原话明确提出上述修改，也可据此生成计划，不把任意闲聊当修改。command/test 不进入此接口。核对原消息，不用通知送达或本人自称代替身份。
+1. 持普通有效 followup 锁，读 `notify replies`。received/ready 按原流程；本人要求重查的历史 ignored 消息，若原话明确修改条件，也可生成计划。command/test 不进入此接口。核对原消息，不用通知送达或本人自称代替身份，不把闲聊当修改。
 2. 按 messageId 拆稳定 partId：条件提交组、每个明确 D 的事项答案、待澄清片段、禁止片段。所选独立明确组放在一个 preference 提交组，members 列各组 ID；所选组在一次 profile 事务中原子提交，不在提交时跳过失败字段。事项答案用 dependsOn 指向它依赖的提交组；无关明确事项可先处理。
 3. 原话片段 quote 必须逐字来自该消息。偏好组每个 changes 元素为 field/before/after，before 是本次读到的原值；缺失字段记 null，不以此猜 after。字段和实际值经完整 profile 校验。计划记录在原 ledger/im.jsonl；不另建业务文件。
 
@@ -45,7 +45,7 @@ notify reply-state --message <messageId> --run <followupRun> --plan '<JSON>'
 - clarification 可带 questionFields，标出尚缺的白名单字段；不能伪造具体值；
 - rejected 保留被拒的原话，不夹带 changes。
 
-脚本返回 plan 及 targets。operationId、beforeHash、afterHash、updatedAt 由脚本生成，禁止从 IM 指定；targets 是本次暂存的完整 profile 内容，以排序键、UTF-8、两空格缩进及结尾 LF 序列化。把所选提交组的 targets 内容按 `notify.profile_bytes` 同样的固定格式写到外部暂存目录的 profile.json，字节须与 afterHash 一致。
+脚本返回 plan 及 targets；operationId、beforeHash、afterHash、updatedAt 由脚本生成，不从 IM 指定。targets 用于核对，Agent 不复制或序列化 profile；setup 提交直接消费已保存的计划。
 
 修订技术计划时保留全部原 partId，已终结项原含义不能改绑；输入沿用原提交的字段，不把查询投影的 applied 等派生字段反写为新指令。基线有无关字段变化时，可从同一原话重新读基线、核对映射后升 revision，无须本人确认。目标字段旧值变化或原映射不再唯一则不重提，保留现值、追问冲突。不可凭当前值恰好相同声称本次已提交。
 
@@ -54,13 +54,13 @@ notify reply-state --message <messageId> --run <followupRun> --plan '<JSON>'
 followup 先可靠收尾全部尝试，释放自己的运行锁。runtime 串行进入 setup 非访谈阶段，取普通 setup 锁，不开始或继续访谈、不补猜字段。这是执行阶段约束，不是同 OS 用户间的强身份隔离；runId 不是安全令牌。
 
 ```text
-workspace commit --im-reply <messageId> --im-part <partId> --staging <目录> --run <setupRun>
+workspace commit --im-reply <messageId> --im-part <partId> --run <setupRun>
 ```
 
-- im-reply/im-part 成对且非空，不与 recover/abandon/stoplist-ops 合用。外部暂存只放 profile.json，与工作区互不包含，禁止链接、逃逸、额外文件。
+- im-reply/im-part 成对且非空，不与 recover/abandon/stoplist-ops 合用。不传 staging 时，脚本在事务锁内重验计划、生成并冻结 profile 字节，无临时目录需 Agent 清理。普通非 IM 提交仍须 staging。
 - mutation → config.lock → setup 锁校验临界区内，检查普通 setup 阶段及 runId、有效期和 releasing 状态；重新核对当前可信本人消息、route、计划 revision、原消息摘要、字段白名单、配置基线及全部暂存差异。
 - setup_lock_required、im_change_source_invalid、im_change_fields_forbidden、im_change_baseline_conflict 均退出 2。前置拒绝不建备份/日志，不改配置，不标 applied；不得退回直接写文件。
-- 暂存读取一次后冻结；换掉暂存源不改变已核验字节。沿原事务完整备份、fsync、临时文件和原子替换，不声称 profile 与 im.jsonl 可一次硬件原子写入。
+- 兼容显式 staging：仅含 profile.json，与工作区互不包含，禁止链接、逃逸或额外文件；读取一次后冻结。两条路径复用原备份、fsync、原子替换，不声称 profile 与 im.jsonl 可一次硬件原子写入。
 - 成功后下一轮重读 profile，重新筛选/prepare/guard。旧轮已准备动作不沿用放行；apply 自己在下一轮筛选、首次沟通，followup 不代跑 apply。
 
 ## 审计、分项与恢复
