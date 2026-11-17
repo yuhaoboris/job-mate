@@ -52,6 +52,14 @@ class Workspace(unittest.TestCase):
     def prepare(self, kind='greet', target=None, **kw):
         return self.call('prepare', runId=self.run, target=target or self.target, kind=kind, text=kw.pop('text', 'Synthetic greeting'), **kw)['result']['id']
 
+    def historical_message(self, kind, key, days_ago, **fields):
+        return {'kind': kind, 'messageKey': key, 'at': core.stamp(self.time.return_value - days_ago * 86400),
+                'text': 'Synthetic message ' + key, **fields}
+
+    def import_history(self, *messages, target=None):
+        return self.call('import_history', runId=self.run, target=target or self.target, messages=list(messages),
+                         evidence='Synthetic page: confirmed conversation, message direction and timestamps')
+
     def assertProblem(self, code, op, **kwargs):
         with self.assertRaises(core.Problem) as cm:
             self.call(op, **kwargs)
@@ -253,6 +261,89 @@ class Workspace(unittest.TestCase):
         self.assertEqual(first['result']['id'], second['result']['id'])
         self.assertEqual(len(self.call('snapshot')['events']), 1)
         self.assertEqual(first['result']['ts'], second['result']['ts'])
+
+    def test_history_import_is_chronological_and_idempotent_in_no_send_run(self):
+        self.call('stage_resume', source=str(self.resume))
+        self.begin(skill='followup', noSend=True, maxActions=0)
+        first = self.historical_message('greet', 'first', 9)
+        reply = self.historical_message('inbound', 'reply', 5, at='2027-01-10T10:00:00+08:00')
+        latest = self.historical_message('outbound', 'latest', 4, text='  Synthetic outgoing\nmessage  ')
+        saved = self.import_history(latest, first, reply)
+        self.assertEqual(saved['result'], {'imported': 3, 'updated': 0, 'unchanged': 0})
+        self.assertEqual(self.import_history(first, latest, reply), {
+            'revision': saved['revision'], 'result': {'imported': 0, 'updated': 0, 'unchanged': 3}})
+        snapshot = self.call('snapshot')
+        record = snapshot['records'][0]
+        self.assertEqual(snapshot['attempts'], [])
+        self.assertFalse(snapshot['configured'])
+        self.assertEqual(record['status'], 'waiting')
+        self.assertEqual(record['text'], latest['text'])
+        self.assertEqual([row['messageKey'] for row in record['history']], ['first', 'reply', 'latest'])
+        self.assertEqual(record['history'][1]['at'], '2027-01-10T02:00:00Z')
+        self.assertEqual(record['history'][1]['importedAt'], core.stamp(self.time.return_value))
+
+    def test_history_import_rejects_invalid_data_without_partial_writes(self):
+        self.begin(skill='followup', noSend=True, targets=[self.target['threadKey']])
+        message = self.historical_message('outbound', 'first', 4)
+        args = dict(runId=self.run, evidence='Synthetic evidence', messages=[message])
+        self.assertProblem('OUT_OF_SCOPE', 'import_history', target=dict(self.target, threadKey='other'), **args)
+        self.assertProblem('ACCOUNT_MISMATCH', 'import_history', target=dict(self.target, account='other'), **args)
+        before = self.call('snapshot')
+        for at in ('2026-11-01T09:00:00', '2026-02-30T09:00:00Z', '2099-01-01T00:00:00Z'):
+            self.assertProblem('INVALID_MESSAGE_TIME', 'import_history', **{
+                **args, 'target': self.target, 'messages': [message, dict(message, messageKey='bad', at=at)]})
+        for conflict in (dict(message, messageKey='other'), dict(message, text='different')):
+            self.assertProblem('HISTORY_CONFLICT', 'import_history', **{
+                **args, 'target': self.target, 'messages': [message, conflict]})
+        self.assertEqual(self.call('snapshot'), before)
+
+    def test_history_import_backfills_existing_messages_and_counts_each_nudge_once(self):
+        self.begin(skill='followup', actions=['nudge'])
+        inbound = self.call('record', runId=self.run, target=self.target, kind='inbound',
+                            text='Old summary', messageKey='inbound')['result']
+        real_inbound = self.historical_message('inbound', 'inbound', 10)
+        self.assertEqual(self.import_history(real_inbound)['result']['updated'], 1)
+        reread = self.call('record', runId=self.run, target=self.target, kind='inbound',
+                           text='Old summary', messageKey='inbound')['result']
+        self.assertEqual((reread['id'], reread['at']), (inbound['id'], real_inbound['at']))
+        attempt = self.prepare('nudge', text='Synthetic sent follow-up')
+        self.call('guard', runId=self.run, attemptId=attempt, target=self.target, text='Synthetic sent follow-up')
+        self.call('finish', runId=self.run, attemptId=attempt, status='sent', evidence='Synthetic sent bubble')
+        self.call('end', runId=self.run)
+        before = self.call('snapshot')
+        sent = before['records'][0]['history'][-1]
+        old_ts = sent['at']
+        self.time.return_value += 4 * 86400
+        self.begin(skill='followup', actions=['nudge'])
+        existing = self.historical_message('nudge', 'already-sent', 4, at=old_ts, eventId=sent['id'], text=sent['text'])
+        self.assertEqual(self.import_history(existing)['result']['updated'], 1)
+        self.assertEqual(self.import_history(existing)['result']['unchanged'], 1)
+        self.assertEqual(self.call('snapshot')['attempts'], before['attempts'])
+        self.import_history(self.historical_message('nudge', 'manually-sent', 7))
+        self.assertProblem('NUDGE_LIMIT', 'prepare', runId=self.run, target=self.target, kind='nudge', text='Blocked')
+
+    def test_nudge_uses_original_time_and_same_time_message_order(self):
+        self.begin(skill='followup', actions=['nudge'])
+        first = self.historical_message('nudge', 'first', 8)
+        second = self.historical_message('nudge', 'second', 6)
+        self.import_history(second, first)
+        self.import_history(self.historical_message('inbound', 'earlier-reply', 9))
+        self.assertProblem('NUDGE_LIMIT', 'prepare', runId=self.run, target=self.target, kind='nudge', text='Blocked')
+        self.import_history(self.historical_message('inbound', 'later-reply', 6, order=1))
+        self.import_history(self.historical_message('outbound', 'recent-outgoing', 2))
+        self.assertProblem('NUDGE_WAIT', 'prepare', runId=self.run, target=self.target, kind='nudge', text='Blocked')
+        self.call('end', runId=self.run)
+        self.time.return_value += 86400
+        self.begin(skill='followup', actions=['nudge'])
+        self.assertIsInstance(self.prepare('nudge'), str)
+
+    def test_guard_rechecks_nudge_after_history_import(self):
+        self.begin(skill='followup', actions=['nudge'])
+        self.import_history(self.historical_message('greet', 'manual-greeting', 4))
+        attempt = self.prepare('nudge', text='Synthetic follow-up')
+        self.import_history(self.historical_message('outbound', 'recent-outgoing', 2))
+        self.assertProblem('NUDGE_WAIT', 'guard', runId=self.run, attemptId=attempt,
+                           target=self.target, text='Synthetic follow-up')
 
     def test_revoking_approval_invalidates_prepared_send(self):
         self.begin(skill='followup', actions=['reply'])

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """job-mate 2.0: offline workspace protocol, Python standard library only."""
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -13,6 +14,8 @@ import uuid
 VERSION = '2.1.0'
 SCHEMA = 2
 ACTIONS = {'greet', 'reply', 'nudge', 'resume'}
+OUTBOUND = ACTIONS | {'outbound'}
+MESSAGES = OUTBOUND | {'inbound'}
 RESULTS = {'sent', 'failed_no_send', 'uncertain'}
 OBSERVATIONS = {'interview_invited', 'interview_decided', 'rejected', 'job_closed', 'declined', 'silent', 'replied', 'info'}
 TERMINAL = {'rejected', 'job_closed', 'declined'}
@@ -98,7 +101,7 @@ def identity(value, account):
 def contacted(state, entry):
     if entry['kind'] == 'inbound':
         return True
-    if entry['kind'] not in ACTIONS:
+    if entry['kind'] not in OUTBOUND:
         return False
     attempt = next((a for a in state['attempts'] if a['id'] == entry.get('attemptId')), None)
     status = attempt['status'] if attempt else entry.get('status')
@@ -113,6 +116,95 @@ def event(state, kind, target, **fields):
     row = {'id': uid('event'), 'at': stamp(), 'ts': now(), 'kind': kind, **target, **fields}
     state['events'].append(row)
     return row
+
+
+def event_order(row):
+    return row.get('ts', 0), row.get('order', 0)
+
+
+def import_history(state, run, req, target):
+    require(run['skill'] == 'followup', 'INVALID_EVENT', '请在 followup 任务中导入历史消息')
+    evidence = text(req.get('evidence'), '历史消息的页面核对依据')
+    messages = req.get('messages')
+    require(isinstance(messages, list) and messages, 'INVALID_INPUT', '需要非空的历史消息列表')
+    history = [e for e in state['events'] if same(e, target) and e['kind'] in MESSAGES]
+    by_id = {e['id']: e for e in history}
+    by_key = {e['messageKey']: e for e in history if e.get('messageKey')}
+    occupied_orders = {event_order(e) for e in history if e.get('importedAt')}
+    imported = updated = unchanged = 0
+    checked_at = now()
+
+    for message in messages:
+        require(isinstance(message, dict), 'INVALID_INPUT', '历史消息需要对象')
+        kind = text(message.get('kind'), '历史消息类型', limit=20)
+        require(kind in MESSAGES, 'INVALID_EVENT', '历史消息类型无效')
+        key = text(message.get('messageKey'), '页面原始消息标识', limit=2000)
+        content = text(message.get('text'), '历史消息内容')
+        at = text(message.get('at'), '历史消息时间', limit=50)
+        try:
+            original = datetime.fromisoformat(at[:-1] + '+00:00' if at.endswith('Z') else at)
+            require(original.tzinfo is not None, 'INVALID_MESSAGE_TIME', '历史消息时间需要明确时区')
+            original = original.astimezone(timezone.utc)
+            ts = original.timestamp()
+        except (ValueError, OverflowError):
+            raise Problem('INVALID_MESSAGE_TIME', '历史消息时间需要有效的 ISO 8601 日期、时间和时区') from None
+        require(0 < ts <= checked_at, 'INVALID_MESSAGE_TIME', '历史消息时间无效或晚于当前时间')
+        order = integer(message.get('order', 0), 0, 1000000, '同一时间的页面消息顺序')
+
+        previous = by_key.get(key)
+        if 'eventId' in message:
+            matched = by_id.get(text(message['eventId'], '已有事件 ID', limit=1000))
+            require(matched and (previous is None or matched is previous)
+                    and matched.get('messageKey', key) == key, 'HISTORY_CONFLICT', '已有事件与页面消息标识不匹配')
+            previous = matched
+        if previous:
+            require(previous['kind'] == kind and (kind == 'inbound' or previous.get('status') == 'sent'),
+                    'HISTORY_CONFLICT', '已有事件与历史消息的类型或送达状态冲突')
+            if previous.get('importedAt'):
+                require(event_order(previous) == (ts, order) and previous['text'] == message['text'],
+                        'HISTORY_CONFLICT', '同一页面消息的时间、顺序或内容冲突')
+                unchanged += 1
+                continue
+            if kind in OUTBOUND and kind != 'resume':
+                require(previous.get('text', '').strip() == content, 'HISTORY_CONFLICT', '已发送事件与历史消息的原文不符')
+        require((ts, order) not in occupied_orders, 'HISTORY_CONFLICT', '同一时间的消息需要不同的页面顺序')
+        fields = {'messageKey': key, 'text': message['text'], 'at': original.isoformat().replace('+00:00', 'Z'),
+                  'ts': ts, 'order': order, 'importedAt': stamp(checked_at), 'historyEvidence': evidence}
+        if kind in OUTBOUND:
+            fields['status'] = 'sent'
+        if previous:
+            previous.update(fields)
+            row = previous
+            updated += 1
+        else:
+            row = event(state, kind, target, runId=run['id'], **fields)
+            imported += 1
+        by_key[key] = row
+        occupied_orders.add((ts, order))
+    return {'imported': imported, 'updated': updated, 'unchanged': unchanged}
+
+
+def check_nudge(state, history):
+    messages = sorted((e for e in history if e['kind'] in MESSAGES), key=event_order)
+    blocked_attempts = {a['id'] for a in state['attempts'] if a['status'] != 'sent'}
+    counted_attempts = set()
+    unanswered = 0
+    last = 0
+    for row in messages:
+        if row['kind'] == 'inbound':
+            unanswered = 0
+        else:
+            aid = row.get('attemptId')
+            if row.get('status') != 'sent' or aid in blocked_attempts or aid in counted_attempts:
+                continue
+            if aid:
+                counted_attempts.add(aid)
+            if row['kind'] == 'nudge':
+                unanswered += 1
+        last = row.get('ts', 0)
+    require(unanswered < 2, 'NUDGE_LIMIT', '最多两次未回复跟进')
+    require(last > 0, 'NUDGE_TIME_UNKNOWN', '无法确认上次沟通时间，先核对页面')
+    require(now() - last >= 3 * 86400, 'NUDGE_WAIT', '距离上次沟通不足三天')
 
 
 def decision(state, target, question, key=None):
@@ -136,7 +228,7 @@ def expected(state, req):
 
 def summary(state, root):
     rows = {}
-    for e in state['events']:
+    for e in sorted(state['events'], key=event_order):
         key = (e.get('platform'), e.get('account'), e.get('threadKey'))
         if not all(key):
             continue
@@ -145,7 +237,7 @@ def summary(state, root):
         row['at'] = e.get('at')
         row['text'] = e.get('text', e.get('note', ''))
         old = row.get('status')
-        if e['kind'] in ACTIONS:
+        if e['kind'] in OUTBOUND:
             row['status'] = 'uncertain' if e.get('status') not in ('sent', 'failed_no_send') else ('waiting' if e['status'] == 'sent' else 'failed_no_send')
         elif e['kind'] == 'screen' and old not in ('waiting', 'uncertain', 'replied', 'interview', 'closed'):
             row['status'] = e['result']
@@ -300,16 +392,19 @@ def dispatch(state, req, root):
                 decision(state, a['target'], '任务结束时仍有未核对发送，请先核对真实会话。', a['id'])
         state['run'] = None
         return {'ended': True}
-    if op == 'record':
+    if op in ('record', 'import_history'):
         target = identity(req.get('target'), run['account'])
         require(not run['targets'] or target['threadKey'] in run['targets'], 'OUT_OF_SCOPE', '目标不在本轮范围')
+        if op == 'import_history':
+            return import_history(state, run, req, target)
         kind = req.get('kind')
         require(kind in ('screen', 'inbound', 'observe'), 'INVALID_EVENT', '外发必须经过 prepare/guard/finish')
         fields = {'text': text(req.get('text', ''), '内容摘要', required=False), 'note': text(req.get('note', ''), '备注', required=False), 'runId': run['id']}
         if kind == 'inbound':
             key = text(req.get('messageKey'), '页面原始消息标识（可见 ID 或时间与原文的稳定组合）', limit=2000)
-            previous = next((e for e in state['events'] if e['kind'] == 'inbound' and same(e, target) and e.get('messageKey') == key), None)
+            previous = next((e for e in state['events'] if e['kind'] in MESSAGES and same(e, target) and e.get('messageKey') == key), None)
             if previous:
+                require(previous['kind'] == 'inbound', 'HISTORY_CONFLICT', '页面消息标识已用于外发记录')
                 return previous
             fields['messageKey'] = key
         if kind == 'screen':
@@ -352,12 +447,7 @@ def dispatch(state, req, root):
         else:
             require(any(contacted(state, e) for e in history), 'HISTORY_REQUIRED', '先读取并记录既有会话')
         if kind == 'nudge':
-            last_inbound = max((e.get('ts', 0) for e in history if e['kind'] == 'inbound'), default=0)
-            nudges = [a for a in attempts if same(a['target'], target) and a['kind'] == 'nudge' and a['ts'] > last_inbound]
-            require(len(nudges) < 2, 'NUDGE_LIMIT', '最多两次未回复跟进')
-            last = max((e.get('ts', 0) for e in history if e['kind'] in ACTIONS | {'inbound'}), default=now())
-            require(last > 0, 'NUDGE_TIME_UNKNOWN', '无法确认上次沟通时间，先核对页面')
-            require(now() - last >= 3 * 86400, 'NUDGE_WAIT', '距离上次沟通不足三天')
+            check_nudge(state, history)
         if kind == 'resume':
             require(state['resume'] and not state.get('resumeNeedsReview'), 'RESUME_REQUIRED', '需要核对当前简历')
             text(req.get('requestEvidence'), '对方索要简历的依据')
@@ -381,6 +471,8 @@ def dispatch(state, req, root):
             require(identity(req.get('target'), run['account']) == a['target'], 'TARGET_CHANGED', '当前页面目标改变')
             require(req.get('text') == a['text'], 'CONTENT_CHANGED', '最终内容改变，不能发送')
             result = guard(state, run, a)
+            if a['kind'] == 'nudge':
+                check_nudge(state, [e for e in state['events'] if same(e, a['target'])])
             a['guarded'] = True
             return result
         require(a['status'] == 'prepared', 'ATTEMPT_CLOSED', '已记录结果，不能重复完成')
@@ -399,7 +491,7 @@ def dispatch(state, req, root):
     raise Problem('UNKNOWN_OP', '未知操作')
 
 
-OPS = {'snapshot', 'stage_resume', 'configure', 'begin', 'pause', 'recover_run', 'answer', 'reconcile', 'end', 'record', 'decide', 'prepare', 'guard', 'finish'}
+OPS = {'snapshot', 'stage_resume', 'configure', 'begin', 'pause', 'recover_run', 'answer', 'reconcile', 'end', 'record', 'import_history', 'decide', 'prepare', 'guard', 'finish'}
 
 
 def execute(root, req):
@@ -434,9 +526,10 @@ def execute(root, req):
             result = summary(state, root)
         else:
             result = dispatch(state, req, root)
-            state['revision'] += 1
-            state['updatedAt'] = stamp()
-            connection.execute('UPDATE workspace SET data=? WHERE id=1', (json.dumps(state, ensure_ascii=False, allow_nan=False),))
+            if req['op'] != 'import_history' or result['imported'] or result['updated']:
+                state['revision'] += 1
+                state['updatedAt'] = stamp()
+                connection.execute('UPDATE workspace SET data=? WHERE id=1', (json.dumps(state, ensure_ascii=False, allow_nan=False),))
             result = {'result': result, 'revision': state['revision']}
         connection.commit()
         if req['op'] != 'snapshot':

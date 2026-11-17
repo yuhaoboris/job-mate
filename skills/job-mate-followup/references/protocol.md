@@ -43,6 +43,7 @@ locations 按本人确认的城市先后顺序保存，保留优先级；默认�
 | record | target, kind:screen, result, reasons[], facts{} | 每个已读详情的筛选；result 为 qualified/pending/excluded |
 | record | target, kind:inbound, text, messageKey | 来信摘要，先读取实际会话 |
 | record | target, kind:observe, observed, note | 观察；interview_invited/interview_decided/rejected/job_closed/declined/silent/replied/info |
+| import_history | target, evidence, messages[] | 在 followup 轮次按原始时间回填同一会话的消息 |
 | decide | target, question, 可选 key | 创建待本人决定事项；稳定 key 用于防重复 |
 | prepare | target, kind, text, greet 可选 maxChars，可选 commitment:true/decisionId | 固定一次外发，返回 result.id 作为 attemptId |
 | guard | attemptId, target, text | 核对当前页面与原文，返回 allowed |
@@ -60,6 +61,31 @@ greet 的 maxChars 默认 100，允许 1–10000 的整数，由已确认的招�
 resume 的 text 使用原件 sha256，另传 requestEvidence（对方索要依据）。guard 的 text 也用该 sha256；Agent 另外核对平台附件身份。脚本不向网站发送任何内容。
 
 messageKey 必须来自原始消息的可见 ID，或原始时间与原文的稳定组合；重复查看同一条消息复用同一 key，不能用本轮时间/随机数。相同 key 不重复记来信，也不重置跟进次数。
+
+## 历史消息导入
+
+`import_history` 在活动的 followup 轮次内保存真实会话中已核实的消息。仅导入时用 `begin` 的 `noSend:true`。以会话为单位提交，沿用本轮账号和 targets；一批任一条校验失败则整批回滚。
+
+```json
+{
+  "op": "import_history",
+  "runId": "run-123",
+  "target": {"platform":"boss","account":"示例账号","company":"示例公司","title":"前端工程师","threadKey":"thread-1"},
+  "evidence": "已核对网站当前账号、会话身份、双方气泡和时间",
+  "messages": [
+    {"kind":"greet","messageKey":"bubble-1","at":"2026-11-01T09:00:00+08:00","text":"您好，我对这个岗位感兴趣。"},
+    {"kind":"nudge","messageKey":"bubble-2","at":"2026-11-05T10:30:00+08:00","text":"您好，请问这个岗位还在招聘吗？"},
+    {"kind":"inbound","messageKey":"bubble-3","at":"2026-11-05T10:30:00+08:00","order":1,"text":"还在招，请发一份简历。"}
+  ]
+}
+```
+
+- `kind` 为 `inbound`（来信）、`greet`（首次招呼）、`reply`（回复）、`nudge`（主动跟进）、`resume`（已发简历）或 `outbound`（其他已发消息）。按会话上下文分类，只有确认是主动跟进时才用 `nudge`。附件可填可见名称。草稿、发送中、失败、结果不明的外发以及平台系统提示均跳过。
+- `at` 填页面能确定的原日期、时间和时区，支持 ISO 8601 的 `Z` 或数字偏移。存储为 UTC；`importedAt` 记录本地导入时间。页面只有分钟时可以用分钟精度。多条消息共享时间时，`order` 填组内从旧到新的序号（从 0 开始，默认 0），重复读取或分批提交时沿用同一顺序。
+- 用稳定的 `messageKey` 去重，原始时间与原文的组合遇到同文同时间的多条消息时加组内序号区分。返回 `imported`、`updated`、`unchanged` 条数。同一标识、类型、时间、顺序和内容重交不会产生新事件。冲突时先核对页面与台账。
+- 导入前对照 `snapshot.records[].history`。旧来信有相同 `messageKey` 时会原地回填时间和内容。先前经技能发送的消息要用已核对的同一条 `sent` 事件的 `id` 作为 `eventId`，并沿用该事件的类型；旧来信无标识时也可用 `eventId`。只有确认同一条消息才关联。发送不明按 `reconcile` 核对结果，确认送达后再关联。
+- 快照按原始时间与页面顺序展示会话历史。跟进的三天间隔从最近一条来信或已发消息起算，同一会话最多发两次未获回复的主动跟进。最新来信之前的跟进退出计数。导入只写事件，不创建外发尝试，也不占本轮或 24 小时的发送额度。
+- 原始时间或身份无法核实的消息记录为 `observe:info` 并报告缺口。若缺口影响最近沟通时间或未获回复的跟进次数，该会话跳过主动跟进。将明确拒绝、职位关闭等结果按 `observe` 登记。
 
 ## 本人决定与恢复
 
