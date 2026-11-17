@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 
-VERSION = '2.1.0'
+VERSION = '2.2.0'
 SCHEMA = 2
 ACTIONS = {'greet', 'reply', 'nudge', 'resume'}
 OUTBOUND = ACTIONS | {'outbound'}
