@@ -28,7 +28,7 @@ locations 按本人确认的城市先后顺序保存，保留优先级；默认�
 
 ## 一轮任务
 
-`begin` 必填 revision、skill（apply/followup）、页面 account、accountEvidence、noSend；可加 actions、maxActions（0–20，默认 10）、targets（threadKey 列表，空表示本轮无目标限制）、authorizationEvidence（本人本轮明确原话）。超出长期授权的动作必须提供该依据。返回 result.id 是 runId。明确的目标限制必须填 targets，不能仅写在理由里。
+`begin` 必填 revision、skill（apply/followup）、页面 account、accountEvidence、noSend；可加 actions、maxActions（0–20，默认 20）、targets（threadKey 列表，空表示本轮无目标限制）、authorizationEvidence（本人本轮明确原话）。超出长期授权的动作必须提供该依据。返回 result.id 是 runId。明确的目标限制必须填 targets，不能仅写在理由里。
 
 目标统一为：
 

@@ -155,6 +155,38 @@ class Workspace(unittest.TestCase):
         self.time.return_value += 61
         self.assertProblem('RUN_LIMIT', 'prepare', runId=self.run, target=self.target, kind='greet', text='again')
 
+    def test_default_followup_run_limit_and_send_interval(self):
+        self.begin(skill='followup', actions=['reply'])
+        self.call('record', runId=self.run, kind='inbound', target=self.target, text='Synthetic HR question')
+        request = dict(runId=self.run, target=self.target, kind='reply', text='Synthetic reply')
+        for index in range(20):
+            attempt = self.prepare('reply')
+            self.call('finish', runId=self.run, attemptId=attempt, status='failed_no_send', evidence='not clicked')
+            self.time.return_value += 19
+            if index == 0:
+                self.assertProblem('WAIT', 'prepare', **request)
+            self.time.return_value += 1
+        self.assertProblem('RUN_LIMIT', 'prepare', **request)
+
+    def test_rolling_daily_limit_includes_attempts_from_other_runs(self):
+        self.begin(skill='followup', actions=['reply'])
+        self.call('record', runId=self.run, kind='inbound', target=self.target, text='Synthetic HR question')
+        state = self.call('snapshot')
+        first = self.time.return_value - 86400 + 40
+        state['attempts'] = [
+            dict(runId='prior-apply-run', status='failed_no_send', ts=first + i * 20)
+            for i in range(999)
+        ]
+        request = dict(op='prepare', runId=self.run, target=self.target, kind='reply', text='Synthetic reply')
+        self.assertEqual(core.dispatch(state, request, self.root)['status'], 'prepared')
+        state['attempts'][-1]['status'] = 'failed_no_send'
+        self.time.return_value += 20
+        with self.assertRaises(core.Problem) as cm:
+            core.dispatch(state, request, self.root)
+        self.assertEqual(cm.exception.code, 'DAILY_LIMIT')
+        self.time.return_value += 20
+        self.assertEqual(core.dispatch(state, request, self.root)['status'], 'prepared')
+
     def test_commitment_requires_exact_approved_text(self):
         self.begin(skill='followup', actions=['reply'])
         self.call('record', runId=self.run, kind='inbound', target=self.target, text='Interview Wednesday?')

@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 
-VERSION = '2.2.0'
+VERSION = '2.2.1'
 SCHEMA = 2
 ACTIONS = {'greet', 'reply', 'nudge', 'resume'}
 OUTBOUND = ACTIONS | {'outbound'}
@@ -333,7 +333,7 @@ def dispatch(state, req, root):
         reason = text(req.get('authorizationEvidence', ''), '本人授权依据', required=False, limit=10000)
         require(not (set(actions) - set((state['profile'] or {}).get('authorization', []))) or reason, 'NOT_AUTHORIZED', '缺少本轮明确发送授权')
         no_send = boolean(req.get('noSend'), 'noSend')
-        maximum = integer(req.get('maxActions', 10), 0, 20, '单轮上限')
+        maximum = integer(req.get('maxActions', 20), 0, 20, '单轮上限')
         targets = strings(req.get('targets', []), '指定会话范围')
         run = {'id': uid('run'), 'skill': skill, 'account': account, 'startedTs': now(), 'at': stamp(),
                'actions': [] if no_send else actions, 'noSend': no_send, 'maxActions': maximum,
@@ -433,8 +433,8 @@ def dispatch(state, req, root):
         attempts = state['attempts']
         require(sum(a['runId'] == run['id'] for a in attempts) < run['maxActions'], 'RUN_LIMIT', '已达到本轮外发上限')
         recent = [a for a in attempts if now() - a['ts'] < 86400]
-        require(len(recent) < 20, 'DAILY_LIMIT', '已达到过去 24 小时的 20 次外发上限')
-        require(not recent or now() - max(a.get('finishedTs', a['ts']) for a in recent) >= 60, 'WAIT', '两次外发至少间隔 60 秒')
+        require(len(recent) < 1000, 'DAILY_LIMIT', '已达到过去 24 小时的 1000 次外发上限')
+        require(not recent or now() - max(a.get('finishedTs', a['ts']) for a in recent) >= 20, 'WAIT', '两次外发至少间隔 20 秒')
         history = [e for e in state['events'] if same(e, target)]
         require(not any(e['kind'] == 'observe' and e.get('observed') in TERMINAL for e in history), 'THREAD_CLOSED', '会话已结束或被拒绝')
         if kind == 'greet':
