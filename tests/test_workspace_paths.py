@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'core'))
+sys.path.insert(0, str(ROOT / 'scripts'))
 import job_mate as core
 
 
@@ -41,10 +41,10 @@ class WorkspacePaths(unittest.TestCase):
     def test_each_installed_skill_uses_chat_project_independent_of_cwd(self):
         resume = self.base / 'synthetic.txt'
         resume.write_text('Synthetic resume', encoding='utf-8')
-        for name in ('job-mate-apply', 'job-mate-followup'):
+        for name in ('job-mate',):
             project = self.project / name
             project.mkdir()
-            script = ROOT / 'skills' / name / 'scripts/job_mate.py'
+            script = ROOT / 'scripts/job_mate.py'
             command = [sys.executable, str(script), '--project-dir', str(project)]
             def call(request):
                 result = subprocess.run(command, input=json.dumps(request), cwd=script.parent,

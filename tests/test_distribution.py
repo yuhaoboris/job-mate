@@ -1,5 +1,7 @@
 import re
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 import unittest
 
@@ -8,13 +10,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class Distribution(unittest.TestCase):
     def test_generated_skills_are_complete_and_match_the_source(self):
-        for name in ('job-mate-apply', 'job-mate-followup'):
-            skill = ROOT / 'skills' / name
-            self.assertIn('name: ' + name, (skill / 'SKILL.md').read_text(encoding='utf-8'))
-            for source in (ROOT / 'core').glob('*.py'):
-                self.assertEqual(source.read_bytes(), (skill / 'scripts' / source.name).read_bytes())
-            for source in (ROOT / 'references').glob('*.md'):
-                self.assertEqual(source.read_bytes(), (skill / 'references' / source.name).read_bytes())
+        self.assertFalse(list((ROOT / 'skills').glob('*/SKILL.md')))
+        self.assertIn('name: job-mate', (ROOT / 'SKILL.md').read_text(encoding='utf-8'))
+        with tempfile.TemporaryDirectory() as out:
+            subprocess.run([sys.executable, str(ROOT / 'scripts/build.py'), '--out', out], check=True, capture_output=True)
+            skill = Path(out) / 'job-mate'
+            self.assertEqual({p.name for p in skill.iterdir()}, {'SKILL.md', 'LICENSE', 'NOTICE', 'references', 'scripts'})
+            for p in skill.rglob('*'):
+                if p.is_file():
+                    self.assertEqual(p.read_bytes(), (ROOT / p.relative_to(skill)).read_bytes())
             for doc in skill.rglob('*.md'):
                 for link in re.findall(r'\]\(([^)#]+)(?:#[^)]*)?\)', doc.read_text(encoding='utf-8')):
                     if not re.match(r'[a-z]+:', link):

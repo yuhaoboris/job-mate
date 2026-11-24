@@ -37,12 +37,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
       - name: 全量单测
         run: python -m unittest discover -s tests
-      - name: 检查独立技能资源一致
+      - name: 检查根目录技能资源
         run: python scripts/build.py --check
       - name: 临时目录构建
         run: python scripts/build.py --out "${{ runner.temp }}/dist"

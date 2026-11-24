@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 
-VERSION = '2.2.1'
+VERSION = '3.0.0'
 SCHEMA = 2
 ACTIONS = {'greet', 'reply', 'nudge', 'resume'}
 OUTBOUND = ACTIONS | {'outbound'}
@@ -76,9 +76,9 @@ def fresh():
 def profile(value):
     require(isinstance(value, dict), 'INVALID_PROFILE', '资料必须是对象')
     require(set(value) <= {'candidateFacts', 'targetRoles', 'locations', 'salary', 'requirements', 'exclusions', 'authorization', 'confirmation'}, 'INVALID_PROFILE', '资料含未知字段')
-    p = {k: strings(value.get(k), k, k in ('targetRoles', 'locations')) for k in ('targetRoles', 'locations', 'requirements', 'exclusions')}
-    p['candidateFacts'] = text(value.get('candidateFacts'), '有来源的个人事实')
-    p['confirmation'] = text(value.get('confirmation'), '本人确认依据', limit=10000)
+    p = {k: strings(value.get(k, []), k, k in ('targetRoles', 'locations')) for k in ('targetRoles', 'locations', 'requirements', 'exclusions')}
+    p['candidateFacts'] = text(value.get('candidateFacts', ''), '有来源的个人事实', required=False)
+    p['confirmation'] = text(value.get('confirmation', ''), '用户偏好来源', required=False, limit=10000)
     s = value.get('salary')
     if s is not None:
         require(isinstance(s, dict) and set(s) == {'min', 'max', 'currency', 'period', 'basis'}, 'INVALID_PROFILE', '薪资需要 min/max/currency/period/basis，或 null 表示不设门槛')
@@ -184,27 +184,11 @@ def import_history(state, run, req, target):
     return {'imported': imported, 'updated': updated, 'unchanged': unchanged}
 
 
-def check_nudge(state, history):
-    messages = sorted((e for e in history if e['kind'] in MESSAGES), key=event_order)
-    blocked_attempts = {a['id'] for a in state['attempts'] if a['status'] != 'sent'}
-    counted_attempts = set()
-    unanswered = 0
-    last = 0
-    for row in messages:
-        if row['kind'] == 'inbound':
-            unanswered = 0
-        else:
-            aid = row.get('attemptId')
-            if row.get('status') != 'sent' or aid in blocked_attempts or aid in counted_attempts:
-                continue
-            if aid:
-                counted_attempts.add(aid)
-            if row['kind'] == 'nudge':
-                unanswered += 1
-        last = row.get('ts', 0)
-    require(unanswered < 2, 'NUDGE_LIMIT', '最多两次未回复跟进')
-    require(last > 0, 'NUDGE_TIME_UNKNOWN', '无法确认上次沟通时间，先核对页面')
-    require(now() - last >= 3 * 86400, 'NUDGE_WAIT', '距离上次沟通不足三天')
+def check_nudge(history):
+    messages = (e for e in history if e['kind'] == 'inbound' or
+                (e['kind'] in OUTBOUND and e.get('status') == 'sent'))
+    last = max(messages, key=event_order, default=None)
+    require(last and last['kind'] in OUTBOUND, 'NOT_WAITING', '最近一条须为我方已发送消息；有来信应回复')
 
 
 def decision(state, target, question, key=None):
@@ -266,7 +250,6 @@ def summary(state, root):
 
 def guard(state, run, attempt=None):
     require(not state['paused'], 'PAUSED', '已暂停，停止页面操作')
-    require(now() - run['startedTs'] < 3600, 'RUN_EXPIRED', '本轮已超过一小时，请收尾后重新开始')
     require(not run['noSend'], 'NO_SEND', '本轮只看，不允许外发')
     unresolved = [a for a in state['attempts'] if a['status'] in ('prepared', 'uncertain') and (attempt is None or a['id'] != attempt['id'])]
     require(not unresolved, 'UNRESOLVED_SEND', '存在未核对的外发，先核对页面结果')
@@ -313,14 +296,12 @@ def dispatch(state, req, root):
     if op == 'configure':
         expected(state, req)
         require(not state['run'], 'RUN_ACTIVE', '先结束当前任务，再修改资料')
-        require(state['resume'], 'RESUME_REQUIRED', '请先提供一份简历')
         state['profile'] = profile(req.get('profile'))
         state['resumeNeedsReview'] = False
         return {'configured': True}
     if op == 'begin':
         expected(state, req)
-        read_only_followup = req.get('skill') == 'followup' and req.get('noSend') is True
-        require(read_only_followup or (state['profile'] and not state.get('resumeNeedsReview')), 'ONBOARDING_REQUIRED', '先读取简历并确认求职偏好')
+        require(req.get('skill') == 'followup' or (state['profile'] and not state.get('resumeNeedsReview')), 'ONBOARDING_REQUIRED', '搜索前保存目标职位与城市；新简历需要先更新事实')
         require(not state['run'], 'RUN_ACTIVE', '已有任务，请核对旧任务是否结束；不自动接管')
         require(not state['paused'], 'PAUSED', '工作区已暂停')
         skill = req.get('skill')
@@ -329,11 +310,17 @@ def dispatch(state, req, root):
         text(req.get('accountEvidence'), '页面账号核对依据', limit=2000)
         require(state['account'] in (None, account), 'ACCOUNT_MISMATCH', '账号与工作区不同，请使用另一个工作区')
         actions = strings(req.get('actions', []), '本轮发送范围')
-        require(set(actions) <= (ACTIONS - {'greet'} if skill == 'followup' else {'greet'}), 'INVALID_INPUT', '动作超出当前技能')
+        allowed_actions = {'greet', 'resume'} if skill == 'apply' else ACTIONS - {'greet'}
+        require(set(actions) <= allowed_actions, 'INVALID_INPUT', '动作超出当前技能')
         reason = text(req.get('authorizationEvidence', ''), '本人授权依据', required=False, limit=10000)
-        require(not (set(actions) - set((state['profile'] or {}).get('authorization', []))) or reason, 'NOT_AUTHORIZED', '缺少本轮明确发送授权')
+        if 'resume' in actions and not req.get('noSend'):
+            require(reason or 'resume' in (state['profile'] or {}).get('authorization', []), 'NOT_AUTHORIZED', '发送附件需本人许可')
         no_send = boolean(req.get('noSend'), 'noSend')
-        maximum = integer(req.get('maxActions', 20), 0, 20, '单轮上限')
+        if skill == 'apply' and not no_send and 'resume' in actions:
+            require(reason, 'NOT_AUTHORIZED', '主动投递需要本人本轮明确授权')
+        maximum = req.get('maxActions')
+        if maximum is not None:
+            require(type(maximum) is int and maximum >= 0, 'INVALID_INPUT', '发送上限需要非负整数')
         targets = strings(req.get('targets', []), '指定会话范围')
         run = {'id': uid('run'), 'skill': skill, 'account': account, 'startedTs': now(), 'at': stamp(),
                'actions': [] if no_send else actions, 'noSend': no_send, 'maxActions': maximum,
@@ -428,30 +415,37 @@ def dispatch(state, req, root):
         require(not run['targets'] or target['threadKey'] in run['targets'], 'OUT_OF_SCOPE', '目标不在本轮范围')
         kind = req.get('kind')
         require(kind in run['actions'], 'NOT_AUTHORIZED', '本轮未授权此动作')
-        require(not run['targets'] or target['threadKey'] in run['targets'], 'OUT_OF_SCOPE', '目标不在本轮授权范围')
         content = text(req.get('text'), '最终外发内容')
         attempts = state['attempts']
-        require(sum(a['runId'] == run['id'] for a in attempts) < run['maxActions'], 'RUN_LIMIT', '已达到本轮外发上限')
-        recent = [a for a in attempts if now() - a['ts'] < 86400]
-        require(len(recent) < 1000, 'DAILY_LIMIT', '已达到过去 24 小时的 1000 次外发上限')
-        require(not recent or now() - max(a.get('finishedTs', a['ts']) for a in recent) >= 20, 'WAIT', '两次外发至少间隔 20 秒')
+        sent = [a for a in attempts if a['runId'] == run['id'] and a['status'] == 'sent']
+        if run['maxActions'] is not None:
+            require(len(sent) < run['maxActions'], 'RUN_LIMIT', '已达到用户指定的发送上限')
+        if kind == 'greet':
+            require(sum(a['kind'] == 'greet' for a in sent) < 20, 'RUN_LIMIT', '本轮已发出 20 条新招呼')
         history = [e for e in state['events'] if same(e, target)]
         require(not any(e['kind'] == 'observe' and e.get('observed') in TERMINAL for e in history), 'THREAD_CLOSED', '会话已结束或被拒绝')
-        if kind == 'greet':
-            max_chars = integer(req.get('maxChars', 100), 1, 10000, '招呼字数上限')
+        if kind == 'greet' and 'maxChars' in req:
+            max_chars = integer(req['maxChars'], 1, 10000, '招呼字数上限')
             require(len(content) <= max_chars, 'GREETING_TOO_LONG', '招呼超过字数上限，请精简草稿或核对本人指定的上限')
+        if run['skill'] == 'apply':
             screens = [e for e in history if e['kind'] == 'screen' and e.get('runId') == run['id']]
             require(screens and screens[-1]['result'] == 'qualified', 'SCREEN_REQUIRED', '本轮需先确认职位合格并记录依据')
-            already_contacted = any(contacted(state, e) and e.get('account') == target['account'] and e.get('company', '').strip().casefold() == target['company'].strip().casefold() for e in state['events'])
-            require(not already_contacted, 'ALREADY_CONTACTED', '同公司已有联系记录，先核对既有会话')
+            if kind == 'greet':
+                require(not any(contacted(state, e) for e in history),
+                        'ALREADY_CONTACTED', '该岗位会话已有联系记录，请继续既有会话')
         else:
             require(any(contacted(state, e) for e in history), 'HISTORY_REQUIRED', '先读取并记录既有会话')
         if kind == 'nudge':
-            check_nudge(state, history)
+            check_nudge(history)
         if kind == 'resume':
             require(state['resume'] and not state.get('resumeNeedsReview'), 'RESUME_REQUIRED', '需要核对当前简历')
-            text(req.get('requestEvidence'), '对方索要简历的依据')
+            if run['skill'] == 'followup':
+                text(req.get('requestEvidence'), '对方索要简历的依据')
             require(content == state['resume']['sha256'], 'RESUME_MISMATCH', '简历内容需绑定已确认原件的 SHA-256')
+            if run['skill'] == 'apply':
+                already_sent = any(e['kind'] == 'resume' and e.get('status') == 'sent'
+                                   and e.get('text') == content for e in history)
+                require(not already_sent, 'ALREADY_SENT', '该岗位会话已发送这份简历')
         did = req.get('decisionId')
         if req.get('commitment'):
             require(did, 'DECISION_REQUIRED', '承诺事项需要本人批准原话')
@@ -460,7 +454,7 @@ def dispatch(state, req, root):
             require(d and d['status'] == 'answered' and same(d['target'], target) and d.get('approvedText') == content, 'DECISION_REQUIRED', '需要本人对该目标批准的逐字原文')
         a = {'id': uid('attempt'), 'ts': now(), 'at': stamp(), 'runId': run['id'], 'target': target,
              'kind': kind, 'text': content, 'status': 'prepared', 'decisionId': did, 'decisionRevision': d.get('revision') if did else None, 'guarded': False}
-        if kind == 'greet':
+        if kind == 'greet' and 'maxChars' in req:
             a['maxChars'] = max_chars
         attempts.append(a)
         return a
@@ -472,7 +466,7 @@ def dispatch(state, req, root):
             require(req.get('text') == a['text'], 'CONTENT_CHANGED', '最终内容改变，不能发送')
             result = guard(state, run, a)
             if a['kind'] == 'nudge':
-                check_nudge(state, [e for e in state['events'] if same(e, a['target'])])
+                check_nudge([e for e in state['events'] if same(e, a['target'])])
             a['guarded'] = True
             return result
         require(a['status'] == 'prepared', 'ATTEMPT_CLOSED', '已记录结果，不能重复完成')
@@ -500,12 +494,11 @@ def execute(root, req):
     require(root != Path(root.anchor) and root.resolve() != Path.home().resolve(), 'UNSAFE_PATH', '不能在系统根目录或用户主目录根部创建工作区')
     dbfile = root / 'job-mate.sqlite3'
     require(not root.is_symlink() and not dbfile.is_symlink(), 'UNSAFE_PATH', '工作区或数据库不能是符号链接')
+    can_initialize = req['op'] in ('stage_resume', 'configure') or (req['op'] == 'begin' and req.get('skill') == 'followup')
     if not dbfile.exists():
-        legacy = [name for name in ('job-mate.json', 'profile.json', 'ledger.jsonl') if (root / name).exists()]
-        require(not legacy, 'LEGACY_WORKSPACE', '检测到不支持的工作区格式，已保留原文件；请停止任务并核对数据来源，不要覆盖或换目录绕开历史记录')
         if req['op'] == 'snapshot':
             return summary(fresh(), root)
-        require(req['op'] == 'stage_resume', 'ONBOARDING_REQUIRED', '请先提供简历')
+        require(can_initialize, 'ONBOARDING_REQUIRED', '搜索前先保存目标职位与城市')
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
     connection = sqlite3.connect(str(dbfile), timeout=5, isolation_level=None)
     try:
@@ -513,7 +506,7 @@ def execute(root, req):
         connection.execute('BEGIN IMMEDIATE' if req['op'] != 'snapshot' else 'BEGIN')
         exists = connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='workspace'").fetchone()
         if not exists:
-            require(req['op'] == 'stage_resume', 'INVALID_WORKSPACE', '工作区结构不完整，请保留文件并恢复')
+            require(can_initialize, 'INVALID_WORKSPACE', '工作区结构不完整，请保留文件并恢复')
             connection.execute('CREATE TABLE workspace (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)')
             state = fresh()
             connection.execute('INSERT INTO workspace VALUES (1, ?)', (json.dumps(state),))
@@ -521,7 +514,7 @@ def execute(root, req):
             row = connection.execute('SELECT data FROM workspace WHERE id=1').fetchone()
             require(row, 'INVALID_WORKSPACE', '缺少工作区数据')
             state = json.loads(row[0])
-        require(state.get('schemaVersion') == SCHEMA, 'VERSION_MISMATCH', '工作区版本不兼容，请更新技能')
+        require(state.get('schemaVersion') == SCHEMA, 'VERSION_MISMATCH', '非当前工作区格式；请指定新工作区，原文件不会转换或删除')
         if req['op'] == 'snapshot':
             result = summary(state, root)
         else:
