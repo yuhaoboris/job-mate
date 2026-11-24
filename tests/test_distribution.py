@@ -15,7 +15,9 @@ class Distribution(unittest.TestCase):
         with tempfile.TemporaryDirectory() as out:
             subprocess.run([sys.executable, str(ROOT / 'scripts/build.py'), '--out', out], check=True, capture_output=True)
             skill = Path(out) / 'job-mate'
-            self.assertEqual({p.name for p in skill.iterdir()}, {'SKILL.md', 'LICENSE', 'NOTICE', 'references', 'scripts'})
+            self.assertEqual({p.name for p in skill.iterdir()},
+                             {'SKILL.md', 'LICENSE', 'NOTICE', 'agents', 'references', 'scripts'})
+            self.assertTrue((skill / 'agents/openai.yaml').is_file())
             for p in skill.rglob('*'):
                 if p.is_file():
                     self.assertEqual(p.read_bytes(), (ROOT / p.relative_to(skill)).read_bytes())
