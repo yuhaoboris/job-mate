@@ -26,7 +26,7 @@ class Distribution(unittest.TestCase):
             self.assertEqual((ROOT / 'LICENSE').read_bytes(), (skill / 'LICENSE').read_bytes())
 
     def test_source_manifest_has_no_private_runtime_data(self):
-        # The source list includes new files; deleted v1 files are ignored.
+        # Check tracked and untracked files that still exist.
         listed = subprocess.check_output(['git', 'ls-files', '-c', '-o', '--exclude-standard'], cwd=ROOT, text=True).splitlines()
         forbidden = {'job-mate.sqlite3', 'profile.json', 'candidate.md', '.env'}
         for item in listed:

@@ -1,17 +1,19 @@
 # job-mate · 职伴
 
-一个 BOSS 直聘求职技能：按职位和城市找岗位，向活跃招聘者打招呼，检视消息并跟进，争取面试邀约。
+在 BOSS 直聘搜索相近职位、联系活跃招聘者、跟进全部会话，争取面试机会。
 
 ```sh
 npx skills add yuhaoboris/job-mate --skill job-mate
 ```
 
-**试着这样说：**「帮我找杭州的 AI 全栈岗位，按职位写招呼语，再看看有没有 HR 要回复。」只想浏览时说「只看不发」。只处理消息时说「帮我跟进 BOSS 上的全部会话」。
+> 帮我找杭州的 AI 全栈岗位，按职位写招呼语，再看看有没有 HR 要回复。
 
-搜索只需要目标职位和城市。简历不是门槛；提供后可据此写得更具体。首次打招呼可选平台预设、固定原文或按职位动态写，之后沿用。默认每轮尽量发出 20 条新招呼；合适岗位不足或受平台限制时报告实际数。处理消息会检视整个会话列表，不只是未读。面试时间等承诺由你决定。
+也可以说「只看不发」或「只跟进消息」。搜索只需职位和城市，简历可选。首次打招呼选平台预设、固定原文或动态撰写；每轮默认尽量发满 20 条，不足报实际数。面试时间由你决定。
 
-需要 Python 3.9+、本地文件和可操作已登录浏览器的桌面能力。登录与验证码由本人完成。不使用隐藏接口，不规避平台限制，不保证邀约。求职资料和会话台账保存在独立本地工作区，默认不加密；Agent 服务和日志仍可能处理这些数据。
+需要 Python 3.9+、能读写本地文件的 Agent，以及[浏览器工具](references/boss.md#浏览器选择)。登录与验证码由本人处理，不保证获得邀约。使用前请了解[数据隐私与安全边界](SECURITY.md)。
 
-离线安装可运行 `python3 scripts/build.py --out /path/to/export`，只复制导出的 `job-mate/`。首次使用请从新工作区开始；本技能不提供旧数据导入或迁移。
+若已安装 Hermes Agent，可通过 `default` 已配置的渠道（如飞书）同步接收报告，详见[交付渠道](references/report.md#交付渠道)。
 
-[技能流程与完成标准](SKILL.md) · [数据命令](references/protocol.md) · [贡献](CONTRIBUTING.md) · [安全](SECURITY.md) · [Apache-2.0](LICENSE)
+离线安装：运行 `python3 scripts/build.py --out /path/to/export`，复制导出的 `job-mate/`。
+
+[求职流程](SKILL.md) · [数据命令](references/protocol.md) · [贡献](CONTRIBUTING.md) · [安全](SECURITY.md) · [Apache-2.0](LICENSE)

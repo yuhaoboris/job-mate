@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""job-mate 2.0: offline workspace protocol, Python standard library only."""
+"""job-mate: offline workspace protocol, Python standard library only."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -284,7 +284,7 @@ def stage(state, req, root):
     resume = {'name': source.name, 'path': str(dest), 'sha256': digest, 'at': stamp(),
               'extractedText': text(req.get('extractedText', ''), '提取文本', required=False)}
     state['resume'] = resume
-    # New facts need review, but old facts and authorization are retained until configure.
+    # Keep current facts and authorization until configure reviews the resume.
     state['resumeNeedsReview'] = True
     return resume
 
@@ -302,7 +302,7 @@ def dispatch(state, req, root):
     if op == 'begin':
         expected(state, req)
         require(req.get('skill') == 'followup' or (state['profile'] and not state.get('resumeNeedsReview')), 'ONBOARDING_REQUIRED', '搜索前保存目标职位与城市；新简历需要先更新事实')
-        require(not state['run'], 'RUN_ACTIVE', '已有任务，请核对旧任务是否结束；不自动接管')
+        require(not state['run'], 'RUN_ACTIVE', '已有任务未收尾；不自动接管')
         require(not state['paused'], 'PAUSED', '工作区已暂停')
         skill = req.get('skill')
         require(skill in ('apply', 'followup'), 'INVALID_INPUT', 'skill 必须是 apply/followup')
@@ -332,7 +332,7 @@ def dispatch(state, req, root):
         state['paused'] = boolean(req.get('paused'), 'paused')
         return {'paused': state['paused']}
     if op == 'recover_run':
-        text(req.get('evidence'), '已确认旧执行器停止的依据', limit=10000)
+        text(req.get('evidence'), '已确认执行器停止的依据', limit=10000)
         run = active(state, req)
         for a in state['attempts']:
             if a['runId'] == run['id'] and a['status'] == 'prepared':
@@ -353,7 +353,7 @@ def dispatch(state, req, root):
         d['status'] = 'answered'
         return d
     if op == 'reconcile':
-        require(not state['run'], 'RUN_ACTIVE', '先结束旧任务，再核对发送结果')
+        require(not state['run'], 'RUN_ACTIVE', '先结束当前任务，再核对发送结果')
         a = next((a for a in state['attempts'] if a['id'] == req.get('attemptId')), None)
         require(a and a['status'] in ('uncertain', 'prepared'), 'ATTEMPT_CLOSED', '没有待核对的尝试')
         status = req.get('status')
@@ -439,13 +439,19 @@ def dispatch(state, req, root):
             check_nudge(history)
         if kind == 'resume':
             require(state['resume'] and not state.get('resumeNeedsReview'), 'RESUME_REQUIRED', '需要核对当前简历')
-            if run['skill'] == 'followup':
-                text(req.get('requestEvidence'), '对方索要简历的依据')
+            requested = text(req.get('requestEvidence', ''), '对方索要简历的依据', required=False)
             require(content == state['resume']['sha256'], 'RESUME_MISMATCH', '简历内容需绑定已确认原件的 SHA-256')
-            if run['skill'] == 'apply':
-                already_sent = any(e['kind'] == 'resume' and e.get('status') == 'sent'
-                                   and e.get('text') == content for e in history)
-                require(not already_sent, 'ALREADY_SENT', '该岗位会话已发送这份简历')
+            if not requested:
+                already_sent = any(e['kind'] == 'resume' and e.get('status') == 'sent' for e in history)
+                require(not already_sent, 'ALREADY_SENT', '该会话已发送简历；再次发送需对方索要依据')
+                if run['skill'] == 'followup':
+                    outbound_seen = replied = False
+                    for message in sorted(history, key=event_order):
+                        if message['kind'] in OUTBOUND - {'resume'} and message.get('status') == 'sent':
+                            outbound_seen = True
+                        elif message['kind'] == 'inbound' and outbound_seen:
+                            replied = True
+                    require(replied, 'REPLY_REQUIRED', '主动发送简历需招聘者已回复我方消息，或提供对方索要依据')
         did = req.get('decisionId')
         if req.get('commitment'):
             require(did, 'DECISION_REQUIRED', '承诺事项需要本人批准原话')
@@ -456,6 +462,8 @@ def dispatch(state, req, root):
              'kind': kind, 'text': content, 'status': 'prepared', 'decisionId': did, 'decisionRevision': d.get('revision') if did else None, 'guarded': False}
         if kind == 'greet' and 'maxChars' in req:
             a['maxChars'] = max_chars
+        if kind == 'resume' and requested:
+            a['requestEvidence'] = requested
         attempts.append(a)
         return a
     if op in ('guard', 'finish'):
@@ -514,7 +522,7 @@ def execute(root, req):
             row = connection.execute('SELECT data FROM workspace WHERE id=1').fetchone()
             require(row, 'INVALID_WORKSPACE', '缺少工作区数据')
             state = json.loads(row[0])
-        require(state.get('schemaVersion') == SCHEMA, 'VERSION_MISMATCH', '非当前工作区格式；请指定新工作区，原文件不会转换或删除')
+        require(state.get('schemaVersion') == SCHEMA, 'VERSION_MISMATCH', '工作区格式不符；请检查路径，原文件保持不变')
         if req['op'] == 'snapshot':
             result = summary(state, root)
         else:

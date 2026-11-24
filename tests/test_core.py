@@ -148,13 +148,72 @@ class Workspace(unittest.TestCase):
         self.time.return_value += 20
         self.assertProblem('ALREADY_SENT', 'prepare', **request)
 
-    def test_followup_resume_keeps_the_inbound_request_requirement(self):
+    def test_followup_initial_inbound_requires_resume_request(self):
         self.begin(skill='followup', actions=['resume'])
         self.call('record', runId=self.run, target=self.target, kind='inbound', text='Synthetic HR message')
         digest = self.call('snapshot')['resume']['sha256']
-        self.assertProblem('INVALID_INPUT', 'prepare', runId=self.run, target=self.target,
+        self.assertProblem('REPLY_REQUIRED', 'prepare', runId=self.run, target=self.target,
                            kind='resume', text=digest)
         self.assertIsInstance(self.prepare('resume', text=digest, requestEvidence='HR requested a resume'), str)
+
+    def test_followup_can_proactively_send_resume_after_hr_reply(self):
+        self.begin(skill='followup', actions=['resume'])
+        # Import in reverse order to verify that message time controls eligibility.
+        self.import_history(self.historical_message('inbound', 'hr-reply', 1),
+                            self.historical_message('greet', 'my-greeting', 2))
+        digest = self.call('snapshot')['resume']['sha256']
+        attempt = self.prepare('resume', text=digest)
+        self.call('guard', runId=self.run, attemptId=attempt, target=self.target, text=digest)
+        self.call('finish', runId=self.run, attemptId=attempt, status='sent', evidence='Attachment delivered')
+        self.assertProblem('ALREADY_SENT', 'prepare', runId=self.run, target=self.target,
+                           kind='resume', text=digest)
+
+    def test_followup_outgoing_after_initial_inbound_is_not_hr_reply(self):
+        self.begin(skill='followup', actions=['resume'])
+        self.import_history(self.historical_message('inbound', 'hr-hello', 2),
+                            self.historical_message('reply', 'my-reply', 1))
+        self.assertProblem('REPLY_REQUIRED', 'prepare', runId=self.run, target=self.target,
+                           kind='resume', text=self.call('snapshot')['resume']['sha256'])
+
+    def test_followup_read_receipt_is_not_hr_reply(self):
+        self.begin(skill='followup', actions=['resume'])
+        self.import_history(self.historical_message('greet', 'my-greeting', 2))
+        self.call('record', runId=self.run, target=self.target, kind='observe', observed='info', note='Read')
+        self.assertProblem('REPLY_REQUIRED', 'prepare', runId=self.run, target=self.target,
+                           kind='resume', text=self.call('snapshot')['resume']['sha256'])
+
+    def test_resume_request_allows_resend_in_either_phase(self):
+        for phase in ('apply', 'followup'):
+            with self.subTest(phase=phase):
+                self.root = self.base / phase
+                self.begin(skill=phase, actions=['resume'])
+                digest = self.call('snapshot')['resume']['sha256']
+                if phase == 'apply':
+                    self.screen()
+                else:
+                    self.import_history(self.historical_message('resume', 'previous-resume', 2, text=digest),
+                                        self.historical_message('inbound', 'request-again', 1))
+                for _ in range(2):
+                    attempt = self.prepare('resume', text=digest, requestEvidence='HR asks for the resume')
+                    self.call('guard', runId=self.run, attemptId=attempt, target=self.target, text=digest)
+                    self.call('finish', runId=self.run, attemptId=attempt, status='sent', evidence='Attachment delivered')
+                self.assertEqual(self.call('snapshot')['attempts'][-1]['requestEvidence'], 'HR asks for the resume')
+
+    def test_request_does_not_bypass_uncertain_send_or_hash_check(self):
+        self.begin(skill='followup', actions=['resume'])
+        self.call('record', runId=self.run, target=self.target, kind='inbound', text='Please send resume')
+        request = dict(runId=self.run, target=self.target, kind='resume', requestEvidence='HR asks')
+        self.assertProblem('RESUME_MISMATCH', 'prepare', **request, text='wrong hash')
+        digest = self.call('snapshot')['resume']['sha256']
+        attempt = self.prepare('resume', text=digest, requestEvidence='HR asks')
+        self.call('finish', runId=self.run, attemptId=attempt, status='uncertain', evidence='Page timed out')
+        self.assertProblem('UNRESOLVED_SEND', 'prepare', **request, text=digest)
+
+    def test_followup_resume_still_requires_user_permission(self):
+        self.setup_profile()
+        self.assertProblem('NOT_AUTHORIZED', 'begin', revision=self.call('snapshot')['revision'],
+                           skill='followup', account='synthetic', accountEvidence='Page',
+                           actions=['resume'], noSend=False)
 
     def test_apply_records_greeting_and_resume_as_separate_sends_to_the_same_job(self):
         self.begin(actions=['greet', 'resume'], maxActions=2)

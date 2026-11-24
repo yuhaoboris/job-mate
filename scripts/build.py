@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FILES = ('SKILL.md', 'LICENSE', 'NOTICE', 'scripts/job_mate.py',
          'references/boss.md', 'references/greeting.md',
-         'references/protocol.md')
+         'references/protocol.md', 'references/report.md')
 
 
 def build(out=None):
