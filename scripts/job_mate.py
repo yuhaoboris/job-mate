@@ -79,19 +79,21 @@ def fresh():
 
 def profile(value):
     require(isinstance(value, dict), 'INVALID_PROFILE', '资料必须是对象')
-    require(set(value) <= {'candidateFacts', 'targetRoles', 'locations', 'salary', 'requirements', 'exclusions', 'authorization', 'confirmation'}, 'INVALID_PROFILE', '资料含未知字段')
-    p = {k: strings(value.get(k, []), k, k in ('targetRoles', 'locations')) for k in ('targetRoles', 'locations', 'requirements', 'exclusions')}
+    allowed_fields = ('candidateFacts', 'targetRoles', 'locations', 'salary', 'requirements', 'exclusions', 'authorization', 'confirmation')
+    require(set(value) <= set(allowed_fields), 'INVALID_PROFILE', '资料含未知字段，仅支持: ' + ', '.join(allowed_fields))
+    p = {k: strings(value.get(k, []), k) for k in ('targetRoles', 'locations', 'requirements', 'exclusions')}
     p['candidateFacts'] = text(value.get('candidateFacts', ''), '有来源的个人事实', required=False)
     p['confirmation'] = text(value.get('confirmation', ''), '用户偏好来源', required=False, limit=10000)
     s = value.get('salary')
     if s is not None:
         require(isinstance(s, dict) and set(s) == {'min', 'max', 'currency', 'period', 'basis'}, 'INVALID_PROFILE', '薪资需要 min/max/currency/period/basis，或 null 表示不设门槛')
         require(all(type(s[k]) in (int, float) and 0 <= s[k] <= 100000000 for k in ('min', 'max')) and s['max'] >= s['min'], 'INVALID_PROFILE', '薪资区间无效')
-        require(s['currency'] in ('CNY', 'HKD', 'USD') and s['period'] in ('month', 'year') and s['basis'] in ('gross', 'net', 'unspecified'), 'INVALID_PROFILE', '薪资口径无效')
+        require(s['currency'] in ('CNY', 'HKD', 'USD') and s['period'] in ('month', 'year') and s['basis'] in ('gross', 'net', 'unspecified'),
+                'INVALID_PROFILE', '薪资口径无效（currency: CNY/HKD/USD, period: month/year, basis: gross/net/unspecified）')
     p['salary'] = s
     auth = value.get('authorization', [])
     p['authorization'] = strings(auth, '长期发送授权')
-    require(set(auth) <= ACTIONS, 'INVALID_PROFILE', '发送授权类型无效')
+    require(set(auth) <= ACTIONS, 'INVALID_PROFILE', '发送授权类型无效，可选: ' + ', '.join(sorted(ACTIONS)))
     return p
 
 
@@ -201,9 +203,11 @@ def check_nudge(history):
     require(last and last['kind'] in OUTBOUND, 'NOT_WAITING', '最近一条须为我方已发送消息；有来信应回复')
 
 
-def decision(state, target, question, key=None):
+def decision(state, target, question, key=None, update=False):
     for d in state['decisions']:
         if key and d.get('key') == key and d['status'] == 'open':
+            if update:
+                d['question'] = question
             return d
     d = {'id': uid('decision'), 'at': stamp(), 'target': target, 'question': question, 'status': 'open', 'key': key}
     state['decisions'].append(d)
@@ -220,7 +224,31 @@ def expected(state, req):
     require(type(req.get('revision')) is int and req['revision'] == state['revision'], 'STALE_REVISION', '资料已变化，请重读并核对，不要盲目重试')
 
 
-def summary(state, root):
+def active_visits(state, current=None, run_id=None):
+    current = now() if current is None else current
+    return [v for v in state.get('searchVisits', [])
+            if (run_id and v['runId'] == run_id) or v['ts'] > current - SEARCH_WINDOW_SECONDS]
+
+
+def search_quota(visits, current):
+    next_at = None
+    if visits:
+        earliest = visits[-1]['ts'] + SEARCH_INTERVAL_SECONDS
+        if earliest > current:
+            next_at = stamp(math.ceil(earliest))
+    return {
+        'listRemaining': max(0, SEARCH_VISIT_LIMITS['list'] - sum(v['kind'] == 'list' for v in visits)),
+        'detailRemaining': max(0, SEARCH_VISIT_LIMITS['detail'] - sum(v['kind'] == 'detail' for v in visits)),
+        'nextVisitAt': next_at,
+    }
+
+
+def search_configured(state):
+    p = state.get('profile')
+    return bool(p and p.get('targetRoles') and p.get('locations'))
+
+
+def summary(state, root, compact=False):
     rows = {}
     for e in sorted(state['events'], key=event_order):
         key = (e.get('platform'), e.get('account'), e.get('threadKey'))
@@ -253,10 +281,35 @@ def summary(state, root):
         if a['status'] in ('prepared', 'uncertain') and key in rows:
             rows[key]['status'] = 'uncertain'
     records = sorted(rows.values(), key=lambda r: r['history'][-1].get('ts', 0), reverse=True)
-    counts = {k: sum(r['status'] == k for r in records) for k in ('qualified', 'pending', 'excluded', 'waiting', 'replied', 'interview', 'closed', 'uncertain')}
-    return {**state, 'workspace': str(root), 'configured': bool(state['profile']), 'records': records,
-            'accessRestriction': state.get('accessRestriction'), 'searchVisits': state.get('searchVisits', []),
-            'counts': {**counts, 'total': len(records), 'decisions': sum(d['status'] == 'open' for d in state['decisions'])}}
+    counts = {k: sum(r['status'] == k for r in records) for k in ('qualified', 'pending', 'excluded', 'waiting', 'replied', 'interview', 'closed', 'failed_no_send', 'uncertain')}
+    current = now()
+    run_id = state['run']['id'] if state.get('run') else None
+    visits = active_visits(state, current, run_id)
+    quota = search_quota(visits, current)
+    result = {**state, 'workspace': str(root), 'configured': search_configured(state), 'records': records,
+              'accessRestriction': state.get('accessRestriction'), 'searchVisits': state.get('searchVisits', []),
+              'searchQuota': quota,
+              'counts': {**counts, 'total': len(records), 'decisions': sum(d['status'] == 'open' for d in state['decisions'])}}
+    if not compact:
+        return result
+    compact_records = []
+    for r in records:
+        item = {k: v for k, v in r.items() if k != 'history'}
+        item['historyCount'] = len(r['history'])
+        if r['status'] not in ('excluded', 'closed'):
+            item['history'] = r['history'][-5:]
+        compact_records.append(item)
+    resume = state.get('resume')
+    if resume:
+        resume = {k: v for k, v in resume.items() if k != 'extractedText'} | {'hasExtractedText': bool(resume.get('extractedText'))}
+    result.pop('events', None)
+    result['compact'] = True
+    result['resume'] = resume
+    result['attempts'] = [a for a in state['attempts'] if a['status'] in ('prepared', 'uncertain')]
+    result['decisions'] = [d for d in state['decisions'] if d['status'] != 'resolved']
+    result['searchVisits'] = visits
+    result['records'] = compact_records
+    return result
 
 
 def check_access(state):
@@ -295,8 +348,7 @@ def reserve_visit(state, run, req):
     require(isinstance(kind, str) and kind in SEARCH_VISIT_LIMITS, 'INVALID_INPUT', '访问类型需要 list 或 detail')
     current = now()
     # A new stage cannot reset recent traffic, and a long stage keeps its own cap.
-    visits = [v for v in state.get('searchVisits', [])
-              if v['runId'] == run['id'] or v['ts'] > current - SEARCH_WINDOW_SECONDS]
+    visits = active_visits(state, current, run['id'])
     visit = {'runId': run['id'], 'ts': current, 'kind': kind}
     if kind == 'detail':
         key = scoped_target(run, req)['threadKey']
@@ -366,7 +418,7 @@ def dispatch(state, req, root):
     if op == 'begin':
         expected(state, req)
         check_access(state)
-        require(req.get('skill') == 'followup' or (state['profile'] and not state.get('resumeNeedsReview')), 'ONBOARDING_REQUIRED', '搜索前保存目标职位与城市；新简历需要先更新事实')
+        require(req.get('skill') == 'followup' or (search_configured(state) and not state.get('resumeNeedsReview')), 'ONBOARDING_REQUIRED', '搜索前保存目标职位与城市；新简历需要先更新事实')
         require(not state['run'], 'RUN_ACTIVE', '已有任务未收尾；不自动接管')
         skill = req.get('skill')
         require(skill in ('apply', 'followup'), 'INVALID_INPUT', 'skill 必须是 apply/followup')
@@ -376,10 +428,10 @@ def dispatch(state, req, root):
         actions = strings(req.get('actions', []), '本轮发送范围')
         allowed_actions = {'greet', 'resume'} if skill == 'apply' else ACTIONS - {'greet'}
         require(set(actions) <= allowed_actions, 'INVALID_INPUT', '动作超出当前技能')
+        no_send = boolean(req.get('noSend', False), 'noSend')
         reason = text(req.get('authorizationEvidence', ''), '本人授权依据', required=False, limit=10000)
-        if 'resume' in actions and not req.get('noSend'):
+        if 'resume' in actions and not no_send:
             require(reason or 'resume' in (state['profile'] or {}).get('authorization', []), 'NOT_AUTHORIZED', '发送附件需本人许可')
-        no_send = boolean(req.get('noSend'), 'noSend')
         if skill == 'apply' and not no_send and 'resume' in actions:
             require(reason, 'NOT_AUTHORIZED', '主动投递需要本人本轮明确授权')
         maximum = req.get('maxActions')
@@ -474,19 +526,19 @@ def dispatch(state, req, root):
                 return previous
             fields['messageKey'] = key
         if kind == 'screen':
-            require(req.get('result') in ('qualified', 'pending', 'excluded'), 'INVALID_EVENT', '筛选结论无效')
+            require(req.get('result') in ('qualified', 'pending', 'excluded'), 'INVALID_EVENT', '筛选结论无效，可选: qualified, pending, excluded')
             fields.update(result=req['result'], reasons=strings(req.get('reasons'), '筛选依据', True), facts=req.get('facts', {}))
             require(isinstance(fields['facts'], dict), 'INVALID_EVENT', '职位事实需要对象')
         if kind == 'observe':
-            require(req.get('observed') in OBSERVATIONS, 'INVALID_EVENT', '观察类型无效')
+            require(req.get('observed') in OBSERVATIONS, 'INVALID_EVENT', '观察类型无效，可选: ' + ', '.join(sorted(OBSERVATIONS)))
             fields['observed'] = req['observed']
         result = event(state, kind, target, **fields)
         if kind == 'observe' and req['observed'] == 'interview_invited':
-            decision(state, target, '收到面试邀约，请本人决定时间及回复。', 'interview:' + target['threadKey'])
+            decision(state, target, fields['note'] or '收到面试邀约，请本人决定时间及回复。', 'interview:' + target['threadKey'])
         return result
     if op == 'decide':
         target = scoped_target(run, req)
-        return decision(state, target, text(req.get('question'), '待决定问题'), req.get('key'))
+        return decision(state, target, text(req.get('question'), '待决定问题'), req.get('key'), update=True)
     if op == 'prepare':
         guard(state, run)
         target = scoped_target(run, req)
@@ -584,7 +636,7 @@ def execute(root, req):
     can_initialize = req['op'] in ('stage_resume', 'configure', 'restrict_access') or (req['op'] == 'begin' and req.get('skill') == 'followup')
     if not dbfile.exists():
         if req['op'] == 'snapshot':
-            return summary(fresh(), root)
+            return summary(fresh(), root, compact=boolean(req.get('compact', False), 'compact'))
         require(can_initialize, 'ONBOARDING_REQUIRED', '搜索前先保存目标职位与城市')
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
     connection = sqlite3.connect(str(dbfile), timeout=5, isolation_level=None)
@@ -603,7 +655,7 @@ def execute(root, req):
             state = json.loads(row[0])
         require(state.get('schemaVersion') == SCHEMA, 'VERSION_MISMATCH', '工作区格式不符；请检查路径，原文件保持不变')
         if req['op'] == 'snapshot':
-            result = summary(state, root)
+            result = summary(state, root, compact=boolean(req.get('compact', False), 'compact'))
         else:
             result = dispatch(state, req, root)
             if req['op'] != 'import_history' or result['imported'] or result['updated']:

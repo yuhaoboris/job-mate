@@ -77,7 +77,7 @@ class Workspace(unittest.TestCase):
     def test_minimal_profile_without_resume_or_authorization_prompt(self):
         self.call('configure', revision=0, profile=dict(targetRoles=['Frontend'], locations=['Shanghai']))
         self.run = self.call('begin', revision=1, skill='apply', account='synthetic', accountEvidence='page',
-                             actions=['greet'], noSend=False)['result']['id']
+                             actions=['greet'])['result']['id']
         self.screen()
         self.assertIsInstance(self.prepare(), str)
 
@@ -214,6 +214,62 @@ class Workspace(unittest.TestCase):
         self.assertProblem('NOT_AUTHORIZED', 'begin', revision=self.call('snapshot')['revision'],
                            skill='followup', account='synthetic', accountEvidence='Page',
                            actions=['resume'], noSend=False)
+
+    def test_followup_can_review_and_send_resume_without_search_preferences(self):
+        staged = self.call('stage_resume', source=str(self.resume), extractedText='Full resume text')
+        self.call('configure', revision=staged['revision'], profile=dict(
+            candidateFacts='resume.txt: two years frontend', authorization=['resume']))
+        snap = self.call('snapshot')
+        self.assertFalse(snap['configured'])
+        self.assertProblem('ONBOARDING_REQUIRED', 'begin', revision=snap['revision'], skill='apply',
+                           account='synthetic', accountEvidence='Page', noSend=True)
+        run = self.call('begin', revision=snap['revision'], skill='followup', account='synthetic',
+                        accountEvidence='Page', actions=['resume'], noSend=False)['result']
+        self.call('record', runId=run['id'], target=self.target, kind='inbound', text='Please send resume')
+        digest = snap['resume']['sha256']
+        attempt = self.call('prepare', runId=run['id'], target=self.target, kind='resume',
+                            text=digest, requestEvidence='HR asked for resume')['result']['id']
+        self.call('guard', runId=run['id'], attemptId=attempt, target=self.target, text=digest)
+        self.call('finish', runId=run['id'], attemptId=attempt, status='sent', evidence='Attachment sent')
+
+    def test_interview_observed_decision_updates_without_duplicating(self):
+        self.begin(skill='followup', actions=['reply'])
+        self.call('record', runId=self.run, kind='observe', target=self.target,
+                  observed='interview_invited', note='Interview on Wed 15:00 or Thu 10:00?')
+        updated = self.call('decide', runId=self.run, target=self.target,
+                            key='interview:' + self.target['threadKey'],
+                            question='Pick Wed 15:00 or Thu 10:00?')['result']
+        decisions = self.call('snapshot')['decisions']
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]['id'], updated['id'])
+        self.assertEqual(decisions[0]['question'], 'Pick Wed 15:00 or Thu 10:00?')
+
+    def test_compact_snapshot_search_quota_and_failed_count(self):
+        self.call('stage_resume', source=str(self.resume), extractedText='Sensitive full text')
+        self.call('configure', revision=1, profile=self.profile)
+        self.begin()
+        self.call('reserve_visit', runId=self.run, kind='list')
+        self.screen()
+        attempt = self.prepare()
+        self.call('finish', runId=self.run, attemptId=attempt, status='failed_no_send', evidence='not sent')
+        excluded = dict(self.target, threadKey='closed-1')
+        self.screen(excluded, result='excluded')
+        self.call('end', runId=self.run)
+        full = self.call('snapshot')
+        self.assertEqual(full['counts']['failed_no_send'], 1)
+        self.assertEqual(full['searchQuota'], {
+            'listRemaining': 1, 'detailRemaining': 3, 'nextVisitAt': core.stamp(self.time.return_value + 60)
+        })
+        compact = self.call('snapshot', compact=True)
+        self.assertTrue(compact['compact'])
+        self.assertNotIn('events', compact)
+        self.assertEqual(compact['attempts'], [])
+        self.assertNotIn('extractedText', compact['resume'])
+        self.assertTrue(compact['resume']['hasExtractedText'])
+        by_key = {r['threadKey']: r for r in compact['records']}
+        self.assertNotIn('history', by_key['closed-1'])
+        self.assertEqual(by_key['closed-1']['historyCount'], 1)
+        self.assertIn('history', by_key[self.target['threadKey']])
 
     def test_apply_records_greeting_and_resume_as_separate_sends_to_the_same_job(self):
         self.begin(actions=['greet', 'resume'], maxActions=2)
