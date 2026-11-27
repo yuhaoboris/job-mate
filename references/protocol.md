@@ -6,11 +6,17 @@
 
 ## 开始阶段
 
-1. `{"op":"snapshot"}`：读取资料、会话、尝试、待办和当前 revision，不创建目录。
+1. 浏览器操作前先用 `{"op":"snapshot"}` 读取资料、会话、尝试、待办和当前 revision，不创建目录。`paused` 或 `accessRestriction` 生效时只做本地处理。
 2. 搜索前 `configure`，如 `{"op":"configure","revision":0,"profile":{"targetRoles":["全栈工程师"],"locations":["杭州"]}}`。已有 profile 须先合并再整体替换，用最新 revision。招呼偏好及原文存 requirements；candidateFacts 可空，requirements/exclusions/authorization 默认 `[]`，salary 默认 `null`。有简历可先 `stage_resume`（source、可选 extractedText）再更新事实。
-3. `begin` 开一个阶段，如 `{"op":"begin","revision":1,"skill":"apply","account":"页面账号","accountEvidence":"个人页显示的身份","noSend":false,"actions":["greet"]}`。`apply` 搜岗位；`followup` 处理会话（reply/nudge），无需搜索偏好。`end` 后用最新 revision 开下一阶段。
+3. `begin` 开一个阶段，如 `{"op":"begin","revision":1,"skill":"apply","account":"页面账号","accountEvidence":"当前页面已显示的身份","noSend":false,"actions":["greet"]}`。`apply` 搜岗位；`followup` 处理会话（reply/nudge），无需搜索偏好。`end` 后用最新 revision 开下一阶段。
 
-只看传 `noSend:true`；限定会话用 targets（threadKey 列表）。附件 resume 需本人授权依据 authorizationEvidence；apply 须本轮明确许可，followup 也可用已有附件许可。仅用户限定本阶段总发送数时传 maxActions；核心另限制每阶段最多 20 条新招呼，无每日额度或固定间隔。
+只看传 `noSend:true`；限定会话用 targets（threadKey 列表）。附件 resume 需本人授权依据 authorizationEvidence；apply 须本轮明确许可，followup 也可用已有附件许可。仅用户限定本阶段总发送数时传 maxActions。每阶段最多 20 条新招呼，搜索访问另行计数。
+
+## 搜索访问
+
+`apply` 阶段每次触发[列表或详情加载](boss.md#搜索页面访问)之前调用 `{"op":"reserve_visit","runId":"本轮 ID","kind":"list"}`。打开详情用 `kind:"detail"` 并传下节的 `target`，用卡片上可见的稳定标识或职位链接标识同一岗位。把许可紧挨着页面动作使用，一次许可对应一次加载。读取已渲染的卡片、登记岗位或整理报告无需许可。
+
+成功时 `remaining` 是该类访问剩余次数，`nextVisitAt` 是下次最早可加载的 UTC 时间。`VISIT_TOO_SOON` 给出等待截止时间，无需轮询。`DETAIL_ALREADY_VISITED` 时查已存记录，`VISIT_LIMIT` 时用现有资料收尾。失败或中断不退回已登记的次数。快照中的 `searchVisits` 可按 runId 查看近期访问尝试，已筛岗位保存在 `records` 中。
 
 ## 阶段内操作
 
@@ -18,7 +24,7 @@
 
 | op | 字段与用途 |
 |---|---|
-| record | target、kind:screen、result（qualified/pending/excluded）、reasons 字符串列表、facts 对象。记岗位、城市和活跃标签。 |
+| record | target、kind:screen、result（qualified/pending/excluded）、reasons 字符串列表、facts 对象。用 facts.source（list/detail）标明依据，保存可见的地点、活跃标签和职位链接。pending 在 reasons 写清缺项。 |
 | record | target、kind:inbound、text、稳定 messageKey。来信去重。 |
 | record | target、kind:observe、observed（如 interview_invited/rejected/job_closed/info）、note。 |
 | decide | target、question、可选稳定 key。登记需本人决定的事项。 |
@@ -38,7 +44,9 @@
 ## 决定与恢复
 
 - `answer`：最新 revision、decisionId、answer、可选 approvedText。承诺只用本人批准的原文。
-- `pause`：paused 控制暂停外发。恢复未收尾任务前，确认执行器已停止，再 `recover_run`（runId、evidence）。
+- 看到[平台限制](boss.md#访问受限)时立即执行 `{"op":"restrict_access","notice":"页面提示原文"}`，无需 runId。时间和时区均明确时附 `resumeAt`（ISO 8601 含偏移），需本人完成验证时加 `verificationRequired:true`。缺时间、时区不明或格式无效时保留原文，等待本人确认。已准备的外发用现有证据 `finish`，结果不明按不明登记，再 `end`。
+- 本人再次要求继续且已到平台给出的恢复时间时，用 `resume_access`、最新 revision 和 `recoveryEvidence`（本人本次继续指令）解除限制。若快照显示 `needsConfirmation:true`，依据须包含本人确认访问已恢复的说明。当前阶段需先收尾，恢复后沿用已有候选和访问次数。
+- `pause` 的 paused 控制工作区暂停。普通取消暂停不能解除平台限制。恢复未收尾任务前，确认执行器已停止，再 `recover_run`（runId、evidence）。
 - `reconcile`：无运行且页面已确认结果时，传 attemptId、status（sent/failed_no_send）、evidence、可选 actualText。仍不明不重发。
 
 ## 数据边界

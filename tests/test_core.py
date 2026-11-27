@@ -293,6 +293,125 @@ class Workspace(unittest.TestCase):
         self.call('end', runId=self.run)
         self.assertEqual(self.call('snapshot')['attempts'], [])
 
+    def test_search_visits_share_spacing_and_caps_across_runs(self):
+        self.begin(noSend=True)
+        first = self.call('reserve_visit', runId=self.run, kind='list')['result']
+        self.assertEqual(first, {'nextVisitAt': core.stamp(self.time.return_value + 60), 'remaining': 1})
+        self.screen(result='pending')
+        self.call('end', runId=self.run)
+        self.begin(skill='followup', noSend=True)
+        self.assertProblem('OUT_OF_SCOPE', 'reserve_visit', runId=self.run, kind='list')
+        self.call('end', runId=self.run)
+        self.begin()
+        self.time.return_value += 59
+        self.assertProblem('VISIT_TOO_SOON', 'reserve_visit', runId=self.run, kind='detail', target=self.target)
+        self.time.return_value += 1
+        self.assertEqual(self.call('reserve_visit', runId=self.run, kind='list')['result']['remaining'], 0)
+        self.time.return_value += 60
+        self.assertProblem('VISIT_LIMIT', 'reserve_visit', runId=self.run, kind='list')
+        self.assertEqual(len(self.call('snapshot')['searchVisits']), 2)
+        self.time.return_value += 3480  # The first stage's visit leaves the rolling hour.
+        self.call('reserve_visit', runId=self.run, kind='list')
+        self.time.return_value += 3600
+        self.assertProblem('VISIT_LIMIT', 'reserve_visit', runId=self.run, kind='list')
+        self.call('end', runId=self.run)
+        self.begin(noSend=True)
+        self.assertEqual(self.call('reserve_visit', runId=self.run, kind='list')['result']['remaining'], 1)
+
+    def test_details_require_scoped_unique_jobs_and_charge_before_page_load(self):
+        targets = [dict(self.target, threadKey=str(i)) for i in range(4)]
+        self.begin(noSend=True, targets=[t['threadKey'] for t in targets])
+        self.assertProblem('OUT_OF_SCOPE', 'reserve_visit', runId=self.run, kind='detail', target=self.target)
+        self.assertProblem('ACCOUNT_MISMATCH', 'reserve_visit', runId=self.run, kind='detail',
+                           target=dict(targets[0], account='other'))
+        for i, target in enumerate(targets[:3]):
+            self.time.return_value += 60
+            visit = self.call('reserve_visit', runId=self.run, kind='detail', target=target)
+            self.assertEqual(visit['result']['remaining'], 2 - i)
+        # No successful page result is needed to charge an attempt, even after restart.
+        self.call('end', runId=self.run)
+        self.begin(noSend=True)
+        self.time.return_value += 60
+        self.assertProblem('DETAIL_ALREADY_VISITED', 'reserve_visit', runId=self.run, kind='detail',
+                           target=dict(targets[0], title='Same listing under another keyword'))
+        self.assertProblem('VISIT_LIMIT', 'reserve_visit', runId=self.run, kind='detail', target=targets[3])
+        self.assertEqual(len(self.call('snapshot')['searchVisits']), 3)
+        self.assertEqual(self.call('snapshot')['attempts'], [])
+
+    def test_parallel_visit_reservations_allow_only_one_page_load(self):
+        self.begin(noSend=True)
+        cmd = [sys.executable, str(ROOT / 'scripts/job_mate.py'), '--workspace', str(self.root)]
+        request = json.dumps(dict(op='reserve_visit', runId=self.run, kind='list'))
+
+        def reserve():
+            return json.loads(subprocess.run(cmd, input=request, text=True, capture_output=True).stdout)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            reservations = [pool.submit(reserve) for _ in range(2)]
+            results = [future.result() for future in reservations]
+        self.assertEqual(sum(r['ok'] for r in results), 1)
+        self.assertEqual([r['error']['code'] for r in results if not r['ok']], ['VISIT_TOO_SOON'])
+        self.assertEqual(len(self.call('snapshot')['searchVisits']), 1)
+
+    def test_platform_hold_blocks_browsing_and_sending_but_preserves_progress(self):
+        self.begin()
+        self.call('reserve_visit', runId=self.run, kind='detail', target=self.target)
+        self.screen()
+        attempt = self.prepare()
+        self.call('guard', runId=self.run, attemptId=attempt, target=self.target, text='Synthetic greeting')
+        # The synthetic platform interrupts the page after the greeting entry was clicked.
+        deadline = '2027-01-15T16:01:00+08:00'
+        self.assertEqual(core.stamp(self.time.return_value + 60), '2027-01-15T08:01:00Z')
+        self.call('restrict_access', notice='Synthetic access restriction', resumeAt=deadline)
+        self.call('pause', paused=False)
+        self.assertProblem('PLATFORM_RESTRICTED', 'guard', runId=self.run, attemptId=attempt,
+                           target=self.target, text='Synthetic greeting')
+        self.assertProblem('PLATFORM_RESTRICTED', 'reserve_visit', runId=self.run, kind='list')
+        self.call('end', runId=self.run)
+        saved = self.call('snapshot')
+        self.assertEqual(saved['attempts'][0]['status'], 'uncertain')
+        self.assertEqual(saved['records'][0]['history'][0]['result'], 'qualified')
+        for skill in ('apply', 'followup'):
+            self.assertProblem('PLATFORM_RESTRICTED', 'begin', revision=saved['revision'], skill=skill,
+                               account='synthetic', accountEvidence='Synthetic account', noSend=True)
+        self.assertProblem('PLATFORM_RESTRICTED', 'resume_access', revision=saved['revision'],
+                           recoveryEvidence='Premature retry')
+        self.time.return_value += 60
+        self.assertProblem('PLATFORM_RESTRICTED', 'begin', revision=saved['revision'], skill='apply',
+                           account='synthetic', accountEvidence='Synthetic account', noSend=True)
+        self.assertProblem('INVALID_INPUT', 'resume_access', revision=saved['revision'])
+        self.call('resume_access', revision=saved['revision'], recoveryEvidence='Synthetic user asks to continue after the deadline')
+        self.begin()
+        self.assertProblem('DETAIL_ALREADY_VISITED', 'reserve_visit', runId=self.run, kind='detail', target=self.target)
+        self.assertProblem('UNRESOLVED_SEND', 'prepare', runId=self.run, target=self.target,
+                           kind='greet', text='Do not resend')
+
+    def test_restriction_before_first_run_or_without_reliable_recovery_time(self):
+        for raw in (None, '2027-01-16T08:00:00', 'unreadable'):
+            hold = self.call('restrict_access', notice='Synthetic verification required', resumeAt=raw)
+            self.assertTrue(hold['result']['needsConfirmation'])
+            self.assertIsNone(hold['result']['resumeAt'])
+        self.call('pause', paused=True)
+        saved = self.call('snapshot')
+        self.assertEqual(saved['accessRestriction']['notice'], 'Synthetic verification required')
+        self.assertProblem('INVALID_INPUT', 'resume_access', revision=saved['revision'])
+        self.call('resume_access', revision=saved['revision'], recoveryEvidence='Synthetic user confirmed access restored')
+        self.assertTrue(self.call('snapshot')['paused'])
+        self.assertIsNone(self.call('snapshot')['accessRestriction'])
+
+    def test_later_notice_cannot_shorten_a_hold_or_skip_required_verification(self):
+        self.call('restrict_access', notice='Synthetic verification with deadline',
+                  resumeAt=core.stamp(self.time.return_value + 300), verificationRequired=True)
+        updated = self.call('restrict_access', notice='Synthetic repeated notice',
+                            resumeAt=core.stamp(self.time.return_value + 30))
+        self.assertTrue(updated['result']['needsConfirmation'])
+        self.time.return_value += 30
+        self.assertProblem('PLATFORM_RESTRICTED', 'resume_access', revision=updated['revision'],
+                           recoveryEvidence='Synthetic user confirmed')
+        self.time.return_value += 270
+        self.assertProblem('INVALID_INPUT', 'resume_access', revision=updated['revision'])
+        self.call('resume_access', revision=updated['revision'], recoveryEvidence='Synthetic user completed verification')
+
     def test_user_specified_send_cap_is_respected(self):
         self.begin(maxActions=1); self.screen(); attempt = self.prepare(text='Hello')
         self.call('guard', runId=self.run, attemptId=attempt, target=self.target, text='Hello')

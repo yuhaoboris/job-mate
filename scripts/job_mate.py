@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
@@ -20,6 +21,9 @@ RESULTS = {'sent', 'failed_no_send', 'uncertain'}
 OBSERVATIONS = {'interview_invited', 'interview_decided', 'rejected', 'job_closed', 'declined', 'silent', 'replied', 'info'}
 TERMINAL = {'rejected', 'job_closed', 'declined'}
 MAX_RESUME = 5 * 1024 * 1024
+SEARCH_VISIT_LIMITS = {'list': 2, 'detail': 3}
+SEARCH_WINDOW_SECONDS = 3600
+SEARCH_INTERVAL_SECONDS = 60
 
 
 class Problem(Exception):
@@ -96,6 +100,12 @@ def identity(value, account):
     require(value.get('account') == account, 'ACCOUNT_MISMATCH', '页面账号与本轮账号不符')
     require(value.get('platform', 'boss') == 'boss', 'INVALID_TARGET', '当前只支持 BOSS')
     return {k: text(value.get(k), k, limit=1000) for k in ('account', 'company', 'title', 'threadKey')} | {'platform': 'boss'}
+
+
+def scoped_target(run, req):
+    target = identity(req.get('target'), run['account'])
+    require(not run['targets'] or target['threadKey'] in run['targets'], 'OUT_OF_SCOPE', '目标不在本轮范围')
+    return target
 
 
 def contacted(state, entry):
@@ -245,11 +255,65 @@ def summary(state, root):
     records = sorted(rows.values(), key=lambda r: r['history'][-1].get('ts', 0), reverse=True)
     counts = {k: sum(r['status'] == k for r in records) for k in ('qualified', 'pending', 'excluded', 'waiting', 'replied', 'interview', 'closed', 'uncertain')}
     return {**state, 'workspace': str(root), 'configured': bool(state['profile']), 'records': records,
+            'accessRestriction': state.get('accessRestriction'), 'searchVisits': state.get('searchVisits', []),
             'counts': {**counts, 'total': len(records), 'decisions': sum(d['status'] == 'open' for d in state['decisions'])}}
 
 
-def guard(state, run, attempt=None):
+def check_access(state):
+    restriction = state.get('accessRestriction')
+    if restriction:
+        raise Problem('PLATFORM_RESTRICTED', restriction['notice'])
     require(not state['paused'], 'PAUSED', '已暂停，停止页面操作')
+
+
+def restrict_access(state, req):
+    notice = text(req.get('notice'), '平台限制原文', limit=2000)
+    # Keep the hold even if the displayed time cannot be interpreted.
+    raw = req.get('resumeAt')
+    deadline = None
+    if isinstance(raw, str):
+        try:
+            parsed = datetime.fromisoformat(raw[:-1] + '+00:00' if raw.endswith('Z') else raw)
+            if parsed.tzinfo is not None:
+                deadline = parsed.astimezone(timezone.utc).isoformat()
+        except (ValueError, OverflowError):
+            pass
+    previous = state.get('accessRestriction') or {}
+    deadlines = [at for at in (previous.get('resumeAt'), deadline) if at is not None]
+    needs_confirmation = (deadline is None or req.get('verificationRequired', False) is not False
+                          or previous.get('needsConfirmation', False))
+    restriction = {'notice': notice, 'resumeAt': max(deadlines, key=datetime.fromisoformat, default=None),
+                   'needsConfirmation': needs_confirmation}
+    state['accessRestriction'] = restriction
+    return restriction
+
+
+def reserve_visit(state, run, req):
+    check_access(state)
+    require(run['skill'] == 'apply', 'OUT_OF_SCOPE', '仅搜索阶段登记列表或职位详情访问')
+    kind = req.get('kind')
+    require(isinstance(kind, str) and kind in SEARCH_VISIT_LIMITS, 'INVALID_INPUT', '访问类型需要 list 或 detail')
+    current = now()
+    # A new stage cannot reset recent traffic, and a long stage keeps its own cap.
+    visits = [v for v in state.get('searchVisits', [])
+              if v['runId'] == run['id'] or v['ts'] > current - SEARCH_WINDOW_SECONDS]
+    visit = {'runId': run['id'], 'ts': current, 'kind': kind}
+    if kind == 'detail':
+        key = scoped_target(run, req)['threadKey']
+        require(not any(v.get('threadKey') == key for v in visits), 'DETAIL_ALREADY_VISITED', '已登记过该职位详情访问，请复用筛选记录')
+        visit['threadKey'] = key
+    used = sum(v['kind'] == kind for v in visits)
+    require(used < SEARCH_VISIT_LIMITS[kind], 'VISIT_LIMIT', '该类页面已到访问上限，请用已有资料收尾')
+    if visits:
+        earliest = visits[-1]['ts'] + SEARCH_INTERVAL_SECONDS
+        require(current >= earliest, 'VISIT_TOO_SOON', '请先处理已有资料，下次最早访问时间 ' + stamp(math.ceil(earliest)))
+    state['searchVisits'] = visits + [visit]
+    return {'remaining': SEARCH_VISIT_LIMITS[kind] - used - 1,
+            'nextVisitAt': stamp(math.ceil(current + SEARCH_INTERVAL_SECONDS))}
+
+
+def guard(state, run, attempt=None):
+    check_access(state)
     require(not run['noSend'], 'NO_SEND', '本轮只看，不允许外发')
     unresolved = [a for a in state['attempts'] if a['status'] in ('prepared', 'uncertain') and (attempt is None or a['id'] != attempt['id'])]
     require(not unresolved, 'UNRESOLVED_SEND', '存在未核对的外发，先核对页面结果')
@@ -301,9 +365,9 @@ def dispatch(state, req, root):
         return {'configured': True}
     if op == 'begin':
         expected(state, req)
+        check_access(state)
         require(req.get('skill') == 'followup' or (state['profile'] and not state.get('resumeNeedsReview')), 'ONBOARDING_REQUIRED', '搜索前保存目标职位与城市；新简历需要先更新事实')
         require(not state['run'], 'RUN_ACTIVE', '已有任务未收尾；不自动接管')
-        require(not state['paused'], 'PAUSED', '工作区已暂停')
         skill = req.get('skill')
         require(skill in ('apply', 'followup'), 'INVALID_INPUT', 'skill 必须是 apply/followup')
         account = text(req.get('account'), '页面账号', limit=1000)
@@ -331,6 +395,20 @@ def dispatch(state, req, root):
     if op == 'pause':
         state['paused'] = boolean(req.get('paused'), 'paused')
         return {'paused': state['paused']}
+    if op == 'restrict_access':
+        return restrict_access(state, req)
+    if op == 'resume_access':
+        expected(state, req)
+        require(not state['run'], 'RUN_ACTIVE', '请先收尾受限时的任务')
+        restriction = state.get('accessRestriction')
+        require(restriction, 'NOT_RESTRICTED', '没有已登记的平台限制')
+        deadline = restriction['resumeAt']
+        require(deadline is None or now() >= datetime.fromisoformat(deadline).timestamp(),
+                'PLATFORM_RESTRICTED', '尚未到平台提示的最早恢复时间')
+        label = '本人确认已恢复访问的依据' if restriction['needsConfirmation'] else '本人本次要求继续的依据'
+        text(req.get('recoveryEvidence'), label, limit=2000)
+        state['accessRestriction'] = None
+        return {'resumed': True}
     if op == 'recover_run':
         text(req.get('evidence'), '已确认执行器停止的依据', limit=10000)
         run = active(state, req)
@@ -371,6 +449,8 @@ def dispatch(state, req, root):
                 d['status'] = 'resolved'
         return a
     run = active(state, req)
+    if op == 'reserve_visit':
+        return reserve_visit(state, run, req)
     if op == 'end':
         for a in state['attempts']:
             if a['runId'] == run['id'] and a['status'] == 'prepared':
@@ -380,8 +460,7 @@ def dispatch(state, req, root):
         state['run'] = None
         return {'ended': True}
     if op in ('record', 'import_history'):
-        target = identity(req.get('target'), run['account'])
-        require(not run['targets'] or target['threadKey'] in run['targets'], 'OUT_OF_SCOPE', '目标不在本轮范围')
+        target = scoped_target(run, req)
         if op == 'import_history':
             return import_history(state, run, req, target)
         kind = req.get('kind')
@@ -406,13 +485,11 @@ def dispatch(state, req, root):
             decision(state, target, '收到面试邀约，请本人决定时间及回复。', 'interview:' + target['threadKey'])
         return result
     if op == 'decide':
-        target = identity(req.get('target'), run['account'])
-        require(not run['targets'] or target['threadKey'] in run['targets'], 'OUT_OF_SCOPE', '目标不在本轮范围')
+        target = scoped_target(run, req)
         return decision(state, target, text(req.get('question'), '待决定问题'), req.get('key'))
     if op == 'prepare':
         guard(state, run)
-        target = identity(req.get('target'), run['account'])
-        require(not run['targets'] or target['threadKey'] in run['targets'], 'OUT_OF_SCOPE', '目标不在本轮范围')
+        target = scoped_target(run, req)
         kind = req.get('kind')
         require(kind in run['actions'], 'NOT_AUTHORIZED', '本轮未授权此动作')
         content = text(req.get('text'), '最终外发内容')
@@ -493,7 +570,9 @@ def dispatch(state, req, root):
     raise Problem('UNKNOWN_OP', '未知操作')
 
 
-OPS = {'snapshot', 'stage_resume', 'configure', 'begin', 'pause', 'recover_run', 'answer', 'reconcile', 'end', 'record', 'import_history', 'decide', 'prepare', 'guard', 'finish'}
+OPS = {'snapshot', 'stage_resume', 'configure', 'begin', 'pause', 'restrict_access', 'resume_access',
+       'recover_run', 'answer', 'reconcile', 'end', 'reserve_visit', 'record', 'import_history',
+       'decide', 'prepare', 'guard', 'finish'}
 
 
 def execute(root, req):
@@ -502,7 +581,7 @@ def execute(root, req):
     require(root != Path(root.anchor) and root.resolve() != Path.home().resolve(), 'UNSAFE_PATH', '不能在系统根目录或用户主目录根部创建工作区')
     dbfile = root / 'job-mate.sqlite3'
     require(not root.is_symlink() and not dbfile.is_symlink(), 'UNSAFE_PATH', '工作区或数据库不能是符号链接')
-    can_initialize = req['op'] in ('stage_resume', 'configure') or (req['op'] == 'begin' and req.get('skill') == 'followup')
+    can_initialize = req['op'] in ('stage_resume', 'configure', 'restrict_access') or (req['op'] == 'begin' and req.get('skill') == 'followup')
     if not dbfile.exists():
         if req['op'] == 'snapshot':
             return summary(fresh(), root)
